@@ -14,7 +14,22 @@ Run `/reload` in an existing pi session, or start a new one.
 - `/optmem [on|off|status]`: independently toggle compact memory.
 - `pi --meitan --optmem`: enable both initially, including print mode.
 
-Both default off. Decisions are saved in the current session branch and restored on reload/resume/fork/tree navigation. New sessions default off unless CLI flags seed them. Saved decisions take precedence over CLI flags. Changes wait for idle and apply to the next prompt. Enabled toggles appear in the footer.
+Both default off until selected. Decisions are saved in the current session branch and restored on reload/resume/fork/tree navigation. Saved decisions take precedence over CLI flags. Slash-command changes wait for idle and apply to the next prompt. Enabled toggles appear in the footer.
+
+## Startup questions
+
+A fresh interactive `pi` (or `/new` in an unconfigured launch) asks, in order:
+
+1. **Personality / memory:** plain coding, coding + OptMem, Meitan only, or Meitan + OptMem.
+2. **Model / thinking preset:** recently used combinations, keep the current combination, or choose another model and thinking level. The model browser supports typing to filter; thinking choices reflect the selected model's supported levels.
+
+The eight most recently used model/thinking combinations appear first, newest first. Choosing one promotes it; combinations actually used after `/model` or thinking changes are also remembered. History lives in `~/.pi/agent/generalist-model-history.json` (under pi's agent directory when overridden), shared across projects. It stores only provider/model IDs and thinking levels—not credentials or conversation content. Writes are atomic and best-effort; simultaneous pi processes may race on recency. Unavailable, out-of-scope, and no-longer-supported combinations are hidden. Pi's configured default model/thinking settings are **not** changed, and previous choices are never applied silently to a new session.
+
+No automatic questions for resumed/forked/saved sessions, `/reload`, print/JSON/RPC mode, or launches with explicit model/provider/thinking/scoped-model/preset/toggle flags (including Kouseki launches). Initial prompts/files and unknown launcher switches also suppress the picker conservatively. Ordinary name, extension/resource, offline, and terminal-display options are allowed. `pi --no-session-setup` explicitly skips startup questions.
+
+Use **`/session-setup`** to open both steps manually in an interactive session, even when launch flags suppressed startup. Existing `/meitan`, `/optmem`, and `/model` commands still work independently. Cancel the first question to keep everything unchanged; cancel model selection to keep the chosen personality/memory but leave model/thinking unchanged. No automatic re-prompt on reload. History errors warn without blocking session choices; delete a corrupt history file to reset recents.
+
+The package now loads `extensions/generalist.ts`, which initializes both independent toggles before the picker. The original `meitan.ts` and `optmem.ts` remain usable as standalone extensions without startup questions; don't load them separately alongside the package.
 
 ## Context ownership
 
@@ -38,6 +53,6 @@ bun test
 bun run typecheck
 ```
 
-Tests use temporary context and a mocked pi API; they do not read/write personal memory or call a model. On the original machine, installation of the exact already-installed pi 0.85.1 required `bun install --minimum-release-age=0` because it was newer than the local release-age policy.
+Tests use temporary context/history and a mocked pi API, plus a component-level model-picker test; they do not read/write personal memory or call a model. On the original machine, installation of the exact already-installed pi 0.85.1 required `bun install --minimum-release-age=0` because it was newer than the local release-age policy.
 
 Uninstall: `pi remove ~/workspace/pi-generalist-extensions`, then `/reload`. Personal context and memory are retained.

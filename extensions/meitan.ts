@@ -31,4 +31,5 @@ export default function meitan(pi: ExtensionAPI) {
       return { systemPrompt: `${event.systemPrompt}\n\nMeitan was requested, but its context files could not be loaded. Tell the user; do not pretend they loaded.` };
     }
   });
+  return enabled;
 }

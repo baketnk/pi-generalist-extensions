@@ -23,6 +23,11 @@ export function registerToggle(pi: ExtensionAPI, name: string, description: stri
     if (!saved && enabled) pi.appendEntry(key, { enabled });
     update(ctx);
   };
+  const set = (value: boolean, ctx: ExtensionContext) => {
+    enabled = value;
+    pi.appendEntry(key, { enabled });
+    update(ctx);
+  };
   pi.on("session_start", (_event, ctx) => restore(ctx));
   pi.on("session_tree", (_event, ctx) => restore(ctx));
   pi.registerCommand(name, {
@@ -37,12 +42,10 @@ export function registerToggle(pi: ExtensionAPI, name: string, description: stri
       }
       if (action !== "status") {
         await ctx.waitForIdle();
-        enabled = action === "" ? !enabled : action === "on";
-        pi.appendEntry(key, { enabled });
-        update(ctx);
+        set(action === "" ? !enabled : action === "on", ctx);
       }
       if (ctx.hasUI) ctx.ui.notify(`${name}: ${enabled ? "on" : "off"}`, "info");
     },
   });
-  return () => enabled;
+  return Object.assign(() => enabled, { set });
 }
