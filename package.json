@@ -1,0 +1,11 @@
+{
+  "name": "pi-generalist-extensions",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "keywords": ["pi-package"],
+  "pi": { "extensions": ["./extensions/meitan.ts", "./extensions/optmem.ts"] },
+  "scripts": { "test": "bun test", "typecheck": "tsc --noEmit" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "typebox": "*" },
+  "devDependencies": { "@earendil-works/pi-coding-agent": "0.85.1", "@types/bun": "^1.3.0", "typescript": "^5.9.0" }
+}
