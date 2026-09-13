@@ -72,6 +72,16 @@ adds optional reminders after estimated context growth (off by default).
 New/forked sessions start detached. Independent of personality and OptMem.
 See [storage, context/privacy, limitations and phase-two scope](docs/workpad.md).
 
+## Evidence shelf
+
+`/evidence` opens an ephemeral source-evidence picker; `/evidence capture` records
+an immutable excerpt, `/evidence check ID` checks whole-file freshness, and
+`/evidence compare ID` shows captured/current line positions. The `evidence` tool
+provides the same operations. Source observations and inspected test contracts
+are distinct; neither is a test pass or truth verdict. Records stay project-scoped
+outside Git, with no background work or automatic context injection.
+See [bounds, privacy, semantics and validation](docs/evidence.md).
+
 ## Development
 
 ```sh
