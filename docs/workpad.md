@@ -80,8 +80,9 @@ content does not: an attached branch always sees the latest shared revision.
 Workers must explicitly attach; an instruction also tells subagents not to attach
 or edit a parent's workpad without permission. This is not a worker ACL.
 
-Before every ordinary model request, the `context` hook prepends one hidden
-custom message containing the latest page and its revision. Pi converts it to
+Before every ordinary model request, the `context` hook appends one hidden
+custom message containing the latest page and its revision **after the entire
+conversation, including tool results**. Pi converts it to
 **user-role context**, not system policy. It is labelled as working data, not a
 request, verification or permission. JSON framing distinguishes the page from
 the wrapper but is not a prompt-injection security guarantee. The wrapper and
@@ -90,8 +91,36 @@ are not included. Missing/corrupt pages produce an explicit unavailable marker,
 not a stale cache or guessed replacement.
 
 This is request-local: there is no `sendMessage`, extra model turn or page copy
-appended to session history. Identical revisions have stable injected content;
-editing the page changes the request prefix and may invalidate provider caches.
+appended to session history. Identical revisions have stable injected content.
+Page edits, attachment changes and unavailable markers only change the trailing
+snapshot, not the preceding conversation. Any synthetic copy fed back through
+the hook is removed before the latest snapshot is appended.
+
+### Cache behavior
+
+The original MVP prepended the page. In a live `openai-codex/gpt-6-astra`
+session, unchanged pages saw approximately 99.8% cached input, but the first
+requests after two page edits fell to 2.31% and 2.24%: only 4,736 cached tokens
+versus 200,719 and 206,934 uncached tokens. Subsequent unchanged requests
+recovered. This motivated moving the snapshot to the request tail.
+
+Tail placement preserves the conversation prefix when the notebook changes;
+it does **not** promise zero cache cost. As conversation messages accumulate,
+they replace the previous trailing snapshot's position, so that snapshot and
+the new suffix may need processing again. The page remains bounded at 8 KiB
+plus framing. Cache expiry, provider thresholds, other extensions, changed
+system/tool definitions and compaction can independently affect reuse. Reloading
+from the old placement can also cause a one-time miss.
+
+Regression tests verify the stable prefix after Pi's message conversion, not
+provider cache hits. To verify live after `/reload`, explicitly attach, warm
+with an unchanged-page request, edit the page, then compare the next request's
+`usage.cacheRead` and `usage.input` in session JSONL. Pi's input is uncached;
+the cached-input share is `cacheRead / (input + cacheRead + cacheWrite)`.
+Exclude output tokens. Record model, request IDs and any reload/compaction
+boundaries. Post-fix live cache measurements are still pending; never reattach
+a user-disabled page just to run that check.
+
 **Off is not amnesia**: earlier tool reads, summaries and discussion may still
 contain old page text. Do not put secrets in a notebook; attaching sends its
 content to the active model/provider, including normal automatic follow-ups.
@@ -118,6 +147,8 @@ record findings and choose a small phase-two slice. Candidates, not commitments:
 `bun test tests/workpad.test.ts` exercises immutable revisions, UTF-8 limits,
 invalid paths/symlinks, two independent writer processes, lazy startup,
 explicit attachment, cancellation, current request-local context conversion,
+stable conversation prefixes across page edits and growing user/tool turns,
+snapshot deduplication, unavailable/detached states,
 compaction/reload-shaped branch restoration, fork/project isolation, editing
 conflict recovery and narrow/resized terminal rendering. Fixtures use temporary
 storage and a mocked Pi API; no providers or personal notebook stores.

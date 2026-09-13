@@ -52,7 +52,11 @@ export default function workpad(pi: ExtensionAPI, root = () => join(getAgentDir(
     } catch (error) {
       content = `Attached workpad ${id} is unavailable: ${String(error).slice(0, 500)}. No page was loaded; do not infer its contents or fall back to old copies. Repair or detach explicitly.`;
     }
-    return { messages: [{ role: "custom" as const, customType: CONTEXT, content, display: false, timestamp: 0 }, ...messages] };
+    // Keep the transcript as the stable prefix. Prepending a mutable page
+    // invalidates cache reuse for the entire conversation on every page edit.
+    // Append after all messages (including tool results); only the request tail
+    // moves/changes. This snapshot is never persisted into the transcript.
+    return { messages: [...messages, { role: "custom" as const, customType: CONTEXT, content, display: false, timestamp: 0 }] };
   });
   pi.registerTool({
     name: "workpad", label: "Workpad",

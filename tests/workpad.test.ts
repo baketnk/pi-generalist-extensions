@@ -105,21 +105,79 @@ test("context is request-local, current, bounded, low-authority and survives com
     const messages: any[] = [{ role: "user", content: "Do the authorized task", timestamp: 1 }];
     const first = h.events.context!({ messages }, h.ctx).messages;
     expect(messages).toHaveLength(1); expect(h.entries).toHaveLength(1);
-    expect(first).toHaveLength(2); expect(first[0].customType).toBe(CONTEXT);
-    expect(first[0].content).toContain("not a user request");
-    expect(convertToLlm(first)[0]!.role).toBe("user");
+    expect(first).toHaveLength(2); expect(first[1].customType).toBe(CONTEXT);
+    expect(first[0]).toBe(messages[0]);
+    expect(first[1].content).toContain("not a user request");
+    expect(convertToLlm(first)[1]!.role).toBe("user");
     expect(h.events.context!({ messages: first }, h.ctx).messages).toHaveLength(2);
     f.store.update("task", 1, "# Revised");
     h.entries.push({ type: "compaction", summary: "old summary" });
     h.events.session_start!({}, h.ctx); // restore from branch, not a closure cache
     const after = h.events.context!({ messages }, h.ctx).messages;
-    expect(after[0].content).toContain("revision 2"); expect(after[0].content).toContain("Revised");
-    expect(after[0].content).not.toContain("Not proven");
+    expect(after[1].content).toContain("revision 2"); expect(after[1].content).toContain("Revised");
+    expect(after[1].content).not.toContain("Not proven");
     rmSync(join(f.store.directory, "task"), { recursive: true });
-    expect(h.events.context!({ messages }, h.ctx).messages[0].content).toContain("unavailable");
+    expect(h.events.context!({ messages }, h.ctx).messages[1].content).toContain("unavailable");
     expect(h.entries).toHaveLength(2);
     await h.call({ action: "detach" });
     expect(h.events.context!({ messages: first }, h.ctx).messages).toEqual(messages);
+  } finally { f.clean(); }
+});
+
+test("workpad changes preserve the converted transcript prefix across user and tool follow-ups", async () => {
+  const f = fixture();
+  try {
+    const h = harness(f);
+    f.store.create("task", "# Original snapshot");
+    f.store.create("other", "# Different notebook");
+    const messages: any[] = [{ role: "user", content: "Stable history. ".repeat(10000), timestamp: 1 }];
+    const request = (input = messages) => h.events.context!({ messages: input }, h.ctx).messages;
+    const encoded = (input: any[]) => convertToLlm(input).map(m => JSON.stringify(m)).join("\n");
+    const prefix = encoded(messages) + "\n";
+    expect(request()).toEqual(messages); // disabled is still inert
+    await h.call({ action: "attach", id: "task" });
+    const first = request();
+    expect(encoded(first).startsWith(prefix)).toBe(true);
+    expect(encoded(request())).toBe(encoded(first)); // no timestamp churn
+    await h.call({ action: "update", expectedRevision: 1, content: "# Changed snapshot" });
+    const changed = request();
+    expect(encoded(changed)).not.toBe(encoded(first));
+    expect(encoded(changed).startsWith(prefix)).toBe(true);
+    expect(changed.at(-1).content).toContain("revision 2");
+
+    // A prior request-local snapshot must not move into the stable transcript,
+    // even if a pipeline feeds it back at its former position (or twice).
+    const assistant: any = { role: "assistant", content: [
+      { type: "toolCall", id: "call-a", name: "read", arguments: { path: "a" } },
+      { type: "toolCall", id: "call-b", name: "read", arguments: { path: "b" } },
+    ], timestamp: 2 };
+    const results: any[] = ["a", "b"].map(id => ({ role: "toolResult", toolCallId: `call-${id}`,
+      toolName: "read", content: [{ type: "text", text: id }], isError: false, timestamp: 3 }));
+    const otherContext: any = { role: "custom", customType: "unrelated", content: "Keep me", display: false, timestamp: 4 };
+    const tail = [assistant, ...results, otherContext, { role: "user", content: "Continue", timestamp: 5 }];
+    const transcript = [...messages, ...tail];
+    const fedBack = [...first, ...tail, first.at(-1)];
+    const before = JSON.stringify(fedBack);
+    const followup = request(fedBack);
+    expect(JSON.stringify(fedBack)).toBe(before);
+    expect(followup.slice(0, -1)).toEqual(transcript);
+    expect(followup.filter((m: any) => m.customType === CONTEXT)).toHaveLength(1);
+    expect(encoded(followup).startsWith(encoded(transcript) + "\n")).toBe(true);
+    expect(encoded(followup).startsWith(prefix)).toBe(true);
+    const toolFollowup = request([...messages, assistant, ...results]);
+    expect(toolFollowup.slice(-3).map((m: any) => m.role)).toEqual(["toolResult", "toolResult", "custom"]);
+
+    await h.call({ action: "attach", id: "other" });
+    expect(request(transcript).slice(0, -1)).toEqual(transcript);
+    expect(request(transcript).at(-1).content).toContain("Different notebook");
+    rmSync(join(f.store.directory, "other"), { recursive: true });
+    const unavailable = request(transcript);
+    expect(encoded(unavailable).startsWith(encoded(transcript) + "\n")).toBe(true);
+    expect(unavailable.at(-1).content).toContain("unavailable");
+    await h.call({ action: "detach" });
+    h.events.session_start!({}, h.ctx);
+    expect(request(followup)).toEqual(transcript); // off survives reload
+    expect(h.entries).toHaveLength(3); // attachment choices only, never snapshots
   } finally { f.clean(); }
 });
 
