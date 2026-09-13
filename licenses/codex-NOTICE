@@ -1,0 +1,14 @@
+OpenAI Codex
+Copyright 2025 OpenAI
+
+lib/patch/parser.ts adapts the apply-patch format and matching approach from
+https://github.com/openai/codex, local revision ca6fb194b6, specifically
+codex-rs/apply-patch/src/parser.rs, file_update.rs, and seek_sequence.rs.
+Licensed under Apache-2.0; see codex-Apache-2.0.txt in this directory.
+
+Generalist modifications: TypeScript implementation, bounded strict parsing,
+ambiguity rejection within each Codex-style matching tier, fallback notices,
+and preservation of unchanged source bytes and existing EOF newline policy.
+The filesystem engine and Pi integration are new Generalist code.
+
+No Ratatui code is used in this adaptation.
