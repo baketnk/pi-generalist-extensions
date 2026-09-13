@@ -49,6 +49,17 @@ A branch-local request marker prevents recursive reminders and survives reload/r
 
 **Off is not a privacy sandbox or amnesia:** ordinary bash/read tools can still reach local files, and prior tool outputs, responses, or summaries remain in conversation history. Use a new session to avoid historical influence. Model/provider behavior still affects personality; pi's coding instructions remain intact.
 
+## Cross-harness history search
+
+The package also exposes `history_search` and `history_read`, independently of the
+personality/memory toggles. Local SQLite FTS5 searches Pi, OMP, Codex and Hermes
+prose with citations and bounded, branch-aware drill-down. No embeddings, model
+calls, startup indexing, auto-injection, session switching or source mutations.
+`/history-index` refreshes; `/history-index status` shows counts and disk usage.
+Additional roots (such as Kouseki's separate Pi-agent histories) are configured
+explicitly. Requires Node 24+ with `node:sqlite`/FTS5; no new runtime dependency.
+See [configuration, privacy, limits and validation](docs/history-search.md).
+
 ## Development
 
 ```sh
