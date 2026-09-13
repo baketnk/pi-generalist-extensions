@@ -80,6 +80,14 @@ export class WorkpadStore {
     const pad = this.paths(id, expected === 0);
     const current = this.latest(pad);
     if (current !== expected) throw new Error(`Revision conflict: expected ${expected}, found ${current}. Read again before editing.`);
+    // Compare only after checking the caller's revision: stale identical writes
+    // must still conflict. A successful no-op linearizes at the revision check
+    // above; immutable content can then be compared without mutating the store.
+    // A concurrent writer may advance the page after that check.
+    if (expected > 0) {
+      const page = this.read(id, current);
+      if (page.content === content) return page;
+    }
     if (current >= 99999999) throw new Error("Workpad revision limit reached.");
     const revision = current + 1;
     const destination = join(pad, `${String(revision).padStart(8, "0")}.md`);

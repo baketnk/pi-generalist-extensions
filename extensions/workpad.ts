@@ -170,7 +170,7 @@ export default function workpad(pi: ExtensionAPI, root = () => join(getAgentDir(
           return;
         }
         await ctx.ui.custom<void>((tui, theme, keys, done) => new WorkpadView(page, theme, keys,
-          () => tui.terminal.rows, () => tui.requestRender(), () => done()),
+          () => tui.terminal.rows, () => tui.requestRender(), () => done(), settings(ctx, s.project)),
           { overlay: true, overlayOptions: { width: "95%", maxHeight: "80%" } });
       } catch (error) { ctx.ui.notify(plain(String(error)), "error"); }
     },

@@ -26,7 +26,9 @@ Increasing the cap can recover an old oversized attachment. Missing model-window
 information disables periodic reminders, not publication of edits.
 
 The viewer uses configured `tui.select.*` keys for scrolling/pages/cancel.
-Closing it does not detach; reopen to refresh its snapshot. Commands wait for
+Closing it does not detach; reopen to refresh its snapshot. The viewer shows
+current UTF-8 byte usage/cap and refresh settings (a snapshot of those settings,
+not a live watcher). Commands wait for
 the agent to settle. The custom viewer requires TUI mode; RPC can use ordinary
 editor/selector dialogs. Non-UI callers use the tool.
 
@@ -47,6 +49,10 @@ editor/selector dialogs. Non-UI callers use the tool.
 Create does NOT attach. Reads may specify another `id`; writes only update the
 attached notebook and require its exact current revision. Competing writers get
 a conflict, never silent last-writer-wins replacement. Read and reconcile again.
+An update with exactly identical content and the current expected revision returns
+the existing page without a new revision or snapshot. Stale expected revisions
+still conflict, even when the proposed content equals the latest page. Whitespace
+is significant; no normalization is performed. The selected write cap still applies.
 `list` includes the current `settings`. Results include revision and filesystem
 path. Supporting material can be linked and read with normal file tools.
 

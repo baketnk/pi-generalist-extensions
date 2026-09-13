@@ -51,6 +51,27 @@ test("storage is lazy; immutable revisions survive reopening and reject stale wr
   } finally { f.clean(); }
 });
 
+test("identical updates retain revision and cache projection, but stale identical updates conflict", async () => {
+  const f = fixture();
+  try {
+    const h = harness(f), content = "# Notes\n日本語";
+    const page = f.store.create("task", content);
+    await h.call({ action: "attach", id: "task" });
+    const base = [user("A")], first = h.request(base), entries = h.entries.length;
+    expect(await h.call({ action: "update", expectedRevision: 1, content })).toEqual(page);
+    expect(readdirSync(join(f.store.directory, "task"))).toEqual(["00000001.md"]);
+    expect(h.request(base)).toEqual(first);
+    expect(h.entries).toHaveLength(entries); // no redundant snapshot
+    expect(encoded(h.request([...base, user("B", 2)])).startsWith(encoded(first) + "\n")).toBe(true);
+    // Do not normalize whitespace or mistake a different page for a no-op.
+    const revised = f.store.update("task", 1, content + "\n");
+    expect(revised.revision).toBe(2);
+    await expect(h.call({ action: "update", expectedRevision: 1, content: revised.content })).rejects.toThrow("conflict");
+    expect(f.store.update("task", 2, revised.content)).toEqual(revised);
+    expect(readdirSync(join(f.store.directory, "task"))).toHaveLength(2);
+  } finally { f.clean(); }
+});
+
 test("2/4/8 KiB write caps count UTF-8 bytes; historical 8 KiB reads remain available", () => {
   const f = fixture();
   try {
@@ -312,6 +333,17 @@ test("commands cancel safely, recover conflict drafts, and viewer fits narrow te
     const page = { id: "task", revision: 3, path: "fixture", content: Array.from({ length: 80 }, (_, i) => `${i} 日本語`).join("\n") };
     const view = new WorkpadView(page, theme, keys, () => rows, () => {}, () => closed = true);
     expect(view.render(100).join("\n")).toContain("revision 3");
+    expect(view.render(100).join("\n")).toContain(`${Buffer.byteLength(page.content)}/4096 UTF-8 bytes · refresh off`);
+    const configured = new WorkpadView(page, theme, keys, () => rows, () => {}, () => {}, { pageBytes: 8192, refreshPercent: 10 });
+    expect(configured.render(120).join("\n")).toContain("/8192 UTF-8 bytes · refresh 10% context growth (estimated)");
+    // Exercise the command wiring, not just constructor defaults.
+    h.ctx.mode = "tui";
+    await h.command("size 2"); await h.command("refresh 25");
+    h.ctx.ui.custom = async (factory: Function) => {
+      const rendered = factory({ terminal: { rows: 24 }, requestRender() {} }, theme, keys, () => {}).render(120).join("\n");
+      expect(rendered).toContain("/2048 UTF-8 bytes · refresh 25% context growth (estimated)");
+    };
+    await h.command("");
     view.handleInput("pageDown"); expect(view.render(100).join("\n")).not.toContain("\n0 日本語");
     for (const width of [1, 10, 40, 100]) {
       rows = width < 10 ? 3 : 24;
