@@ -33,6 +33,23 @@ Use **`/session-setup`** to open both steps manually in an interactive session, 
 
 The package loads `extensions/generalist.ts`, which initializes both independent features before the picker. `meitan.ts` and `memory.ts` also work as standalone extensions without startup questions; don't load them separately alongside the package.
 
+## Agent switchboard
+
+Switchboard automatically registers interactive Pi sessions after `/reload`, with
+same-project roster observations and pending-mail hints at existing model requests.
+When alone it adds no roster context; it never wakes an idle model. `/switchboard`
+opens the roster/inbox, and the `switchboard` tool supports addressed correspondence
+and interruptible `wait` for mail/user input. A small per-user Linux helper starts
+on demand (Node 24+ and `flock`), with no systemd installation or inference.
+
+**Opt out:** `PI_SWITCHBOARD=off` before launch (no registration/storage),
+`/switchboard off` for this session, or `/switchboard project-off` for the project.
+`/switchboard manual` keeps human observability but suppresses new automatic
+context. Names and explicitly supplied summaries are public to local participants;
+no transcripts or automatic trace summaries are collected. Workers can use scoped
+participant capabilities, but a subagent launcher/general process wait is **not**
+in this MVP. See [commands, privacy, limits and validation](docs/switchboard.md).
+
 ## Tasks and user questions
 
 `update_plan` maintains an atomic, ordered checklist for meaningful multi-step work. Every update supplies the complete list with `pending`, `in_progress`, or `completed` status; at most one step may be in progress. State lives in session history, follows branches, and appears as a compact editor widget and footer count. `/tasks` opens the full list and `/tasks clear` removes it.

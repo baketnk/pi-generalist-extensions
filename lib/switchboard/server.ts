@@ -13,7 +13,7 @@ export async function serve(paths: Paths, options: { staleSocket?: boolean; now?
   for (const file of ["board.sqlite", "board.sqlite-wal", "board.sqlite-shm"]) await privateFile(join(paths.root, file));
   if (options.staleSocket) await unlink(paths.socket).catch(e => { if (e.code !== "ENOENT") throw e; });
   const store = new BoardStore(join(paths.root, "board.sqlite"), options.now);
-  await chmod(join(paths.root, "board.sqlite"), 0o600);
+  for (const file of ["board.sqlite", "board.sqlite-wal", "board.sqlite-shm"]) await chmod(join(paths.root, file), 0o600).catch(e => { if (e.code !== "ENOENT") throw e; });
   const wake = new Set<() => void>();
   const changed = () => { for (const fn of [...wake]) fn(); };
   let closing = false;
@@ -23,7 +23,7 @@ export async function serve(paths: Paths, options: { staleSocket?: boolean; now?
     };
     try {
       if (closing) throw new BoardError("Service closing.", 503);
-      if (req.url === "/v1/health" && req.method === "GET") { reply(200, { version: VERSION }); return; }
+      if (req.url === "/v1/health" && req.method === "GET") { reply(200, { version: VERSION, pid: process.pid }); return; }
       if (req.url !== "/v1/rpc" || req.method !== "POST") throw new BoardError("Unknown endpoint.", 404);
       const token = req.headers.authorization?.replace(/^Bearer /, "") ?? "";
       let bytes = 0; const chunks: Buffer[] = [];

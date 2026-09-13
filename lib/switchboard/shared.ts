@@ -1,8 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
-import { lstat, mkdir, realpath, readFile, writeFile, rename } from "node:fs/promises";
+import { lstat, mkdir, realpath, readFile, open, rename } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 export const VERSION = 1;
 export const LEASE_MS = 60_000;
@@ -48,6 +48,10 @@ export async function privateFile(path: string): Promise<void> {
     if (!st.isFile() || st.isSymbolicLink() || st.uid !== process.getuid?.() || (st.mode & 0o077)) throw new Error(`Not a private owned file: ${path}`);
   } catch (e) { if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; }
 }
+export async function privateSocket(path: string): Promise<void> {
+  const st = await lstat(path);
+  if (!st.isSocket() || st.isSymbolicLink() || st.uid !== process.getuid?.() || (st.mode & 0o077)) throw new Error("Switchboard socket is not private and owned by this user.");
+}
 export async function jsonFile<T>(path: string, fallback: T): Promise<T> {
   await privateFile(path);
   try { return JSON.parse(await readFile(path, "utf8")) as T; }
@@ -56,8 +60,11 @@ export async function jsonFile<T>(path: string, fallback: T): Promise<T> {
 export async function atomicJson(path: string, data: unknown): Promise<void> {
   await privateFile(path);
   const temp = `${path}.${secret().slice(0, 12)}.tmp`;
-  await writeFile(temp, JSON.stringify(data), { mode: 0o600, flag: "wx" });
+  const file = await open(temp, "wx", 0o600);
+  try { await file.writeFile(JSON.stringify(data)); await file.sync(); } finally { await file.close(); }
   await rename(temp, path);
+  const directory = await open(dirname(path), "r");
+  try { await directory.sync(); } finally { await directory.close(); }
 }
 export async function projectAt(cwd: string): Promise<Project> {
   cwd = await realpath(cwd);

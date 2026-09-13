@@ -29,6 +29,7 @@ export class BoardStore {
   constructor(path: string, now = Date.now) {
     this.now = now;
     this.db = new DatabaseSync(path);
+    if (Number(this.one("PRAGMA user_version")?.user_version ?? 0) > 1) { this.db.close(); throw new Error("Unsupported switchboard database version."); }
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=2000;
       CREATE TABLE IF NOT EXISTS participants (
         id TEXT PRIMARY KEY, token TEXT UNIQUE NOT NULL, type TEXT NOT NULL,
@@ -83,7 +84,7 @@ export class BoardStore {
   }
   connect(token: string, data: Row): Card {
     if (!/^[a-f0-9]{64}$/.test(token)) throw new BoardError("Invalid credential.", 401);
-    only(data, ["runtime", "card", "type"]);
+    only(data, ["runtime", "card", "type", "existingOnly"]);
     const runtime = text(data.runtime, "runtime", 128), card = cardInput(data.card);
     const type = data.type ?? "agent";
     if (!["agent", "human", "observer"].includes(type)) throw new BoardError("Invalid participant type.");
@@ -94,18 +95,19 @@ export class BoardStore {
       if (row?.runtime && row.runtime !== runtime && row.lease > this.now()) throw new BoardError("Mailbox already attached to another runtime.", 409);
       const encoded = JSON.stringify(card), now = this.now();
       if (!row) {
+        if (data.existingOnly === true) throw new BoardError("Provisioned participant no longer exists; ask the runner to recover explicitly.", 404);
         if (this.one("SELECT count(*) AS n FROM participants")!.n >= 1000) throw new BoardError("Participant quota reached.", 429);
         const pid = id("p");
         this.run("INSERT INTO participants(id,token,type,card,updated,created) VALUES(?,?,?,?,?,?)", pid, hash(token), type, encoded, now, now);
         row = this.one("SELECT * FROM participants WHERE id=?", pid)!;
       }
-      this.run("UPDATE participants SET runtime=?,lease=?,card=?,updated=? WHERE id=?", runtime, now + LEASE_MS, encoded, row.card === encoded ? row.updated : now, row.id);
+      this.run("UPDATE participants SET runtime=?,lease=?,card=?,updated=? WHERE id=?", runtime, now + LEASE_MS, encoded, now, row.id);
       return this.public(this.one("SELECT * FROM participants WHERE id=?", row.id)!);
     });
   }
   heartbeat(token: string, runtime: unknown, input?: unknown): Card {
     const row = this.owner(token, runtime), card = input === undefined ? row.card : JSON.stringify(cardInput(input));
-    this.run("UPDATE participants SET lease=?,card=?,updated=? WHERE id=?", this.now() + LEASE_MS, card, card === row.card ? row.updated : this.now(), row.id);
+    this.run("UPDATE participants SET lease=?,card=?,updated=? WHERE id=?", this.now() + LEASE_MS, card, this.now(), row.id);
     return this.public(this.one("SELECT * FROM participants WHERE id=?", row.id)!);
   }
   detach(token: string, runtime: unknown) {
@@ -136,7 +138,7 @@ export class BoardStore {
       .filter(row => row.lease > this.now() && (all || JSON.parse(row.card).project === scope));
     const inbox = this.all("SELECT id,sender,recipient,kind,createdAt,expiresAt,replyTo,fetchedAt,ackAt FROM messages WHERE recipient=? AND ackAt IS NULL AND expiresAt>? ORDER BY createdAt,id LIMIT 128", actor.id, this.now()) as Mail[];
     const view = { peers: peers.slice(0, 64).map(row => this.public(row)), total: peers.length, inbox: inbox.slice(0, 64), pending: inbox.length };
-    return { ...view, version: hash(JSON.stringify(view)) };
+    return { ...view, version: hash(JSON.stringify({ ...view, peers: view.peers.map(({ updatedAt, ...card }) => card) })) };
   }
   inspect(token: string, pid: unknown): Card {
     this.auth(token);
@@ -182,7 +184,7 @@ export class BoardStore {
     const row = this.one("SELECT * FROM messages WHERE id=?", text(mid, "id", 64));
     if (!row || (row.sender !== actor && row.recipient !== actor)) throw new BoardError("Message unavailable to this participant.", 404);
     if (!body) delete row.body;
-    else if (row.expiresAt <= this.now()) row.body = null;
+    else if (row.expiresAt <= this.now() || (row.ackAt !== null && row.ackAt + DAY <= this.now())) row.body = null;
     return row as Mail;
   }
   read(token: string, runtime: unknown, mid: unknown, body: boolean): Mail {

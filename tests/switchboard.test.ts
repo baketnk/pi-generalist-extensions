@@ -68,6 +68,7 @@ describe("switchboard durable contract", () => {
     const f = fixture(); try {
       expect(() => f.store.connect(f.a, { runtime: "competitor", card: card("a") })).toThrow("another runtime");
       expect(() => f.store.connect(secret(), { runtime: "fake", card: { ...card("fake"), parentId: f.pa.id } })).toThrow("Unexpected");
+      expect(() => f.store.connect(secret(), { runtime: "lost-worker", card: card("lost"), existingOnly: true })).toThrow("no longer exists");
       const worker = f.store.provision(f.a, "a", "run-1");
       const child = f.store.connect(worker.token, { runtime: "child", card: card("reviewer") });
       expect(child.parentId).toBe(f.pa.id);
@@ -89,6 +90,21 @@ describe("switchboard durable contract", () => {
       expect(f.store.snapshot(f.a).version).toBe(before.version);
       f.store.heartbeat(f.b, "b", { ...card("b"), summary: "new focus" });
       expect(f.store.snapshot(f.a).version).not.toBe(before.version);
+    } finally { f.store.close(); }
+  });
+  test("SQLite refusal rolls back acceptance and preserves the request key for a real retry", () => {
+    const f = fixture(); try {
+      f.store.db.exec("CREATE TRIGGER fail_send BEFORE INSERT ON messages BEGIN SELECT RAISE(ABORT,'fixture disk failure'); END");
+      const envelope = { recipient: f.pb.id, key: "retry-after-failure", body: "hello" };
+      expect(() => f.store.send(f.a, "a", envelope)).toThrow();
+      expect(f.store.one("SELECT count(*) AS n FROM operations")!.n).toBe(0);
+      expect(f.store.snapshot(f.b).pending).toBe(0);
+      f.store.db.exec("DROP TRIGGER fail_send");
+      expect(f.store.send(f.a, "a", envelope).id).toBeDefined();
+      f.advance(31 * 86_400_000);
+      f.store.connect(f.a, { runtime: "a", card: card("a") });
+      f.store.prune();
+      expect(f.store.auth(f.a).id).toBe(f.pa.id); // live but unchanged name isn't an abandoned identity
     } finally { f.store.close(); }
   });
   test("send-rate failures don't partially accept messages", () => {
@@ -136,7 +152,7 @@ test("Node service: socket requests, long-poll, revoked stream, restart/offline 
     const pending = await b.snapshot();
     const revoked = b.call("watch", { since: pending.version }).catch(e => e.status);
     await b.call("archive"); expect(await revoked).toBe(401);
-    expect(await rpc<{ version: number }>(paths, "", undefined)).toEqual({ version: 1 });
+    expect(await rpc<{ version: number }>(paths, "", undefined)).toMatchObject({ version: 1 });
   } finally { await stop(); await rm(root, { recursive: true, force: true }); }
 }, 20_000);
 

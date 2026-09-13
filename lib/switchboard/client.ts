@@ -3,11 +3,12 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { open, mkdir, readdir, unlink } from "node:fs/promises";
-import { atomicJson, hash, jsonFile, privateDir, privateFile, secret, VERSION, type Card, type Paths, type Snapshot } from "./shared.ts";
+import { open, mkdir, readdir, unlink, stat } from "node:fs/promises";
+import { atomicJson, hash, jsonFile, privateDir, privateFile, privateSocket, secret, VERSION, type Card, type Paths, type Snapshot } from "./shared.ts";
 
 export class ClientError extends Error { status: number; constructor(message: string, status = 0) { super(message); this.status = status; } }
-export function rpc<T>(paths: Paths, token: string, data?: unknown, signal?: AbortSignal): Promise<T> {
+export async function rpc<T>(paths: Paths, token: string, data?: unknown, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted(); await privateSocket(paths.socket);
   return new Promise((resolve, reject) => {
     const encoded = data === undefined ? undefined : JSON.stringify(data);
     const req = request({ socketPath: paths.socket, path: encoded ? "/v1/rpc" : "/v1/health", method: encoded ? "POST" : "GET",
@@ -51,7 +52,7 @@ export async function bindingAt(paths: Paths, key: string): Promise<{ file: stri
   const file = join(dir, `${hash(key)}.json`);
   // Exclusive creation prevents two resumes from accidentally creating two mailboxes.
   const generated = { token: secret() };
-  try { const f = await open(file, "wx", 0o600); await f.writeFile(JSON.stringify(generated)); await f.close(); }
+  try { const f = await open(file, "wx", 0o600); try { await f.writeFile(JSON.stringify(generated)); await f.sync(); } finally { await f.close(); } }
   catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
   const binding = await jsonFile<Binding>(file, generated);
   if (!/^[a-f0-9]{64}$/.test(binding.token)) throw new ClientError("Invalid switchboard binding; explicit recovery required.");
@@ -61,7 +62,7 @@ export class BoardClient {
   paths: Paths; token: string; runtime: string;
   constructor(paths: Paths, token: string, runtime = randomUUID()) { this.paths = paths; this.token = token; this.runtime = runtime; }
   call<T>(action: string, args: Record<string, unknown> = {}, signal?: AbortSignal): Promise<T> { return rpc<T>(this.paths, this.token, { action, runtime: this.runtime, ...args }, signal); }
-  connect(card: Omit<Card, "id" | "online" | "type" | "updatedAt">, type: Card["type"] = "agent", signal?: AbortSignal) { return this.call<Card>("connect", { card, type }, signal); }
+  connect(card: Omit<Card, "id" | "online" | "type" | "updatedAt">, type: Card["type"] = "agent", signal?: AbortSignal, existingOnly = false) { return this.call<Card>("connect", { card, type, existingOnly }, signal); }
   snapshot(signal?: AbortSignal) { return this.call<Snapshot>("snapshot", {}, signal); }
   /** Durable outbox keys are local sidecars, never model-generated credentials. */
   async send(operation: string, envelope: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
@@ -69,11 +70,11 @@ export class BoardClient {
     const file = join(dir, `${hash(operation)}.json`);
     const intent = { key: operation, ...envelope };
     const old = await jsonFile<Record<string, unknown> | undefined>(file, undefined);
+    if (old && (await stat(file)).mtimeMs < Date.now() - 14 * 86_400_000) throw new ClientError("Send retry horizon expired; do not silently resend this operation.");
     if (old && JSON.stringify(old) !== JSON.stringify(intent)) throw new ClientError("Operation already exists with different content.", 409);
     if (!old) {
       const files = await readdir(dir);
       // Only age-based cleanup beyond the documented 14-day retry horizon.
-      const { stat } = await import("node:fs/promises");
       for (const name of files) if (/^[a-f0-9]{64}\.json$/.test(name) && (await stat(join(dir, name))).mtimeMs < Date.now() - 14 * 86_400_000) await unlink(join(dir, name));
       if ((await readdir(dir)).length >= 4000) throw new ClientError("Local outbox quota reached.");
       await atomicJson(file, intent);
@@ -85,6 +86,7 @@ export class BoardClient {
     const file = join(this.paths.root, "outbox", hash(this.token), `${hash(operation)}.json`);
     const intent = await jsonFile<Record<string, unknown> | undefined>(file, undefined);
     if (!intent || intent.key !== operation) throw new ClientError("Unknown local send operation.");
+    if ((await stat(file)).mtimeMs < Date.now() - 14 * 86_400_000) throw new ClientError("Send retry horizon expired; do not silently resend this operation.");
     return this.call("send", intent, signal);
   }
 }
