@@ -7,11 +7,24 @@ import evidence from "./evidence.ts";
 import continuity from "./continuity.ts";
 import tasks from "./tasks.ts";
 import questions from "./questions.ts";
+import applyPatch from "./apply-patch.ts";
+import { registerGeneralistSettings } from "./generalist-settings.ts";
 import { registerSessionSetup } from "../lib/session-setup.ts";
+import { registerStatusIcons } from "../lib/status-icons.ts";
+import { loadGeneralistDefaults } from "../lib/generalist-config.ts";
 
 /** One entrypoint guarantees toggles restore before the startup picker runs. */
 export default function generalist(pi: ExtensionAPI) {
-  registerSessionSetup(pi, { meitan: meitan(pi), memory: memory(pi) });
+  const defaults = loadGeneralistDefaults();
+  const icons = registerStatusIcons(pi, () => defaults?.icons);
+  const toggles = {
+    meitan: meitan(pi, icons, () => defaults?.meitan),
+    memory: memory(pi, icons), // Memory activation remains session-scoped and requires its configured policy review.
+    patch: applyPatch(pi, icons, () => defaults?.patch),
+    icons,
+  };
+  registerSessionSetup(pi, toggles);
+  registerGeneralistSettings(pi, toggles, defaults);
   history(pi);
   workpad(pi);
   evidence(pi);

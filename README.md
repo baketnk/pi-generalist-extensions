@@ -8,15 +8,19 @@ Independent, opt-in personality and compact memory extensions for pi 0.85.1 (@ea
 pi install ~/workspace/pi-generalist-extensions
 ```
 
-Run `/reload` in an existing pi session, or start a new one.
+Run `/reload` in an existing pi session, or start a new one. The bundled **Meitan** theme is then available from `/settings`; select `meitan` (or launch once with `pi --use-theme meitan`). It carries the forest-green palette from the local Hermes skin, but it is independent of the personality toggle.
 
 - `/meitan [on|off|status]`: toggle personality; no argument flips it.
 - `/memory`: native memory status; `/memory configure`, `/memory on`, `/memory off`, `/memory context` and review controls.
+- `/generalist`: bundle settings, including default personal memory, Meitan pairing preference, the housekeeping model, and output format. In its TUI, `Ctrl+S` saves the current Meitan, output, patch, and footer-icon choices as global defaults in `~/.pi/agent/extensions/generalist-settings.json`; current branch choices still win. Extension results use readable plain text by default; `/generalist output on` enables branch-local raw JSON diagnostics (`output off` restores readable text). `/generalist companion` explicitly enables Meitan + default memory; `/generalist personal` and `/generalist pairing` configure the remembered defaults. Individual `meitan on|off|toggle` and `memory on|off|toggle` controls remain independent; memory activation remains session-scoped and requires its existing configured-policy review.
+- `/generalist patch on|off|toggle` (also `/patch on|off|status`, or `pi --patch`): optional Codex-style `apply_patch` tool, off by default. Add/update/delete/move local project files with preflight, tolerant matching, and explicit partial-failure reports. Built-in `edit` remains available. See [patch syntax, limits, and guarantees](docs/apply-patch.md).
+- `/status-icons [on|off|status]` (or `/generalist icons on|off|toggle`): show every Generalist footer boolean as a labelled check/cross (for example, `meitan: ✓` or `meitan: ✗`) instead of only showing enabled `name: on` labels. This is branch-local and off by default. Pi sends Unicode verbatim; terminals/fonts that lack those glyphs show their own fallback, so this does not require or attempt to detect Nerd Fonts.
 - `/tasks [clear]`: view or clear the branch-local task checklist.
+- `/bg-tasks [list|status ID|output ID|cancel ID]`: inspect finite Linux commands launched with `bg_tasks`. Jobs are session-bound and stop on reload, session replacement, and graceful Pi exit.
 - `/questions [list|clear]`: answer, inspect, or discard asynchronously queued questions; `Ctrl+Shift+Q` opens the oldest batch.
 - `pi --meitan`: enable personality initially. `--memory-config /absolute/config.json` selects native configuration but does not enable memory.
 
-Both default off. Native memory requires an explicitly configured store and project/profile mapping, and a human activation decision. Memory grants are session/cwd/config-bound: reload/resume/tree restore them, but new/forked sessions start off. `/memory off` immediately blocks new captures and recall; other changes wait for idle. Personality retains its existing branch/CLI behavior. Enabled features appear in the footer.
+Both default off. Native memory requires an explicitly configured store and a project mapping or opted-in default personal profile, plus a human activation decision. Memory grants are session/cwd/config-bound: reload/resume/tree restore them, but new/forked sessions start off. `/memory off` immediately blocks new captures and recall; other changes wait for idle. Personality retains its existing branch/CLI behavior. Enabled features appear in the footer. `/status-icons on` shows labelled `✓`/`✗` states for all Generalist feature booleans; disable it to show only enabled ASCII labels.
 
 ## Startup questions
 
@@ -33,14 +37,33 @@ Use **`/session-setup`** to open both steps manually in an interactive session, 
 
 The package loads `extensions/generalist.ts`, which initializes both independent features before the picker. `meitan.ts` and `memory.ts` also work as standalone extensions without startup questions; don't load them separately alongside the package.
 
+## Background jobs
+
+`bg_tasks` starts an explicitly requested finite local command and returns promptly with a job ID. It can list jobs, read bounded output pages with cursors, report execution/cleanup facts, and cancel only jobs owned by the current Pi runtime. On `start`, `notify: "errors"` keeps clean exit-zero completion quiet while still waking on failures; `notify: "off"` suppresses all completion wakes without discarding the result or output. Commands use `/bin/bash --noprofile --norc -c` with closed stdin and are currently Linux-only. A job stops on `/reload`, session replacement, or graceful Pi exit; a crash/reboot leaves only an incomplete record and is never treated as successful recovery. The first version does not manage services, watches, PTYs, remote execution, schedules, retries, or jobs from print/JSON mode. See [the contract and limits](docs/bg-tasks-proposal.md).
+
 ## Agent switchboard
 
 Switchboard automatically registers interactive Pi sessions after `/reload`, with
 same-project roster observations and pending-mail hints at existing model requests.
-When alone it adds no roster context; it never wakes an idle model. `/switchboard`
-opens the roster/inbox, and the `switchboard` tool supports addressed correspondence
-and interruptible `wait` for mail/user input. A small per-user Linux helper starts
+When alone it adds no roster context; incoming presence/mail never wakes an idle model. The footer
+separates other registered participants (`peers`) from direct registered children
+(`sub`), rather than counting the current session. `/switchboard` opens the
+roster/inbox, and the `switchboard` tool supports addressed correspondence
+and interruptible `wait` for mail/user input. `/reload-all` queues a reload for every
+currently connected switchboard agent and this session; reloads are delivered
+programmatically as follow-ups, so they wait for active work to settle and require
+no agent tool call. Newer-daemon detection now queues an automatic reload once
+idle (one attempt per protocol version; old pre-fix sessions need one manual reload).
+`/switchboard mail [N]` peeks at all pending incoming mail plus the latest N
+acknowledged/expired entries (default 50), without fetch/ack receipts or model calls.
+`/switchboard status` includes bounded daemon lifecycle diagnostics.
+A small per-user Linux helper starts
 on demand (Node 24+ and `flock`), with no systemd installation or inference.
+
+`/switchboard dashboard` or `/generalist dashboard` opens the live searchable
+roster/inbox/offers desk. Human task offers require explicit acceptance and a separate
+confirmed Start; no automatic session replacement or worker launch. See the
+[dashboard and interactive-offer contract](docs/switchboard-dashboard.md).
 
 **Opt out:** `PI_SWITCHBOARD=off` before launch (no registration/storage),
 `/switchboard off` for this session, or `/switchboard project-off` for the project.
@@ -69,9 +92,18 @@ Set `PI_MEITAN_HOME` to another **absolute** directory if needed. This repo cont
 The `memory` tool provides scoped indexed recall, accepted-original reads, authored
 notes/revisions, exact host-bound source excerpts and open-thread cues. Automatic
 recall is bounded, request-frozen and inspectable with `/memory context`. Candidates
-and unassigned records are never automatically recalled; personal scope requires
-an explicitly selected continuity profile. No worker, provider call, compression,
-post-answer reminder or shutdown save is added by this extension.
+and unassigned records are never automatically recalled. An opted-in default personal
+profile supplies cross-project context even in unmapped directories; mapped project
+exceptions take precedence without hiding unrelated personal context. `/memory profile
+project` excludes personal memory; `/memory profile default` restores the combined
+profile. Existing project-only branch choices remain project-only until changed. Ordinary recall/reindexing is local;
+the active agent authors notes. No automatic compression, reminder or shutdown save.
+
+Optional **Memory housekeeping model** in `/generalist` (or `/generalist housekeeping`)
+selects a separate provider/model for manual, read-only review. After configuration,
+`/memory housekeep ID [ID…]` asks permission to send up to eight selected records.
+It returns cleanup/classification suggestions without modifying memory or involving
+the active conversation. Default off; no model fallback or automatic scheduling.
 
 See [first-use setup, commands and privacy/lifecycle contract](docs/memory-runtime.md),
 [index semantics and budgets](docs/memory-index.md), and [portable store](docs/memory-store.md).

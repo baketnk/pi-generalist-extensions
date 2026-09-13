@@ -4,6 +4,8 @@ This document outlines gaps identified while considering ordinary coding work an
 
 The goal is a balanced set of explicit, portable capabilities: tools that reduce real friction while keeping authority, process ownership, and evidence clear.
 
+For ideas worth retaining but **not queued for implementation**, see [parked ideas](PARKED-IDEAS.md). That document is a discussion shelf, not an additional backlog or implementation authorization.
+
 ## Current baseline
 
 The environment already provides file reads and edits, shell execution, and parallel tool calls. This package adds several complementary capabilities:
@@ -12,9 +14,12 @@ The environment already provides file reads and edits, shell execution, and para
 - **Workpad:** in-session revisable task understanding, separate from a checklist or out-of-session durable memory.
 - **Evidence shelf:** immutable source excerpts with explicit freshness checks.
 - **Tasks and questions:** progress tracking, blocking clarification, and asynchronous user input.
-- **Optional personality and compact memory:** independently enabled continuity aids.
+- **Optional personality and native selective memory:** independently enabled continuity aids with local indexed recall and explicit capture.
+- **Managed background jobs and execution receipts:** session-bound Linux jobs with bounded output and immutable execution records.
+- **Optional `apply_patch`:** preflighted Codex-style local patch application, separate from built-in edit.
+- **Switchboard dashboard and human task offers:** model-free roster/mail inspection and explicitly accepted foreground task delivery.
 
-These provide useful remembering and organizing primitives, but durable memory still delegates bulk wake and compression to the foreground model. The remaining gaps include selective continuity as well as execution, delegation, external information retrieval, and observation.
+These provide useful remembering, execution, and organizing primitives. Native memory no longer depends on foreground wake/nap compression: ordinary retrieval is local and the optional housekeeping reviewer is separately configured and human-triggered. The remaining gaps center on generic nested-tool orchestration, delegation, external information retrieval, visual observation, and the proposed orchestration follow-ons.
 
 A missing first-class interface does not imply that the underlying capability is impossible. Shell commands, local programs, and project-specific scripts can often substitute. The question is where repeated improvisation creates enough lifecycle, safety, or context-management cost to justify a dedicated interface.
 
@@ -22,18 +27,20 @@ A missing first-class interface does not imply that the underlying capability is
 
 | Capability | Suggested priority | Main benefit |
 | --- | --- | --- |
-| Managed background jobs | First execution capability | Reliable long-running work without ad hoc process management |
+| Managed background jobs | Implemented Linux-first MVP | Reliable finite local work without ad hoc process management |
+| Sandboxed tool orchestration / Code Mode | Core investigation candidate | Fewer Astra round-trips through bounded nested-tool composition |
 | Pi-native selective memory | Foreground MVP; live review pending | Relevant continuity without foreground compression; portable originals |
 | Bounded subagents | Next candidate | Isolated investigations and independent reviews |
+| Switchboard dashboard and dispatcher | Dashboard + interactive offers implemented; coordinator/runner proposed | Human-approved routing now; managed runs and integration remain future work |
 | Web search and readable retrieval | Next candidate | Research without repeatedly building fetching and extraction plumbing |
 | Visual inspection loop | Project-driven | Observe and validate interactive applications |
-| Execution receipts | Small supporting capability | Preserve what actually ran and under which source state |
+| Execution receipts | Implemented for new managed jobs | Preserve what actually ran and under which source state |
 
-Managed jobs remain the first execution recommendation. Pi-native memory is now a user-requested design track, independent of managed jobs or subagents; its optional worker can use direct Pi model calls. Implementation ordering should follow demonstrated needs and separate approval. Receipts may naturally begin as part of managed jobs rather than as a separate extension.
+Managed jobs and their initial receipts are implemented as independent execution capabilities. Pi-native memory is an independent, explicitly activated design track; its optional housekeeping reviewer can use a separately selected Pi model. Further implementation ordering should follow demonstrated needs and separate approval.
 
 ## 1. Managed background jobs
 
-Detailed design: [focused bg-tasks proposal](bg-tasks-proposal.md), including lifetime, cancellation, output cursors, notifications, acceptance gates, and independent package entrypoints. Proposed only; not implemented.
+Implemented Linux-first, session-bound MVP: [focused bg-tasks proposal](bg-tasks-proposal.md), including its declared lifetime, cancellation, output cursors, and notifications. Persistent jobs, services, scheduling, remote execution, and broader platform support remain proposed only.
 
 ### Problem
 
@@ -81,6 +88,21 @@ Decide whether jobs survive harness exit before implementing persistence. A stal
 - Large output remains bounded in context and on disk; cursors do not silently lose or duplicate output.
 - Completion is reported once, with no automatic restart or follow-on execution.
 
+## 1a. Sandboxed tool orchestration / Code Mode
+
+Detailed comparison and recommendation: [Astra harness efficiency and Codex-style `exec`](harness-efficiency-and-exec.md).
+
+Recent Codex sessions show that its useful `exec` feature is not merely a shell runner. A model response supplies JavaScript to a fresh restricted V8 isolate; that script can invoke normal tools through a broker, run independent calls concurrently, branch or loop over results, and return only selected output. In the inspected corgi session, 86 outer `exec` cells contained 261 nested tool calls. This can compress work that would otherwise require several Astra responses.
+
+Pi provides parallel sibling calls and a blocking shell; this package additionally provides managed background jobs, multi-edit tooling, and optional `apply_patch`. A second shell wrapper would add little. The missing capability is safe, generic **nested-tool composition** with normal schema validation, hooks, permissions, mutation queues, cancellation, result recording, and hard execution/output limits.
+
+Do not implement this with extension-process `eval`, `node:vm`, ambient Node/Bun APIs, or private copies of every tool. The current extension API exposes tool metadata and activation but no supported generic nested-call dispatcher. The recommended path begins with a Pi-core invocation boundary, then a capability-free isolated runtime, followed by an opt-in Astra A/B trial. It must demonstrate fewer model cycles without correctness, cache-prefix, or hidden-failure regressions before becoming a default tool.
+
+Evaluation support implemented: [read-only session metrics](session-metrics.md)
+separates persisted assistant responses, outer calls, and paired nested traces.
+It reports whole-file/all-branch counts and unknown outcomes, not a live cache-hit
+measurement or proof of saved model turns.
+
 ## 2. Bounded subagents
 
 ### Problem
@@ -123,7 +145,37 @@ If effective read-only enforcement is unavailable, describe the limitation hones
 - Attempts to mutate files, launch persistent services, or write memory are prevented by the declared enforcement mechanism.
 - Parent inspection can trace significant claims to worker evidence.
 
-## 3. Web search and readable retrieval
+## 3. Switchboard dashboard, coordinator, and dispatcher
+
+Detailed design: [switchboard dashboard and dispatcher proposal](switchboard-dashboard-proposal.md). The [live dashboard and human-approved interactive offers](switchboard-dashboard.md) are implemented. Coordinator, runner, automatic session delivery/replacement, and integration remain proposed; this is not approval to launch agents, wake sessions, make model calls, or commit repository changes automatically.
+
+### Problem and direction
+
+The switchboard makes registered Pi sessions visible and addressable. Its dashboard now supports separate human-approved task offers, with acceptance distinct from delivery. Presence/mail still do not define process ownership, completion, result collection, or repository integration.
+
+Add a human-facing dashboard with an optional separately configured small coordinator model. The dashboard renders deterministic roster, queue, run, and attention facts without inference. The model interprets natural-language requests and proposes task routing; a distinct dispatcher/runner enforces eligibility, assignment claims, budgets, process/session lifecycle, and result facts.
+
+### Desired contract
+
+- A live dashboard for participants, availability, declared work, queued assignments, managed runs, results, blockers, and service uncertainty.
+- A separate, bounded coordinator session with an explicit model, thinking level, prompt, tool allowlist, timeout, token/cost budget, and no hidden fallback to the foreground model.
+- Explicit dispatch policies for interactive sessions and managed workers. `idle` means only that an agent loop settled; it does not mean task complete, user-released, or available for reassignment.
+- Atomic assignment claims and generation checks so two coordinators cannot dispatch the same candidate concurrently.
+- A private control queue that an opted-in live Pi adapter may claim, then safely deliver after settlement as a follow-up or a new session. Offline participants are not process launch targets.
+- Runner-owned worker launch, cancellation, output, result collection, and terminal run states. Ordinary switchboard mail remains correspondence rather than task control.
+- Barrier-triggered integration work for requests such as “after all workers finish, inspect and commit,” with exact diff review, attribution checks, validation, and refusal to sweep unexplained changes.
+
+### Small slices
+
+1. Model-free dashboard over current roster/mail facts, clearly marking partial, stale, and unavailable coverage.
+2. Read-only coordinator model that can answer status questions and propose assignments without dispatch authority.
+3. Opt-in assignment queue for live interactive sessions, defaulting to human acceptance rather than automatic conversation replacement.
+4. Durable runner attempts for managed workers using start/continue/collect or interruptible join semantics.
+5. Repository integration barriers only after explicit completion/result facts and shared-checkout safety rules exist.
+
+Keep provider credentials and inference out of the switchboard daemon. Preserve the foreground session's model and prompt cache by running the coordinator as a separate SDK/RPC session. A true standalone dashboard launch mode may be an SDK application; an extension command/overlay is sufficient for an initial TUI slice.
+
+## 4. Web search and readable retrieval
 
 ### Problem
 
@@ -163,7 +215,7 @@ A configurable search backend plus text/HTML retrieval. Prefer established extra
 - Network behavior is tested with fixtures; opt-in live checks are distinct from deterministic tests.
 - Missing credentials or unavailable providers fail clearly without silent provider substitution.
 
-## 4. Integrated visual inspection loop
+## 5. Integrated visual inspection loop
 
 ### Problem
 
@@ -203,7 +255,7 @@ A project adapter for explicit read-only captures, using existing project instru
 - Image artifacts can be reopened and tied to the action/run that produced them.
 - Reports distinguish automated visual observations from acceptance that still requires the user in the headset.
 
-## 5. Durable execution receipts
+## 6. Durable execution receipts
 
 ### Problem
 
@@ -238,9 +290,16 @@ A receipt proves only the recorded execution facts to the extent supported by it
 
 Start with managed-job completion metadata and bounded retained logs. Add richer source identity only with clearly stated limitations.
 
+Implemented for new managed jobs: [execution receipts](execution-receipts.md)
+preserve execution facts, raw log hashes, and bounded pre-launch Git identity.
+Receipt files use no-clobber publication; explicit verification reports changed
+or missing artifacts. Tool definitions and cached session-prefix inputs remain
+unchanged; no receipt context injection or historical backfill. Full source
+snapshots and receipts for ordinary shell-tool calls remain out of scope.
+
 Verify that failed, cancelled, timed-out, and successful runs produce distinguishable records; modified source is not represented as a clean commit; artifacts can be checked for integrity; and expired/missing logs are reported rather than silently reconstructed.
 
-## 6. Pi-native selective memory and Meitan continuity
+## 7. Pi-native selective memory and Meitan continuity
 
 Detailed design: [portable, pi-native memory proposal](memory-proposal.md).
 Implemented foundations: [bounded portable store](memory-store.md) and
@@ -250,7 +309,9 @@ unassigned classification/acceptance and confirmed purge. The default migration
 destination is the unassigned review inbox. The [default-off Pi adapter](memory-runtime.md)
 and [bounded indexed recall](memory-index.md) now implement foreground activation,
 host-bound capture and inspectable request packets. The OptMem runtime was removed
-at the user's request. No live migration/activation or indexing worker was run.
+at the user's request. A user-approved local archive migration classified accepted
+originals into the default personal scope; it did not activate native memory in a
+live Pi session. No indexing worker was run.
 
 ### Problem
 
@@ -280,7 +341,7 @@ An optional, explicitly configured tool-free worker produces rebuildable search 
 - Originals and provenance survive export/import without Pi; unresolved external references are reported.
 - Pi reload/branch/compaction/off semantics, legacy rollback and model quality are tested separately from pure store fixtures.
 
-## 7. Reflective originals and explicit return context
+## 8. Reflective originals and explicit return context
 
 User-approved foreground MVP implemented: **reflective original sources** and a
 **small, inspectable continuity attachment**, with append-only fixed-boundary
@@ -342,13 +403,14 @@ requires human evaluation in ordinary use.
 
 ## Open design decisions
 
-- Should managed jobs survive Pi exit, and who owns cleanup after a crash?
 - Which supported platforms can provide robust cancellation and read-only worker enforcement?
 - Should subagents use a Pi-native integration, an existing package, or a thin external worker protocol?
+- Should dispatch ever replace an opted-in interactive session automatically, or should automatic routing be limited to runner-managed workers?
+- Which task/capability declarations are trustworthy enough for deterministic eligibility, and which should remain coordinator-model suggestions?
 - Which web provider and credential model fit the desired privacy/cost tradeoff?
 - What visual capture interface is genuinely reusable across projects, rather than Kouseki-specific?
 - How much source-state capture is sufficient for useful receipts without creating a second artifact/version-control system?
 
 - Which memory profiles/core sources should be enabled, and which explicitly configured worker endpoint may receive which scopes? See the memory proposal for recommended defaults and staged rollout gates.
 
-The next memory gate is human review of an inactive real snapshot, target store, scope mappings, candidate classifications and provider disclosure, followed by explicitly approved native activation. Foreground capture/indexed recall and synthetic lifecycle tests are implemented; the legacy runtime is removed. See the runtime and migration guides. Managed jobs remain an independent execution track. This roadmap itself authorizes no process launches, package installation, device access, personal-data migration, paid model calls, or implementation work.
+The next memory gate is explicit human activation and ordinary-use evaluation of the already reviewed local store, mappings, provider disclosure, and accepted classifications. Foreground capture/indexed recall and synthetic lifecycle tests are implemented; the legacy runtime is removed. See the runtime and migration guides. This roadmap itself authorizes no process launches, package installation, device access, paid model calls, or implementation work.
