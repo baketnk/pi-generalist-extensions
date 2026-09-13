@@ -65,8 +65,10 @@ See [configuration, privacy, limits and validation](docs/history-search.md).
 `/workpad new ID` creates and attaches a durable Markdown task notebook;
 `/workpad` opens its dismissible viewer, `/workpad edit` edits it, `/workpad list`
 selects another, and `/workpad off` detaches. The `workpad` tool offers explicit
-creation/attachment, reads and revision-checked updates. A bounded active page
-is supplied request-locally to the model, without adding conversation messages.
+creation/attachment, reads and revision-checked updates. Revision-labelled snapshots
+are journalled and replayed at fixed conversation boundaries for append-only cache
+reuse. `/workpad size 2|4|8` selects the KiB cap (default 4); `/workpad refresh 10`
+adds optional reminders after estimated context growth (off by default).
 New/forked sessions start detached. Independent of personality and OptMem.
 See [storage, context/privacy, limitations and phase-two scope](docs/workpad.md).
 

@@ -1,5 +1,13 @@
 # Workpad MVP — phase-two handoff
 
+> Historical phase-one handoff below. The user subsequently authorized phase two
+> and prioritized cache preservation. Current delivery uses append-only anchored
+> snapshot journals, configurable 2/4/8 KiB caps (default 4), and optional
+> context-growth reminders (default off). See `docs/workpad.md` for the maintained
+> contract; the old request-local snapshot description below is historical.
+> Targeted-edit WIP remains in the named Git stash documented there. Post-reload
+> provider cache measurement is still pending. Keep a user-disabled workpad off.
+
 ## Session boundary
 
 Phase one is implemented. STOP until the user reloads Pi, attaches this notebook

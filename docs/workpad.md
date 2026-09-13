@@ -1,33 +1,41 @@
-# Workpad — phase-one MVP
+# Workpad
 
 A task notebook for current understanding, evidence pointers, tentative designs
 and unresolved questions. Not a todo list, project backlog, long-term memory,
 source of authority, or hidden reasoning transcript. No scheduler, background
 summarizer, model calls, watchers or automatic attachment.
 
-## Start and inspect
+## Commands
 
 After `/reload`:
 
-- `/workpad new surface-design`: edit a new page, save it and attach it.
+- `/workpad new ID`: edit a new page, save it and attach it.
 - `/workpad`: dismissible read-only snapshot of the attached page.
 - `/workpad edit`: edit through Pi's normal editor dialog.
 - `/workpad list`: select an existing project notebook to attach.
-- `/workpad attach surface-design`: explicitly attach a known notebook.
-- `/workpad off`: detach, retaining files and revision history.
+- `/workpad attach ID`: explicitly attach a known notebook.
+- `/workpad off`: detach, retaining files and historical snapshots.
+- `/workpad size 2`, `size 4`, `size 8`: set the active-page cap in **KiB of UTF-8 bytes**, not tokens. Default **4 KiB**.
+- `/workpad refresh off`: publish only on state changes/compaction (default).
+- `/workpad refresh 10`: also repeat unchanged notes after estimated new conversation tokens reach 10% of the model's context window. Accepts integer percentages 1–100.
+
+Size and refresh settings are session/canonical-cwd scoped, persisted in branch
+entries and restored on reload. New/forked sessions use defaults. Reducing the
+cap below an attached page's size fails without truncation or changing settings.
+Increasing the cap can recover an old oversized attachment. Missing model-window
+information disables periodic reminders, not publication of edits.
 
 The viewer uses configured `tui.select.*` keys for scrolling/pages/cancel.
-Closing it does not detach; reopen to refresh its snapshot. The footer indicates
-which notebook is attached. Editing/attachment commands wait for the agent to
-settle. The custom viewer requires TUI mode; RPC can use the ordinary editor and
-selector dialogs. Non-UI callers use the tool, not slash commands.
+Closing it does not detach; reopen to refresh its snapshot. Commands wait for
+the agent to settle. The custom viewer requires TUI mode; RPC can use ordinary
+editor/selector dialogs. Non-UI callers use the tool.
 
 ## Model tool
 
 `workpad` is independent of personality and OptMem. Examples:
 
 ```json
-{"action":"create","id":"surface-design","content":"# Surface design\n\nStill uncertain about mirror sampling."}
+{"action":"create","id":"surface-design","content":"# Surface design\n\nStill uncertain."}
 {"action":"attach","id":"surface-design"}
 {"action":"read"}
 {"action":"update","expectedRevision":1,"content":"# Surface design\n\nRevised understanding; see source X."}
@@ -36,124 +44,135 @@ selector dialogs. Non-UI callers use the tool, not slash commands.
 {"action":"detach"}
 ```
 
-Create does NOT attach. Reads may specify a different `id`; writes only update
-the attached notebook. Full-page updates require the exact current revision.
-Competing writers get a conflict, never a silent last-writer-wins overwrite.
-Read again and reconcile intentionally. The tool returns the revision and its
-ordinary filesystem path; supporting material can be linked and read with the
-normal file tools. Named supporting-note operations are deferred to phase two.
+Create does NOT attach. Reads may specify another `id`; writes only update the
+attached notebook and require its exact current revision. Competing writers get
+a conflict, never silent last-writer-wins replacement. Read and reconcile again.
+`list` includes the current `settings`. Results include revision and filesystem
+path. Supporting material can be linked and read with normal file tools.
 
-An active page must be nonempty and at most **8192 UTF-8 bytes**, not characters
-or tokens. Oversized writes fail without changing the current revision; the
-extension never trims or summarizes them. If a user edit conflicts or exceeds
-the budget, a recovery editor opens with the unsaved draft for copying. Closing
-that dialog discards the draft; durable draft recovery is phase-two work.
+Writes enforce the selected 2/4/8 KiB cap and reject empty pages. Historical reads
+remain available up to the absolute 8 KiB storage limit, even with a smaller cap.
+An existing over-budget attachment produces an explicit unavailable marker until
+the page is shortened or the cap increased; its content is never silently trimmed.
+A conflicted/oversized user edit opens a recovery editor containing the unsaved
+draft. Closing that dialog discards it; durable draft recovery remains deferred.
 
-## Persistence and context
+## Append-only model context
 
-Storage is under `getAgentDir()/workpads/<sha256(canonical cwd)>/<id>/` (normally
-`~/.pi/agent/workpads/`). Project means the exact realpath of the session cwd,
-not an inferred Git root. Symlink aliases of the same cwd share notebooks;
-different subdirectories have different scopes. IDs are 1–64 lowercase letters,
-digits or hyphens. Listings are capped at 100 notebooks per project; known IDs
-remain directly addressable beyond that limit.
+The model sees stable, revision-labelled snapshots:
 
-Each revision is an immutable, owner-only, UTF-8 Markdown file such as
-`00000001.md`. To restore old content, read that revision and publish its content
-against the latest revision. Do not edit revision files in place. There is no
-pruning/deletion command in the MVP.
+```text
+request 1: [A B W1]             -> C
+request 2: [A B W1 C D]         -> E       (page unchanged)
+request 3: [A B W1 C D E F W2]   -> G       (page edited)
+```
 
-A temporary file is flushed and atomically hard-linked to the next revision
-name. Exclusive publication provides cross-process compare-and-swap without
-stale-lock handling. The directory is flushed best-effort. This requires a
-filesystem supporting hard links and is not a comprehensive power-loss guarantee.
-A crash before publication may leave an ignored `.pending-*` file. Published
-pages are never partial. Root/project/notebook symlinks and revision symlinks are
-rejected, but this is NOT a security boundary against another process with the
-same account: ordinary file tools can still alter the store.
+Earlier snapshots never move or change between compactions. New ones are
+published at the next model request after attachment, edits, notebook switches,
+or changes to availability. Multiple edits before that request coalesce into the
+latest revision. No ordinary request republishes an unchanged page by default.
+Optional reminders retain the revision and explicitly say they are reminders.
+Each current snapshot supersedes earlier snapshots as working notes, not as
+proof or instructions. On detach, a short inactive marker supersedes the active
+state; prior history is retained. Forked sessions do not inherit attachment and
+label any inherited snapshots inactive.
 
-Attachment is a small Pi custom entry, keyed by canonical project and session
-ID. It survives reload/resume/compaction and follows active-branch attachment
-choices. Forks, clones and new sessions have different IDs and start detached,
-even when they inherit the parent's entries. Attachment choices branch; notebook
-content does not: an attached branch always sees the latest shared revision.
-Workers must explicitly attach; an instruction also tells subagents not to attach
-or edit a parent's workpad without permission. This is not a worker ACL.
+### Persistence and positioning
 
-Before every ordinary model request, the `context` hook appends one hidden
-custom message containing the latest page and its revision **after the entire
-conversation, including tool results**. Pi converts it to
-**user-role context**, not system policy. It is labelled as working data, not a
-request, verification or permission. JSON framing distinguishes the page from
-the wrapper but is not a prompt-injection security guarantee. The wrapper and
-JSON escaping add overhead beyond the raw 8 KiB page limit. Supporting notes
-are not included. Missing/corrupt pages produce an explicit unavailable marker,
-not a stale cache or guessed replacement.
+The `context` hook journals each publication with `pi.appendEntry` as a
+`workpad-snapshot-v2` custom entry: immutable snapshot text, state key, fixed
+publication timestamp, compaction epoch, original-message position and a hash
+of the preceding original messages. It reconstructs those snapshots at the
+**same boundaries** on subsequent requests. This is a durable model-context
+projection, not `sendMessage` or repeated writes of ordinary conversation
+messages. It avoids message-queue timing moving a publication from before an
+assistant response to after it. Initial publication follows all current messages,
+including complete tool-result batches. No extra agent turn is triggered.
 
-This is request-local: there is no `sendMessage`, extra model turn or page copy
-appended to session history. Identical revisions have stable injected content.
-Page edits, attachment changes and unavailable markers only change the trailing
-snapshot, not the preceding conversation. Any synthetic copy fed back through
-the hook is removed before the latest snapshot is appended.
+The selected branch owns the journal. Reload/resume replays it without duplicate
+publication. Only workpad projections are stripped if a context pipeline feeds
+one back; unrelated custom messages are preserved. If another component rewrites
+the preceding original messages, unmatched anchors are not guessed or relocated:
+a fresh current snapshot is appended. Such rewrites can themselves break caching.
 
-### Cache behavior
+Compaction starts a new epoch. Old journal entries remain in the session file but
+are not replayed in the compacted model context. The latest attached page (or an
+inactive/unavailable marker) is restored on the first request after compaction.
+Pi's ordinary compactor sees ordinary conversation/tool messages, **not this
+custom-entry projection**; it is not responsible for summarizing notebook history.
+The file-backed current page supplies continuity instead. No extra summarizer runs.
 
-The original MVP prepended the page. In a live `openai-codex/gpt-6-astra`
-session, unchanged pages saw approximately 99.8% cached input, but the first
-requests after two page edits fell to 2.31% and 2.24%: only 4,736 cached tokens
-versus 200,719 and 206,934 uncached tokens. Subsequent unchanged requests
-recovered. This motivated moving the snapshot to the request tail.
+Pi converts snapshots to **user-role working data**, not system policy. Current
+user instructions and canonical project contracts take precedence. JSON framing
+separates page content from the wrapper, but is not a prompt-injection security
+guarantee. Framing/JSON escaping add overhead beyond the page-byte cap. Supporting
+notes are not automatically included.
 
-Tail placement preserves the conversation prefix when the notebook changes;
-it does **not** promise zero cache cost. As conversation messages accumulate,
-they replace the previous trailing snapshot's position, so that snapshot and
-the new suffix may need processing again. The page remains bounded at 8 KiB
-plus framing. Cache expiry, provider thresholds, other extensions, changed
-system/tool definitions and compaction can independently affect reuse. Reloading
-from the old placement can also cause a one-time miss.
+### Cache costs and limits
 
-Regression tests verify the stable prefix after Pi's message conversion, not
-provider cache hits. To verify live after `/reload`, explicitly attach, warm
-with an unchanged-page request, edit the page, then compare the next request's
-`usage.cacheRead` and `usage.input` in session JSONL. Pi's input is uncached;
-the cached-input share is `cacheRead / (input + cacheRead + cacheWrite)`.
-Exclude output tokens. Record model, request IDs and any reload/compaction
-boundaries. Post-fix live cache measurements are still pending; never reattach
-a user-disabled page just to run that check.
+This replaces both MVP prepending and the moving request-tail snapshot. In the
+original live `openai-codex/gpt-6-astra` session, unchanged prepended pages saw
+about 99.8% cached input; two edits dropped to 2.31% and 2.24% (4,736 cached versus
+200,719 and 206,934 uncached tokens). A moving tail protected older conversation
+but unnecessarily broke reuse at the former snapshot position on every new turn.
+The append-only projection instead preserves the entire prior request prefix
+when ordinary messages are appended, whether or not the page changes.
 
-**Off is not amnesia**: earlier tool reads, summaries and discussion may still
-contain old page text. Do not put secrets in a notebook; attaching sends its
-content to the active model/provider, including normal automatic follow-ups.
+The cap bounds **each page**, not cumulative historical snapshots. Edits/reminders
+consume new input and grow the context until normal compaction. Refresh thresholds
+use Pi's message-token estimator on original messages since the last snapshot;
+they exclude snapshot text and are approximate, not provider token accounting.
+There is no timer or model request solely to refresh notes.
 
-## Two-phase delivery
+Compaction, cache expiry, provider thresholds, changed system/tools, migration
+from older placement, and other context-rewriting extensions can still cause
+misses. Tests establish stable converted-message prefixes, not provider cache
+hits. Post-reload live verification remains pending: explicitly attach, warm an
+unchanged request, edit, and compare the following requests' session JSONL usage.
+Pi's cached-input share is `cacheRead / (input + cacheRead + cacheWrite)`; `input`
+is uncached and output is excluded. Record model, request IDs and any reload or
+compaction boundaries. Never reattach a user-disabled page merely to test it.
 
-Phase one provides create/read/update/list/attach/detach, immutable history,
-revision conflicts, basic viewer/editor, explicit session-scoped attachment and
-bounded context injection. Stop here for the user's reload; do not continue
-phase two merely because a notebook lists possible work.
+**Off is not amnesia**: published snapshot text is now also retained in session
+journal entries, in addition to page files, tool reads and discussions. Attaching
+sends it to the active provider. Do not put secrets in a notebook.
 
-After the user reloads and hands it back, use the attached notebook itself to
-record findings and choose a small phase-two slice. Candidates, not commitments:
+## Markdown storage and attachment
 
-- Named supporting notes with read-on-demand tools and safe internal links.
-- Markdown rendering, revision comparison/history picker and context-budget UI.
-- Durable recovery of conflicted/oversized user drafts.
-- Targeted revision-checked text edits rather than full-page replacement.
-- Revisit context placement/cache cost and explicit sharing/project scoping from
-  actual experience; no automatic summarization or stale-evidence claims.
+Storage: `getAgentDir()/workpads/<sha256(canonical cwd)>/<id>/`, normally under
+`~/.pi/agent/workpads/`. Project means exact realpath cwd, not inferred Git root.
+Symlink aliases share scope; different subdirectories do not. IDs are 1–64
+lowercase letters, digits or hyphens. Listings are capped at 100 notebooks; known
+IDs remain directly addressable.
 
-## Validation
+Revisions are immutable owner-only UTF-8 Markdown files (`00000001.md`, etc.).
+Restore old content by reading a revision and publishing against the current
+revision; never edit revision files in place. There is no pruning/deletion tool.
+A flushed temporary file is atomically hard-linked to the next revision name for
+cross-process compare-and-swap; directory flushing is best effort. Hard links are
+required, and this is not a comprehensive power-loss guarantee. Crashes may leave
+ignored `.pending-*` files. Store/notebook/revision symlinks are rejected, but
+ordinary file tools can still alter files: this is not a same-account security
+boundary.
 
-`bun test tests/workpad.test.ts` exercises immutable revisions, UTF-8 limits,
-invalid paths/symlinks, two independent writer processes, lazy startup,
-explicit attachment, cancellation, current request-local context conversion,
-stable conversation prefixes across page edits and growing user/tool turns,
-snapshot deduplication, unavailable/detached states,
-compaction/reload-shaped branch restoration, fork/project isolation, editing
-conflict recovery and narrow/resized terminal rendering. Fixtures use temporary
-storage and a mocked Pi API; no providers or personal notebook stores.
+Attachment uses `workpad-attachment-v1` custom entries keyed by canonical cwd and
+session ID. It survives reload/resume/compaction and follows branch choices;
+notebook content is shared latest revision, not historical branch content.
+New/forked/cloned sessions start detached. Workers must explicitly attach; this
+is a behavioral rule, not a worker ACL.
 
-Run `bun test` and `bun run typecheck` for the full package. A real offline RPC
-loader smoke can establish command/tool registration, not visual TUI behavior
-or an actual post-compaction model turn. Those remain phase-two interactive
-acceptance after reload. No claim of working-note quality follows from unit tests.
+## Validation and deferred polish
+
+`bun test tests/workpad.test.ts` covers immutable writes, UTF-8 limits, independent
+writers, explicit attachment, append-only converted prefixes, duplicate-free
+reload/retries, original tool-pair ordering, branch/fork/compaction behavior,
+inactive/unavailable markers, size settings, periodic reminders, real
+SessionManager journal replay, draft recovery and viewer rendering.
+`bun test` and `bun run typecheck` validate the full package. No personal notebook
+store or provider is used by tests. Live post-compaction inference and actual
+post-fix provider cache rates remain unverified until user reload/acceptance.
+
+Named supporting notes, durable draft recovery, richer rendering/history/diff UI
+and targeted text edits remain separate polish. The earlier targeted-edit WIP is
+parked in the Git stash named `WIP workpad targeted edits paused for cache fix`;
+it is not part of this delivery. No deferred item is authorization to resume work.

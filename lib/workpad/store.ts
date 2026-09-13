@@ -3,15 +3,16 @@ import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirS
 import { join } from "node:path";
 
 export const PAGE_BYTES = 8192;
+export const DEFAULT_PAGE_BYTES = 4096;
 export interface Page { id: string; revision: number; content: string; path: string }
 export interface PadSummary { id: string; revision: number; title: string }
 const validId = (id: string) => {
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(id)) throw new Error("Workpad ID must be 1–64 lowercase letters, digits or hyphens.");
   return id;
 };
-function validateContent(content: string) {
+export function validateContent(content: string, maxBytes = PAGE_BYTES) {
   if (!content.trim()) throw new Error("Workpad page cannot be empty.");
-  if (Buffer.byteLength(content, "utf8") > PAGE_BYTES) throw new Error(`Active page exceeds ${PAGE_BYTES} UTF-8 bytes; shorten it explicitly (no automatic truncation).`);
+  if (Buffer.byteLength(content, "utf8") > maxBytes) throw new Error(`Active page exceeds ${maxBytes} UTF-8 bytes; shorten it explicitly or select a larger cap (no automatic truncation).`);
 }
 function directory(path: string, create: boolean) {
   if (create) mkdirSync(path, { recursive: true, mode: 0o700 });
@@ -26,7 +27,8 @@ function directory(path: string, create: boolean) {
 export class WorkpadStore {
   readonly project: string;
   readonly directory: string;
-  constructor(readonly root: string, cwd: string) {
+  constructor(readonly root: string, cwd: string, readonly maxBytes = DEFAULT_PAGE_BYTES) {
+    if (![2048, 4096, 8192].includes(maxBytes)) throw new Error("Workpad cap must be 2, 4 or 8 KiB.");
     this.project = realpathSync(cwd);
     this.directory = join(root, createHash("sha256").update(this.project).digest("hex"));
   }
@@ -74,7 +76,7 @@ export class WorkpadStore {
     return this.publish(id, expectedRevision, content);
   }
   private publish(id: string, expected: number, content: string): Page {
-    validateContent(content);
+    validateContent(content, this.maxBytes);
     const pad = this.paths(id, expected === 0);
     const current = this.latest(pad);
     if (current !== expected) throw new Error(`Revision conflict: expected ${expected}, found ${current}. Read again before editing.`);
