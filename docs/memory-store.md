@@ -6,16 +6,22 @@ OptMem behavior, personality configuration or workpad attachment changes.
 
 The intended boundary is **workpad inside the active session; memory outside
 it**. This implementation does not promote workpad contents or ingest history.
-It imports no Pi SDK, reads no personal sources, invokes no model, starts no
-worker, and has no default storage location. Tests use disposable synthetic data.
+It imports no Pi SDK, invokes no model, starts no worker, and has no default
+storage location. Tests use disposable synthetic data. Human-operated migration
+now supports an explicitly selected offline OptMem snapshot; see
+[migration and cutover status](memory-migration.md). No live import has been run.
 
 ## Available now
 
-- Explicit project/personal UUID scopes; no implicit global bucket.
+- Explicit project/personal UUID scopes; no implicit global bucket. `unassigned`
+  is a candidate-only review inbox, not an automatically recalled scope.
 - Facts, threads and reflective originals, with caller-declared authorship.
+  Imported summaries are separate `artifact` records that cannot be accepted.
 - Candidate/accepted/retracted states. Acceptance is admission, not verification.
 - Immutable logical revisions, expected-revision checks and operation UUIDs for
-  identical retries. Scope, kind and author identity cannot change in a revision.
+  identical retries. Kind, author and legacy source identity cannot change.
+  The only scope change allowed is unassigned candidate → scoped candidate;
+  acceptance requires a separate explicit revision.
 - Retained source excerpts with byte hashes. **Provenance is caller-declared**;
   no transcript-origin binding, quote entailment or user-author authentication.
 - Scope-first, AND-of-substrings lookup over current titles/bodies, returning
@@ -25,7 +31,10 @@ worker, and has no default storage location. Tests use disposable synthetic data
 - Explicit reads of current or historical revisions, including retracted ones.
 - Versioned, checksummed export, empty-root restore, and same-store merge with
   full validation before atomic publication. Dry-run import is the default.
-- A read-only standalone inspection CLI.
+- A read-only standalone inspection CLI, plus a separate human-operated migration,
+  candidate review/classification/acceptance and confirmed purge CLI.
+- Purge removes a record's revisions and retained sources; minimal ID/operation
+  tombstones prevent old snapshots or retries from resurrecting it.
 
 ## Library example
 
@@ -61,7 +70,8 @@ cannot be merged: restore into an empty root, or await a reviewed migration API.
 `revise(id, expectedRevision, fullNote, reason, operation)` publishes a successor.
 Imported candidates can be explicitly accepted through revision. A retry returns
 the original operation's revision even if later revisions exist; use `read` for
-current state. Retraction hides, but does not delete, originals.
+current state. Retraction hides, but does not delete, originals. `purge` is a
+separate confirmed operation; see the migration guide for scope and limitations.
 
 ## Standalone inspection
 
@@ -84,13 +94,18 @@ This first slice deliberately uses **one atomic `store.json` snapshot**, not the
 proposal's eventual per-record directory/index layout. Revisions inside it are
 immutable by API contract; the containing file is rewritten. There is no index
 to reconcile. The prototype format is explicitly named and versioned; it is not
-a promise that future scalable storage will use this layout.
+a promise that future scalable storage will use this layout. Current snapshot
+schema is version 2; version 1 remains readable and upgrades on explicit writes
+or restore, preserving original revisions. The transfer envelope remains version 1.
+Old readers cannot read v2 snapshots. Reads never rewrite a v1 store.
 
-Limits: 128 total revisions, 1 MiB canonical store, 8 KiB UTF-8 note bodies,
+Limits: 8,192 total revisions, 16 MiB canonical store, 8 KiB UTF-8 note bodies,
 32 KiB complete revisions, up to eight retained sources of 8 KiB each. Bounds
 include JSON escaping where applicable. Hitting a quota refuses writes; no
 originals are pruned. Search returns at most 20 metadata entries, not bodies;
-individual original reads remain bounded by the revision cap.
+individual original reads remain bounded by the revision cap. Tombstones have
+an additional 8,192-operation bound and count toward the same byte cap. This is
+larger migration capacity, not scalable indexed storage or a lookup-latency claim.
 
 Canonical JSON sorts object keys, preserves array order, uses UTF-8 and has no
 trailing newline. SHA-256 covers canonical snapshot bytes and exact UTF-8 source
@@ -131,12 +146,14 @@ Still required before a live memory feature:
 
 - Host-bound source provenance, approved source registration and external-source
   changed/missing states; inference/candidate policy and human-controlled core.
-- Human-confirmed purge, dependency invalidation and explicit export/backup limits.
+- Dependency invalidation when indexes/workers are added. Confirmed purge already
+  covers canonical originals, but cannot erase old exports or external copies.
 - Stable project alias configuration, scoped FTS, recall budgets and inspectable
   context packets.
 - Pi activation/off/branch/compaction contracts and independently loaded entrypoint.
 - Scalable storage/reconciliation and stronger fault-injection/platform coverage.
-- Optional worker/provider controls and reviewed legacy migration, only later.
+- Optional worker/provider controls and a reviewed live migration/cutover. Offline
+  legacy snapshot tooling is implemented separately; activation is not.
 
 This is a **partial first implementation slice**, not completion of the proposal's
 portable-store acceptance gate. No live store, diary import or backend switch is

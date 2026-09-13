@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { canonical, decodeTransfer, encodeTransfer, hash, type Note, type Scope } from "../lib/memory/schema.ts";
+import { canonical, decodeTransfer, encodeTransfer, hash, MAX_REVISIONS, STORE_BYTES, type Note, type Scope } from "../lib/memory/schema.ts";
 import { MemoryStore } from "../lib/memory/store.ts";
 
 const roots: string[] = [];
@@ -113,7 +113,7 @@ describe("portable memory prototype", () => {
   test("quota refusal preserves all originals", () => {
     const s = store(), snapshot = decodeTransfer(Buffer.from(s.export()));
     const now = new Date().toISOString();
-    for (let i = 0; i < 128; i++) snapshot.revisions.push({ ...note(), id: randomUUID(), revision: 1, operation: randomUUID(), createdAt: now, reason: "Fixture" });
+    for (let i = 0; i < MAX_REVISIONS; i++) snapshot.revisions.push({ ...note(), id: randomUUID(), revision: 1, operation: randomUUID(), createdAt: now, reason: "Fixture" });
     s.import(Buffer.from(encodeTransfer(snapshot)), false);
     const before = s.export();
     expect(() => s.note(note(), randomUUID())).toThrow("quota");
@@ -136,10 +136,10 @@ describe("portable memory prototype", () => {
     expect(existsSync(join(path, "missing"))).toBe(false);
     rmSync(target); mkdirSync(target);
     expect(() => s.export()).toThrow("regular file");
-    rmSync(target, { recursive: true }); writeFileSync(target, Buffer.alloc(1024 * 1024 + 1));
+    rmSync(target, { recursive: true }); writeFileSync(target, Buffer.alloc(STORE_BYTES + 1));
     expect(() => s.export()).toThrow("regular file");
     writeFileSync(target, original);
-    expect(() => s.import(Buffer.alloc(1024 * 1024 + 1025), false)).toThrow("limit");
+    expect(() => s.import(Buffer.alloc(STORE_BYTES + 1025), false)).toThrow("limit");
   });
   test("two real processes cannot both publish the same expected revision", async () => {
     const s = store(), row = s.note(note(), randomUUID());
@@ -194,6 +194,19 @@ describe("portable memory prototype", () => {
     const exported = await run("export", s.root);
     expect(exported.stdout.trim()).toBe(s.export());
     expect((await run("validate", transfer, "extra")).exit).toBe(1);
+  });
+  test("version 1 originals remain readable and upgrade only on explicit writes", () => {
+    const s = store(), row = s.note(note(), randomUUID());
+    const old = decodeTransfer(Buffer.from(s.export())); old.version = 1;
+    writeFileSync(join(s.root, "store.json"), canonical(old));
+    expect(s.read(row.id, [project])).toEqual(row);
+    expect(decodeTransfer(Buffer.from(s.export())).version).toBe(1);
+    s.note(note({ title: "Schema upgrade" }), randomUUID());
+    expect(decodeTransfer(Buffer.from(s.export())).version).toBe(2);
+    expect(s.read(row.id, [project])).toEqual(row);
+    const restored = new MemoryStore(root()); restored.import(Buffer.from(encodeTransfer(old)), false);
+    expect(restored.read(row.id, [project])).toEqual(row);
+    expect(decodeTransfer(Buffer.from(restored.export())).version).toBe(2);
   });
   test("canonical serialization is key-order independent, not array-order independent", () => {
     expect(canonical({ z: 1, a: [2, 1] })).toBe(canonical({ a: [2, 1], z: 1 }));

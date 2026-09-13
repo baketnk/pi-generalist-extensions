@@ -1,26 +1,33 @@
 import { createHash } from "node:crypto";
 
-export const STORE_BYTES = 1024 * 1024;
-export const MAX_REVISIONS = 128;
+export const STORE_BYTES = 16 * 1024 * 1024;
+export const MAX_REVISIONS = 8192;
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-export type Scope = `project:${string}` | `personal:${string}`;
+export type Scope = `project:${string}` | `personal:${string}` | "unassigned";
 export interface Source {
   // Caller-declared provenance, not host-verified transcript provenance.
   id: string; author: "user" | "assistant" | "import";
-  timestamp: string; excerpt: string; sha256: string;
+  timestamp?: string; precision?: "day" | "instant" | "unknown";
+  excerpt: string; sha256: string;
+}
+export interface LegacyOrigin {
+  format: "optmem-fixed-v1"; archiveId: string;
+  type: "raw" | "summary"; locator: string; recordHash: string;
 }
 export interface Note {
-  scope: Scope; kind: "fact" | "thread" | "reflection";
+  scope: Scope; kind: "fact" | "thread" | "reflection" | "artifact";
   title: string; body: string; author: "user" | "assistant" | "import";
   status: "candidate" | "accepted" | "retracted";
   threadStatus?: "open" | "dormant" | "resolved" | "dismissed";
   sources: Source[];
+  legacy?: LegacyOrigin;
 }
 export interface Revision extends Note {
   id: string; revision: number; createdAt: string; reason: string;
   operation: string;
 }
-export interface Snapshot { format: "pi-memory-prototype"; version: 1; storeId: string; revisions: Revision[] }
+export interface Purged { id: string; operations: string[] }
+export interface Snapshot { format: "pi-memory-prototype"; version: 1 | 2; storeId: string; revisions: Revision[]; purged?: Purged[] }
 export interface Envelope { format: "pi-memory-transfer"; version: 1; sha256: string; snapshot: Snapshot }
 export const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 /** Sorted object keys, preserved array order, UTF-8 JSON, no trailing newline. */
@@ -48,43 +55,80 @@ function date(value: unknown) {
   if (typeof value !== "string" || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value) throw new Error("Expected ISO timestamp");
 }
 export function scope(value: unknown): asserts value is Scope {
+  if (value === "unassigned") return;
   if (typeof value !== "string" || !/^(project|personal):/.test(value)) throw new Error("Explicit project/personal scope required");
   id(value.slice(value.indexOf(":") + 1));
 }
-const noteKeys = ["scope", "kind", "title", "body", "author", "status", "threadStatus", "sources"];
+export function legacyDate(value: unknown): asserts value is string {
+  if (typeof value !== "string" || value.length !== 10 || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error("Invalid legacy date");
+  date(`${value}T00:00:00.000Z`);
+}
+const noteKeys = ["scope", "kind", "title", "body", "author", "status", "threadStatus", "sources", "legacy"];
 function fields(value: Record<string, unknown>) {
   scope(value.scope); text(value.title, 240); text(value.body, 8192);
-  if (!["fact", "thread", "reflection"].includes(value.kind as string) || !["user", "assistant", "import"].includes(value.author as string) || !["candidate", "accepted", "retracted"].includes(value.status as string)) throw new Error("Invalid note classification");
+  if (!["fact", "thread", "reflection", "artifact"].includes(value.kind as string) || !["user", "assistant", "import"].includes(value.author as string) || !["candidate", "accepted", "retracted"].includes(value.status as string)) throw new Error("Invalid note classification");
+  if ((value.scope === "unassigned" || value.kind === "artifact") && value.status === "accepted") throw new Error("Unassigned notes and legacy artifacts cannot be accepted");
+  if (value.legacy !== undefined) {
+    object(value.legacy, ["format", "archiveId", "type", "locator", "recordHash"]);
+    const origin = value.legacy;
+    id(origin.archiveId);
+    if (origin.format !== "optmem-fixed-v1" || !["raw", "summary"].includes(origin.type as string) ||
+        typeof origin.locator !== "string" || !/^(LOG\.txt#\d+|TREE\/\d+#\d+)$/.test(origin.locator) || origin.locator.length > 80 ||
+        typeof origin.recordHash !== "string" || !/^[a-f0-9]{64}$/.test(origin.recordHash) || origin.recordHash.length !== 64 ||
+        value.author !== "import" || (origin.type === "summary" ? value.kind !== "artifact" : value.kind !== "fact")) throw new Error("Invalid legacy provenance");
+  }
   if (value.kind === "thread" ? !["open", "dormant", "resolved", "dismissed"].includes(value.threadStatus as string) : value.threadStatus !== undefined) throw new Error("Invalid thread status");
   if (!Array.isArray(value.sources) || value.sources.length > 8) throw new Error("At most eight retained sources");
   const ids = new Set();
   for (const source of value.sources) {
-    object(source, ["id", "author", "timestamp", "excerpt", "sha256"]);
-    id(source.id); date(source.timestamp); text(source.excerpt, 8192);
+    object(source, ["id", "author", "timestamp", "precision", "excerpt", "sha256"]);
+    id(source.id); text(source.excerpt, 8192);
+    if (source.precision !== undefined && !["day", "instant", "unknown"].includes(source.precision as string)) throw new Error("Invalid time precision");
+    if (source.timestamp === undefined) {
+      if (source.precision !== "unknown") throw new Error("Missing source time must be explicitly unknown");
+    } else if (source.precision === "day") legacyDate(source.timestamp);
+    else { if (source.precision === "unknown") throw new Error("Unknown source time cannot have a timestamp"); date(source.timestamp); }
     if (!["user", "assistant", "import"].includes(source.author as string) || source.sha256 !== hash(source.excerpt as string) || ids.has(source.id)) throw new Error("Invalid source author, duplicate ID or hash mismatch");
     ids.add(source.id);
   }
+  if (value.legacy !== undefined && !(value.sources as Source[]).some(s => s.sha256 === (value.legacy as unknown as LegacyOrigin).recordHash)) throw new Error("Legacy original bytes must be retained");
   if (Buffer.byteLength(canonical(value)) > 32768) throw new Error("Revision exceeds 32 KiB");
 }
 export function validateNote(value: unknown): asserts value is Note { object(value, noteKeys); fields(value); }
 export function validateSnapshot(value: unknown): asserts value is Snapshot {
-  object(value, ["format", "version", "storeId", "revisions"]);
-  if (value.format !== "pi-memory-prototype" || value.version !== 1) throw new Error("Unsupported store format");
+  object(value, ["format", "version", "storeId", "revisions", "purged"]);
+  if (value.format !== "pi-memory-prototype" || ![1, 2].includes(value.version as number)) throw new Error("Unsupported store format");
   id(value.storeId);
   if (!Array.isArray(value.revisions) || value.revisions.length > MAX_REVISIONS) throw new Error("Revision quota exceeded");
-  const latest = new Map<string, Revision>(), operations = new Set<string>();
+  if (value.version === 1 && value.purged !== undefined) throw new Error("Purge tombstones require schema version 2");
+  const latest = new Map<string, Revision>(), operations = new Set<string>(), purgedIds = new Set<string>();
+  if (value.purged !== undefined) {
+    if (!Array.isArray(value.purged) || value.purged.length > MAX_REVISIONS) throw new Error("Invalid purge tombstones");
+    for (const tombstone of value.purged) {
+      object(tombstone, ["id", "operations"]); id(tombstone.id);
+      if (purgedIds.has(tombstone.id) || !Array.isArray(tombstone.operations) || !tombstone.operations.length || tombstone.operations.length > MAX_REVISIONS) throw new Error("Invalid purge tombstone");
+      purgedIds.add(tombstone.id);
+      for (const operation of tombstone.operations) {
+        id(operation);
+        if (operations.has(operation) || operations.size >= MAX_REVISIONS) throw new Error("Duplicate or excessive purged operations");
+        operations.add(operation);
+      }
+    }
+  }
   for (const row of value.revisions) {
     object(row, [...noteKeys, "id", "revision", "createdAt", "reason", "operation"]); fields(row);
+    if (value.version === 1 && (row.legacy !== undefined || row.scope === "unassigned" || row.kind === "artifact" || (row.sources as Source[]).some(s => s.precision !== undefined || s.timestamp === undefined))) throw new Error("Migration fields require schema version 2");
     id(row.id); id(row.operation); date(row.createdAt); text(row.reason, 1024);
     const previous = latest.get(row.id);
-    if (row.revision !== (previous?.revision ?? 0) + 1 || operations.has(row.operation)) throw new Error("Invalid revision chain or duplicate operation");
-    if (previous && (row.scope !== previous.scope || row.kind !== previous.kind || row.author !== previous.author)) throw new Error("Record identity cannot change");
+    if (purgedIds.has(row.id) || row.revision !== (previous?.revision ?? 0) + 1 || operations.has(row.operation)) throw new Error("Invalid revision chain or duplicate operation");
+    const assigning = previous?.scope === "unassigned" && previous.status === "candidate" && row.status === "candidate" && row.scope !== "unassigned";
+    if (previous && ((!assigning && row.scope !== previous.scope) || row.kind !== previous.kind || row.author !== previous.author || canonical(row.legacy ?? null) !== canonical(previous.legacy ?? null))) throw new Error("Record identity cannot change");
     latest.set(row.id, row as unknown as Revision); operations.add(row.operation);
   }
-  if (Buffer.byteLength(canonical(value)) > STORE_BYTES) throw new Error("Store exceeds 1 MiB; no originals were pruned");
+  if (Buffer.byteLength(canonical(value)) > STORE_BYTES) throw new Error("Store exceeds 16 MiB; no originals were pruned");
 }
 export function decodeSnapshot(bytes: Buffer): Snapshot {
-  if (bytes.length > STORE_BYTES) throw new Error("Store exceeds 1 MiB");
+  if (bytes.length > STORE_BYTES) throw new Error("Store exceeds 16 MiB");
   const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   validateSnapshot(value); return value;
 }
