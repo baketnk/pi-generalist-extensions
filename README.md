@@ -60,6 +60,16 @@ Additional roots (such as Kouseki's separate Pi-agent histories) are configured
 explicitly. Requires Node 24+ with `node:sqlite`/FTS5; no new runtime dependency.
 See [configuration, privacy, limits and validation](docs/history-search.md).
 
+## Task workpad (MVP)
+
+`/workpad new ID` creates and attaches a durable Markdown task notebook;
+`/workpad` opens its dismissible viewer, `/workpad edit` edits it, `/workpad list`
+selects another, and `/workpad off` detaches. The `workpad` tool offers explicit
+creation/attachment, reads and revision-checked updates. A bounded active page
+is supplied request-locally to the model, without adding conversation messages.
+New/forked sessions start detached. Independent of personality and OptMem.
+See [storage, context/privacy, limitations and phase-two scope](docs/workpad.md).
+
 ## Development
 
 ```sh
