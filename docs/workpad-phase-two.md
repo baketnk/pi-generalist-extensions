@@ -14,7 +14,7 @@ Phase one is implemented. STOP until the user reloads Pi, attaches this notebook
 and explicitly hands the task back. This page is working context, not independent
 authorization to continue. No automatic worker, watcher or model turn is running.
 
-Repository: `/home/baketnk/workspace/pi-generalist-extensions`
+Repository: this repository (`pi-generalist-extensions`)
 Contract and MVP limitations: `docs/workpad.md`
 Implementation: `extensions/workpad.ts`, `lib/workpad/store.ts`, `lib/workpad/view.ts`
 Tests: `tests/workpad.test.ts`

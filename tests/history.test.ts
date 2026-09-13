@@ -248,5 +248,5 @@ test("extension registration performs no indexing and exposes only two read-sour
   const tools: string[] = [], commands: string[] = [];
   history({ registerTool: (t: any) => tools.push(t.name), registerCommand: (n: string) => commands.push(n) } as any);
   expect(tools).toEqual(["history_search", "history_read"]);
-  expect(commands).toEqual(["history-index"]);
+  expect(commands).toEqual(["history", "history-index"]);
 });

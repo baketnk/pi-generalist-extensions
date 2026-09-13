@@ -1,4 +1,5 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { BorderedLoader, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { HistoryPanel } from "../lib/history/panel.ts";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { HistoryIndex, bounded } from "../lib/history/index.ts";
@@ -52,6 +53,44 @@ export default function history(pi: ExtensionAPI) {
     }),
     async execute(_id, params, signal) {
       return run(async index => ({ content: [{ type: "text", text: bounded(await index.read(params.session, params, signal)) }], details: {} }), signal);
+    },
+  });
+  pi.registerCommand("history", {
+    description: "Search local history in an ephemeral table: /history [query]",
+    handler: async (args, ctx) => {
+      if (ctx.mode !== "tui") {
+        if (ctx.hasUI) ctx.ui.notify("/history requires the terminal UI; use the standalone history CLI instead.", "warning");
+        return;
+      }
+      if (args.trim().length > 512) { ctx.ui.notify("History query must be at most 512 characters.", "warning"); return; }
+      try {
+        type Result = ReturnType<HistoryIndex["search"]> & { refresh: Awaited<ReturnType<HistoryIndex["refresh"]>> };
+        const result = await ctx.ui.custom<Result | null>((tui, theme, _keys, done) => {
+          const loader = new BorderedLoader(tui, theme, "Refreshing and searching local history…");
+          let finished = false;
+          const finish = (value: Result | null) => {
+            if (!finished) { finished = true; done(value); }
+          };
+          loader.onAbort = () => finish(null);
+          async function search() {
+            return run(async index => {
+              const refresh = await index.refresh(loader.signal);
+              loader.signal.throwIfAborted();
+              return { ...index.search({ query: args.trim(), limit: 20 }), refresh };
+            }, loader.signal);
+          }
+          search().then(finish).catch(error => {
+            if (!finished) { ctx.ui.notify(String(error), "error"); finish(null); }
+          });
+          return loader;
+        }, { overlay: true });
+        if (!result) return;
+        await ctx.ui.custom<void>((tui, theme, keys, done) => new HistoryPanel(
+          args.trim(), result.results,
+          `${result.milliseconds}ms search; ${result.refresh.failed} failed sources, ${result.refresh.warningCount} warnings`,
+          theme, keys, () => tui.terminal.rows, () => tui.requestRender(), () => done(),
+        ), { overlay: true, overlayOptions: { width: "95%", maxHeight: "80%" } });
+      } catch (error) { ctx.ui.notify(String(error), "error"); }
     },
   });
   pi.registerCommand("history-index", {

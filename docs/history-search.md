@@ -12,6 +12,23 @@ Two on-demand Pi tools, independent of Meitan and OptMem:
   walks backward without skipping messages. `includeTools` reads tool evidence
   from original sources; tool payloads are never in the search index.
 
+## User-facing search
+
+After `/reload`, use `/history Parakeet benchmark` (or `/history` for recent
+messages). It runs the same local search as the agent tool, with changed-source
+refresh and a 20-result limit, in a dismissible terminal overlay. The table shows
+date, harness, role, project and excerpt; narrow terminals use a compact layout.
+Arrow keys select, Page Up/Down page through matches, Enter opens the selected
+excerpt with source citation, and Escape returns/closes. Within an excerpt,
+arrows/Page Up/Down scroll. Configured `tui.select.*` bindings are respected.
+Refresh is cancellable with Escape. Quotes retain the tool's phrase semantics.
+
+The command does not call a model, add conversation messages/custom entries,
+change sessions, or paste results into the editor. Closing removes the overlay;
+run the command again to reopen. It is TUI-only, not an RPC custom UI. The agent
+tools and standalone CLI remain available separately. Results are bounded search
+excerpts, not full transcripts; use `history_read`/the CLI for more context.
+
 `/history-index` refreshes; `/history-index status` shows counts and sizes. Node
 24+ provides `node:sqlite`/FTS5, with no added runtime dependency. Standalone CLI:
 
