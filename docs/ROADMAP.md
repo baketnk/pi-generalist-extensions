@@ -18,8 +18,9 @@ The environment already provides file reads and edits, shell execution, and para
 - **Managed background jobs and execution receipts:** session-bound Linux jobs with bounded output and immutable execution records.
 - **Optional `apply_patch`:** preflighted Codex-style local patch application, separate from built-in edit.
 - **Switchboard dashboard and human task offers:** model-free roster/mail inspection and explicitly accepted foreground task delivery.
+- **Host-provided Code Mode (local Pi fork):** opt-in trusted nested-tool composition through a disposable Node worker; it is not packaged here or sandboxed.
 
-These provide useful remembering, execution, and organizing primitives. Native memory no longer depends on foreground wake/nap compression: ordinary retrieval is local and the optional housekeeping reviewer is separately configured and human-triggered. The remaining gaps center on generic nested-tool orchestration, delegation, external information retrieval, visual observation, and the proposed orchestration follow-ons.
+These provide useful remembering, execution, and organizing primitives. Native memory no longer depends on foreground wake/nap compression: ordinary retrieval is local and the optional housekeeping reviewer is separately configured and human-triggered. The remaining gaps center on making nested-tool orchestration portable and safely supportable, delegation, external information retrieval, visual observation, and the proposed orchestration follow-ons.
 
 A missing first-class interface does not imply that the underlying capability is impossible. Shell commands, local programs, and project-specific scripts can often substitute. The question is where repeated improvisation creates enough lifecycle, safety, or context-management cost to justify a dedicated interface.
 
@@ -28,7 +29,7 @@ A missing first-class interface does not imply that the underlying capability is
 | Capability | Suggested priority | Main benefit |
 | --- | --- | --- |
 | Managed background jobs | Implemented Linux-first MVP | Reliable finite local work without ad hoc process management |
-| Sandboxed tool orchestration / Code Mode | Core investigation candidate | Fewer Astra round-trips through bounded nested-tool composition |
+| Trusted Code Mode / nested-tool orchestration | Local Pi-fork MVP; portability and A/B evaluation pending | Fewer model round-trips through bounded nested-tool composition |
 | Pi-native selective memory | Foreground MVP; live review pending | Relevant continuity without foreground compression; portable originals |
 | Bounded subagents | Next candidate | Isolated investigations and independent reviews |
 | Switchboard dashboard and dispatcher | Dashboard + interactive offers implemented; coordinator/runner proposed | Human-approved routing now; managed runs and integration remain future work |
@@ -88,20 +89,15 @@ Decide whether jobs survive harness exit before implementing persistence. A stal
 - Large output remains bounded in context and on disk; cursors do not silently lose or duplicate output.
 - Completion is reported once, with no automatic restart or follow-on execution.
 
-## 1a. Sandboxed tool orchestration / Code Mode
+## 1a. Trusted Code Mode / nested-tool orchestration
 
-Detailed comparison and recommendation: [Astra harness efficiency and Codex-style `exec`](harness-efficiency-and-exec.md).
+Detailed comparison and evaluation notes: [Astra harness efficiency and Codex-style `exec`](harness-efficiency-and-exec.md).
 
-Recent Codex sessions show that its useful `exec` feature is not merely a shell runner. A model response supplies JavaScript to a fresh restricted V8 isolate; that script can invoke normal tools through a broker, run independent calls concurrently, branch or loop over results, and return only selected output. In the inspected corgi session, 86 outer `exec` cells contained 261 nested tool calls. This can compress work that would otherwise require several Astra responses.
+**Implemented locally in the Pi nested-tools fork, not in this package or stock Pi.** The active local launcher loads an opt-in `exec` extension backed by Pi-core `ctx.tools.invoke` dispatch. Each call runs JavaScript in a fresh disposable Node worker and can compose explicitly allowed active tools through the normal schema, hook, activation, mutation-queue, cancellation, result, and event pipeline. It supports bounded loops, branching, and up to four concurrent child calls; nested traces are persisted as custom entries and the provider receives only selected output plus automatic failure/unfinished-call summaries. Current bounds include 32 child calls, 64 KiB source, 50 KiB printed output, 4 MiB aggregate nested results, and a 60-second default deadline (up to 300 seconds).
 
-Pi provides parallel sibling calls and a blocking shell; this package additionally provides managed background jobs, multi-edit tooling, and optional `apply_patch`. A second shell wrapper would add little. The missing capability is safe, generic **nested-tool composition** with normal schema validation, hooks, permissions, mutation queues, cancellation, result recording, and hard execution/output limits.
+This is deliberately **trusted local execution, not a security sandbox**. The worker uses a reduced environment and process boundary, but it retains ordinary Node/file/network/process capabilities; direct host I/O bypasses brokered validation and tracing. Only the configured allowlist is brokered. Stateful extensions require individual compatibility review before nested use; blocking questions, session changes, and background-job orchestration remain direct. Linux Node/tsx is the supported development path; standalone Bun binaries and Windows process-tree teardown are not validated.
 
-Do not implement this with extension-process `eval`, `node:vm`, ambient Node/Bun APIs, or private copies of every tool. The current extension API exposes tool metadata and activation but no supported generic nested-call dispatcher. The recommended path begins with a Pi-core invocation boundary, then a capability-free isolated runtime, followed by an opt-in Astra A/B trial. It must demonstrate fewer model cycles without correctness, cache-prefix, or hidden-failure regressions before becoming a default tool.
-
-Evaluation support implemented: [read-only session metrics](session-metrics.md)
-separates persisted assistant responses, outer calls, and paired nested traces.
-It reports whole-file/all-branch counts and unknown outcomes, not a live cache-hit
-measurement or proof of saved model turns.
+The fork's extension and core dispatcher have tests for nested validation/traces, cancellation, child-result handling, and stable provider-context projection across ordinary turns, retries, and unchanged reloads. The local [session metrics](session-metrics.md) utility reports persisted outer/nested trace counts. Neither is a live cache-hit measurement or proof of saved model turns. A controlled Astra A/B trial, portable upstream API/package integration, an actual restricted runtime, and compatibility review for more extensions remain future work.
 
 ## 2. Bounded subagents
 
