@@ -101,6 +101,10 @@ The fork's extension and core dispatcher have tests for nested validation/traces
 
 ## 2. Bounded subagents
 
+Detailed next-slice design: [forked/fresh subagents](subagents-proposal.md), including
+agent-chosen parallelism, safe branch snapshots, owned execution, and model-free
+peeking. Design only; no launcher or worker execution is implemented by that plan.
+
 ### Problem
 
 Parallel tool calls can overlap independent reads, but they do not provide separate reasoning contexts. A substantial source investigation or review still fills the main conversation with exploratory details.
