@@ -58,7 +58,7 @@ export class MemoryStore {
     return decodeSnapshot(boundedFile(join(this.root, "store.json"), STORE_BYTES));
   }
   private publish(value: Snapshot) {
-    value.version = 2; // old v1 stores upgrade on explicit writes, never on reads
+    value.version = 3; // old stores upgrade on explicit writes, never on reads
     validateSnapshot(value);
     invalidateRecallIndex(this.root); // includes purge: derived copies cannot outlive originals
     const target = join(this.root, "store.json");
@@ -76,7 +76,7 @@ export class MemoryStore {
     return this.locked(() => {
       try { return this.load().storeId; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-      const snapshot: Snapshot = { format: "pi-memory-prototype", version: 2, storeId: randomUUID(), revisions: [] };
+      const snapshot: Snapshot = { format: "pi-memory-prototype", version: 3, storeId: randomUUID(), revisions: [] };
       this.publish(snapshot); return snapshot.storeId;
     });
   }
@@ -158,9 +158,9 @@ export class MemoryStore {
       try { snapshot = this.load(); }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        snapshot = { format: "pi-memory-prototype", version: 2, storeId: randomUUID(), revisions: [] };
+        snapshot = { format: "pi-memory-prototype", version: 3, storeId: randomUUID(), revisions: [] };
       }
-      snapshot.version = 2;
+      snapshot.version = 3;
       const operations = new Map(snapshot.revisions.map(r => [r.operation, r]));
       const seen = new Set<string>();
       let added = 0, existing = 0, skippedPurged = 0;
@@ -227,7 +227,7 @@ export class MemoryStore {
         if (old && canonical(old) !== canonical(row)) throw new Error("Import revision conflict");
         if (!old) { local.revisions.push(row); added++; }
       }
-      local.version = 2;
+      local.version = 3;
       validateSnapshot(local);
       if (!dryRun) this.publish(local);
       return { storeId: local.storeId, added, dryRun };

@@ -14,6 +14,9 @@ export interface LegacyOrigin {
   format: "optmem-fixed-v1"; archiveId: string;
   type: "raw" | "summary"; locator: string; recordHash: string;
 }
+export interface CaptureOrigin {
+  harness: "pi"; sessionId: string; entryId: string; toolCallId: string; provider: string; model: string;
+}
 export interface Note {
   scope: Scope; kind: "fact" | "thread" | "reflection" | "artifact";
   title: string; body: string; author: "user" | "assistant" | "import";
@@ -21,13 +24,15 @@ export interface Note {
   threadStatus?: "open" | "dormant" | "resolved" | "dismissed";
   sources: Source[];
   legacy?: LegacyOrigin;
+  capture?: CaptureOrigin;
+  claim?: "inference" | "source-backed" | "assistant-authored";
 }
 export interface Revision extends Note {
   id: string; revision: number; createdAt: string; reason: string;
   operation: string;
 }
 export interface Purged { id: string; operations: string[] }
-export interface Snapshot { format: "pi-memory-prototype"; version: 1 | 2; storeId: string; revisions: Revision[]; purged?: Purged[] }
+export interface Snapshot { format: "pi-memory-prototype"; version: 1 | 2 | 3; storeId: string; revisions: Revision[]; purged?: Purged[] }
 export interface Envelope { format: "pi-memory-transfer"; version: 1; sha256: string; snapshot: Snapshot }
 export const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 /** Sorted object keys, preserved array order, UTF-8 JSON, no trailing newline. */
@@ -63,7 +68,7 @@ export function legacyDate(value: unknown): asserts value is string {
   if (typeof value !== "string" || value.length !== 10 || !/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new Error("Invalid legacy date");
   date(`${value}T00:00:00.000Z`);
 }
-const noteKeys = ["scope", "kind", "title", "body", "author", "status", "threadStatus", "sources", "legacy"];
+const noteKeys = ["scope", "kind", "title", "body", "author", "status", "threadStatus", "sources", "legacy", "capture", "claim"];
 function fields(value: Record<string, unknown>) {
   scope(value.scope); text(value.title, 240); text(value.body, 8192);
   if (!["fact", "thread", "reflection", "artifact"].includes(value.kind as string) || !["user", "assistant", "import"].includes(value.author as string) || !["candidate", "accepted", "retracted"].includes(value.status as string)) throw new Error("Invalid note classification");
@@ -77,8 +82,15 @@ function fields(value: Record<string, unknown>) {
         typeof origin.recordHash !== "string" || !/^[a-f0-9]{64}$/.test(origin.recordHash) || origin.recordHash.length !== 64 ||
         value.author !== "import" || (origin.type === "summary" ? value.kind !== "artifact" : value.kind !== "fact")) throw new Error("Invalid legacy provenance");
   }
+  if (value.capture !== undefined) {
+    object(value.capture, ["harness", "sessionId", "entryId", "toolCallId", "provider", "model"]);
+    if (value.capture.harness !== "pi" || value.author !== "assistant") throw new Error("Invalid native capture origin");
+    id(value.capture.sessionId); text(value.capture.entryId, 128); text(value.capture.toolCallId, 256); text(value.capture.provider, 100); text(value.capture.model, 200);
+  }
+  if (value.claim !== undefined && !["inference", "source-backed", "assistant-authored"].includes(value.claim as string)) throw new Error("Invalid claim label");
   if (value.kind === "thread" ? !["open", "dormant", "resolved", "dismissed"].includes(value.threadStatus as string) : value.threadStatus !== undefined) throw new Error("Invalid thread status");
   if (!Array.isArray(value.sources) || value.sources.length > 8) throw new Error("At most eight retained sources");
+  if (value.claim === "source-backed" && !value.sources.length) throw new Error("Source-backed notes require a retained source");
   const ids = new Set();
   for (const source of value.sources) {
     object(source, ["id", "author", "timestamp", "precision", "excerpt", "sha256"]);
@@ -97,7 +109,7 @@ function fields(value: Record<string, unknown>) {
 export function validateNote(value: unknown): asserts value is Note { object(value, noteKeys); fields(value); }
 export function validateSnapshot(value: unknown): asserts value is Snapshot {
   object(value, ["format", "version", "storeId", "revisions", "purged"]);
-  if (value.format !== "pi-memory-prototype" || ![1, 2].includes(value.version as number)) throw new Error("Unsupported store format");
+  if (value.format !== "pi-memory-prototype" || ![1, 2, 3].includes(value.version as number)) throw new Error("Unsupported store format");
   id(value.storeId);
   if (!Array.isArray(value.revisions) || value.revisions.length > MAX_REVISIONS) throw new Error("Revision quota exceeded");
   if (value.version === 1 && value.purged !== undefined) throw new Error("Purge tombstones require schema version 2");
@@ -118,6 +130,7 @@ export function validateSnapshot(value: unknown): asserts value is Snapshot {
   for (const row of value.revisions) {
     object(row, [...noteKeys, "id", "revision", "createdAt", "reason", "operation"]); fields(row);
     if (value.version === 1 && (row.legacy !== undefined || row.scope === "unassigned" || row.kind === "artifact" || (row.sources as Source[]).some(s => s.precision !== undefined || s.timestamp === undefined))) throw new Error("Migration fields require schema version 2");
+    if (value.version !== 3 && (row.capture !== undefined || row.claim !== undefined)) throw new Error("Native capture fields require schema version 3");
     id(row.id); id(row.operation); date(row.createdAt); text(row.reason, 1024);
     const previous = latest.get(row.id);
     if (purgedIds.has(row.id) || row.revision !== (previous?.revision ?? 0) + 1 || operations.has(row.operation)) throw new Error("Invalid revision chain or duplicate operation");

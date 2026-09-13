@@ -97,9 +97,18 @@ to reconcile for canonical records. A [disposable recall index](memory-index.md)
 now supports explicit FTS maintenance and bounded lookup; it is not canonical.
 The prototype format is explicitly named and versioned; it is not
 a promise that future scalable storage will use this layout. Current snapshot
-schema is version 2; version 1 remains readable and upgrades on explicit writes
-or restore, preserving original revisions. The transfer envelope remains version 1.
-Old readers cannot read v2 snapshots. Reads never rewrite a v1 store.
+schema is version 3; versions 1 and 2 remain readable and upgrade on explicit writes
+or restore, preserving original revisions. Version 3 adds optional Pi capture
+metadata and claim labels. These are validated data fields, not proof of host
+binding: the foreground adapter still needs to obtain them from the actual host.
+The transfer envelope remains version 1. Old readers cannot read newer snapshot
+versions. Reads never rewrite an older store.
+
+`lib/memory/config.ts` and `policy.ts` provide tested adapter foundations, not an
+activated extension: digest-gated private configuration writes, exact canonical
+project aliases, explicitly named personal profiles, scoped pins, and session/cwd
+bound branch policy. Forks do not inherit native activation. No command, startup
+hook or backend switch currently invokes these helpers.
 
 Limits: 8,192 total revisions, 16 MiB canonical store, 8 KiB UTF-8 note bodies,
 32 KiB complete revisions, up to eight retained sources of 8 KiB each. Bounds
