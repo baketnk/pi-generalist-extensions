@@ -1,8 +1,12 @@
 # Proposal: focused managed background jobs
 
-Status: **proposed, not implemented**. This document is not approval to install a package, launch jobs, change extension loading, or build the feature.
+Status: **Linux-first, session-bound MVP implemented**. This document still describes proposed follow-on behavior; the implementation does not install packages, start jobs at load time, or provide persistent/supervisor-backed work.
 
 Related: [tooling roadmap](ROADMAP.md).
+
+Implemented receipt behavior and its cache boundary are documented separately in
+[execution receipts](execution-receipts.md). The broader lifecycle/retention design
+below remains a proposal where it exceeds that runtime contract.
 
 ## Recommendation
 
@@ -11,6 +15,22 @@ Build an independently loadable `bg-tasks` extension in this repository. Keep or
 Start with finite local commands and a clearly declared **session-runtime lifetime**. Persist records, not a promise that running processes survive reload. A supervisor-backed lifetime can follow if surviving reload/exit is a requirement; it should be a deliberate architecture decision, not accidental shell detachment.
 
 The proposed first version is useful for running a build or test suite while the assistant investigates another file. It is not a service manager, scheduler, or subagent framework.
+
+## Design-only MVP resolution
+
+This section records the current design direction, not permission to implement or launch a process.
+
+| Topic | MVP decision | Consequence |
+| --- | --- | --- |
+| Lifetime | Session-runtime bound | `/reload`, session replacement, and graceful Pi exit stop owned jobs; crash recovery reports `unknown`, never adopts a PID. |
+| Platform | Linux only | Other platforms refuse `start` until a separately tested backend exists. |
+| Work type | Finite, noninteractive shell commands | stdin is closed; services, watches, PTYs, scheduling, and remote execution are excluded. |
+| Ownership | Runtime incarnation + live child/process-group handle | A historical session entry or numeric PID alone cannot authorize status mutation or cancellation. |
+| Persistence | Durable metadata/logs, not durable running work | Records make completed/incomplete execution inspectable but never promise survival after reload. |
+| Delivery | Bounded custom completion message, default `followUp` | Completion is execution data, never a user message or authorization for subsequent work. |
+| Package exposure | Bundled by default (explicitly approved) | The package manifest loads `extensions/bg-tasks.ts` alongside the existing aggregator. A future independent-entrypoint migration can make resource filtering finer-grained. |
+
+Implementation began with a pure-contract Linux process-safety layer before the Pi-facing `bg_tasks` tool and `/bg-tasks` command. The current real-process fixtures cover launch, nonzero exits, bounded cursor reads, unknown-ID refusal, and session-shutdown cancellation. The broader acceptance matrix below remains required before claiming platform portability or persistent-job support.
 
 ## Goals and non-goals
 
@@ -167,11 +187,13 @@ Retention only touches finished artifacts owned by the relevant session during b
 
 ## Completion delivery and user control
 
-Proposed `notify` values:
+Implemented per-job `notify` values:
 
-- `followUp` (default): one bounded extension-authored completion message, eligible to trigger a follow-up turn in the still-live compatible session.
-- `nextTurn`: surface to the model at the next user prompt, without waking it.
-- `off`: no model message; retain status and human UI indication.
+- `always` (default): one bounded extension-authored completion message, eligible to trigger a follow-up turn in the still-live compatible session.
+- `errors`: suppress a clean natural exit with code zero; still notify for nonzero exits, signals, launch failures, timeouts/cancellation, or incomplete cleanup.
+- `off`: never send a completion message or wake the model; retain the durable result, status, and output for explicit inspection.
+
+This lets an agent launch a broad confidence suite with `notify: "errors"` after its targeted checks: success stays quiet, while a failure still returns attention to the session. Use `notify: "off"` when the result is purely informational and should never continue the conversation automatically.
 
 Use `pi.sendMessage` with an identifiable custom type, not `sendUserMessage`. Completion content is untrusted execution data, not a new user request. Default content contains ID, label, exit facts, stop/cleanup state, and log reference; omit raw command-output instructions and large tails.
 
