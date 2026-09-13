@@ -121,8 +121,10 @@ store is not a content filter or secure-erasure system.
 Purge cannot erase original OptMem data, other records that quote the same text,
 prior exports, already-published session excerpts, orphan temporary files from
 interrupted writes, filesystem snapshots or backups. No secure disk-erasure claim.
-There are no native derived indexes or worker payloads yet; future implementations
-must explicitly add their invalidation/deletion before reusing this contract.
+Canonical mutations now remove the [disposable native recall index](memory-index.md)
+and its owned interrupted build files under the store lock. Already-open handles
+may retain unlinked bytes until closed; generation checks reject stale lookups.
+No worker payloads exist yet; future workers need equivalent invalidation.
 
 ## Supported bounds and failure behavior
 

@@ -93,7 +93,9 @@ are also library-only for now.
 This first slice deliberately uses **one atomic `store.json` snapshot**, not the
 proposal's eventual per-record directory/index layout. Revisions inside it are
 immutable by API contract; the containing file is rewritten. There is no index
-to reconcile. The prototype format is explicitly named and versioned; it is not
+to reconcile for canonical records. A [disposable recall index](memory-index.md)
+now supports explicit FTS maintenance and bounded lookup; it is not canonical.
+The prototype format is explicitly named and versioned; it is not
 a promise that future scalable storage will use this layout. Current snapshot
 schema is version 2; version 1 remains readable and upgrades on explicit writes
 or restore, preserving original revisions. The transfer envelope remains version 1.
@@ -146,8 +148,9 @@ Still required before a live memory feature:
 
 - Host-bound source provenance, approved source registration and external-source
   changed/missing states; inference/candidate policy and human-controlled core.
-- Dependency invalidation when indexes/workers are added. Confirmed purge already
-  covers canonical originals, but cannot erase old exports or external copies.
+- Worker dependency invalidation if workers are added. Canonical mutations now
+  remove the disposable recall index and its owned interrupted build files;
+  confirmed purge still cannot erase old exports or external copies.
 - Stable project alias configuration, scoped FTS, recall budgets and inspectable
   context packets.
 - Pi activation/off/branch/compaction contracts and independently loaded entrypoint.

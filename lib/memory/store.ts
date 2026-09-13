@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
+import { invalidateRecallIndex } from "./derived.ts";
 import { canonical, decodeSnapshot, decodeTransfer, encodeTransfer, id, scope, STORE_BYTES, MAX_REVISIONS, validateNote, validateSnapshot, type Note, type Revision, type Scope, type Snapshot } from "./schema.ts";
 
 function directory(path: string) {
@@ -28,7 +29,22 @@ function syncDirectory(path: string) {
   const fd = openSync(path, constants.O_RDONLY);
   try { fsyncSync(fd); } finally { closeSync(fd); }
 }
-/** Experimental bounded local store; no Pi API, provider, default home or timers. */
+export function withStoreLock<T>(root: string, action: () => T): T {
+  checkRoot(root);
+  const lock = join(root, ".writer-lock");
+  try { mkdirSync(lock, { mode: 0o700 }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Store busy or interrupted writer; lock is never automatically stolen");
+    throw error;
+  }
+  try {
+    const result = action();
+    // Retried operations also flush a rename whose previous acknowledgement failed.
+    syncDirectory(root);
+    return result;
+  } finally { rmdirSync(lock); }
+}
+/** Bounded local store; no Pi API, provider, default home or timers. */
 export class MemoryStore {
   readonly root: string;
   constructor(root: string) {
@@ -36,22 +52,7 @@ export class MemoryStore {
     this.root = resolve(root);
     checkRoot(this.root); // caller creates the private directory explicitly
   }
-  private locked<T>(action: () => T): T {
-    checkRoot(this.root);
-    const lock = join(this.root, ".writer-lock");
-    try { mkdirSync(lock, { mode: 0o700 }); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error("Store busy or interrupted writer; lock is never automatically stolen");
-      throw error;
-    }
-    try {
-      const result = action();
-      // Also sync identical retries: the first attempt may have renamed successfully
-      // but failed its directory flush before returning an acknowledgement.
-      syncDirectory(this.root);
-      return result;
-    } finally { rmdirSync(lock); }
-  }
+  private locked<T>(action: () => T): T { return withStoreLock(this.root, action); }
   private load(): Snapshot {
     checkRoot(this.root);
     return decodeSnapshot(boundedFile(join(this.root, "store.json"), STORE_BYTES));
@@ -59,6 +60,7 @@ export class MemoryStore {
   private publish(value: Snapshot) {
     value.version = 2; // old v1 stores upgrade on explicit writes, never on reads
     validateSnapshot(value);
+    invalidateRecallIndex(this.root); // includes purge: derived copies cannot outlive originals
     const target = join(this.root, "store.json");
     // Refuse replacing symlinks, including dangling ones.
     try { if (!lstatSync(target).isFile() || lstatSync(target).isSymbolicLink()) throw new Error("Invalid store file"); }
