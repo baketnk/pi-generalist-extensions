@@ -37,7 +37,9 @@ export function hasLaunchOverrides(argv: string[]) {
   return false;
 }
 
-type Toggles = Record<"meitan" | "memory", ReturnType<typeof registerToggle>>;
+type Toggles = Record<"meitan" | "memory", ReturnType<typeof registerToggle>> & {
+  memory: ReturnType<typeof registerToggle> & { prefersCompanion?: () => boolean };
+};
 
 export function registerSessionSetup(pi: ExtensionAPI, toggles: Toggles,
   options: { argv?: string[]; historyPath?: string } = {}) {
@@ -125,8 +127,14 @@ export function registerSessionSetup(pi: ExtensionAPI, toggles: Toggles,
     busy = true;
     try {
       pi.appendEntry(marker, { offered: true });
-      const selected = await ctx.ui.select("1/2 · Personality / memory", personalities.map(p => p.label));
-      const personality = personalities.find(p => p.label === selected);
+      let choices = personalities;
+      try {
+        if (toggles.memory.prefersCompanion?.()) choices = [
+          { ...personalities[3], label: `Preferred — ${personalities[3].label}` }, ...personalities.slice(0, 3),
+        ];
+      } catch { ctx.ui.notify("Memory preference unavailable; no automatic activation. Showing standard choices.", "warning"); }
+      const selected = await ctx.ui.select("1/2 · Personality / memory", choices.map(p => p.label));
+      const personality = choices.find(p => p.label === selected);
       if (!personality) return; // Cancel leaves everything unchanged; no second question.
       toggles.meitan.set(personality.meitan, ctx);
       try { toggles.memory.set(personality.memory, ctx); }

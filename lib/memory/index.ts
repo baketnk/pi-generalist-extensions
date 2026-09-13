@@ -119,17 +119,27 @@ export class RecallIndex {
       rows.forEach(r => decode(r, "human pin"));
     }
     const terms = queryTerms(query);
+    const matched: { json: string }[] = [];
     if (options.threads) {
-      const rows = this.db.prepare(`SELECT json FROM records WHERE scope IN (${scopeSql}) AND json_extract(json,'$.kind')='thread' AND json_extract(json,'$.threadStatus')='open' ORDER BY date DESC,id LIMIT ?`).all(...scopes, limit) as { json: string }[];
-      rows.forEach(r => decode(r, "lexical match"));
+      for (const selectedScope of scopes) {
+        matched.push(...this.db.prepare(`SELECT json FROM records WHERE scope=? AND json_extract(json,'$.kind')='thread' AND json_extract(json,'$.threadStatus')='open' ORDER BY date DESC,id LIMIT ?`).all(selectedScope, limit) as { json: string }[]);
+      }
     } else if (terms.length) {
       const match = terms.map(t => `"${t}"`).join(options.automatic ? " OR " : " AND ");
       // Score only matching rows inside the approved scopes; no global-corpus BM25.
       const score = terms.map(() => "(instr(lower(records.title),?)>0)+(instr(lower(records.body),?)>0)").join("+");
-      const rows = this.db.prepare(`SELECT records.json FROM records JOIN search ON records.rowid=search.rowid WHERE records.scope IN (${scopeSql}) AND search MATCH ? ORDER BY (${score}) DESC, records.date DESC, records.id LIMIT ?`).all(...scopes, match, ...terms.flatMap(t => [t, t]), limit) as { json: string }[];
-      rows.forEach(r => { const item = JSON.parse(r.json); if (!found.has(item.id)) decode(r, "lexical match"); });
+      for (const selectedScope of scopes) {
+        matched.push(...this.db.prepare(`SELECT records.json FROM records JOIN search ON records.rowid=search.rowid WHERE records.scope=? AND search MATCH ? ORDER BY (${score}) DESC, records.date DESC, records.id LIMIT ?`).all(selectedScope, match, ...terms.flatMap(t => [t, t]), limit) as { json: string }[]);
+      }
     }
+    // Rank project matches first, reserving one candidate for personal continuity
+    // when both match (unless the caller explicitly requests just one result).
+    const project = matched.filter(r => (JSON.parse(r.json).scope as string).startsWith("project:"));
+    const personal = matched.filter(r => (JSON.parse(r.json).scope as string).startsWith("personal:"));
+    const projectCount = Math.min(project.length, limit - (personal.length && limit > 1 ? 1 : 0));
+    const selected = [...project.slice(0, projectCount), ...personal.slice(0, limit - projectCount)];
+    selected.forEach(r => { const item = JSON.parse(r.json); if (!found.has(item.id)) decode(r, "lexical match"); });
     this.assertFresh();
-    return { items: [...found.values()], milliseconds: Math.round((performance.now() - start) * 100) / 100 };
+    return { items: [...found.values()].sort((a, b) => Number(a.scope.startsWith("personal:")) - Number(b.scope.startsWith("personal:"))), milliseconds: Math.round((performance.now() - start) * 100) / 100 };
   }
 }

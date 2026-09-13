@@ -100,3 +100,25 @@ test("read-only lookup does not rewrite store/index and returns measured local t
   expect(f.store.export()).toBe(before); expect(readFileSync(join(f.root, INDEX_FILE))).toEqual(indexBytes);
   expect(decodeTransfer(Buffer.from(before)).revisions).toHaveLength(50);
 });
+
+test("project ranking retains a personal candidate and budget opportunity without semantic merging", () => {
+  const f = fixture();
+  for (let i = 0; i < 12; i++) f.store.note(note(project, `Fixture cache project ${i}: ${"x".repeat(900)}`), randomUUID());
+  const p = f.store.note(note(personal, "Fixture cache personal preference"), randomUUID());
+  rebuildRecallIndex(f.root, f.storeId); const index = new RecallIndex(f.root, f.storeId);
+  try {
+    const result = index.search("cache", [personal, project]); // caller order does not confer precedence
+    expect(result.items).toHaveLength(10);
+    expect(result.items.slice(0, 9).every(i => i.scope === project)).toBe(true);
+    expect(result.items[9].id).toBe(p.id);
+    const packet = makePacket(index.generation, result.items, 4096);
+    expect(packet.items[0].scope).toBe(project); expect(packet.items.some(i => i.id === p.id)).toBe(true);
+    expect(packet.notice).toContain("not semantic conflict detection");
+    expect(Buffer.byteLength(packetText(packet))).toBeLessThanOrEqual(4096);
+    expect(index.search("cache", [project, personal], { limit: 1 }).items[0].scope).toBe(project);
+    expect(index.search("cache", [personal], { limit: 1 }).items[0].id).toBe(p.id);
+    const pinned = index.search("cache", [project, personal], { pins: [p.id] });
+    expect(pinned.items[0].scope).toBe(project);
+    expect(pinned.items.find(i => i.id === p.id)?.reason).toBe("human pin");
+  } finally { index.close(); }
+});

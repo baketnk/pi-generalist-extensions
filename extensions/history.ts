@@ -4,6 +4,7 @@ import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { HistoryIndex, bounded } from "../lib/history/index.ts";
 import { loadConfig } from "../lib/history/config.ts";
+import { formatOutput } from "../lib/output.ts";
 
 /** On-demand only: no watcher, startup I/O, auto-prompt, or nested model calls. */
 export default function history(pi: ExtensionAPI) {
@@ -33,12 +34,13 @@ export default function history(pi: ExtensionAPI) {
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
       refresh: Type.Optional(Type.Boolean()),
     }),
-    async execute(_id, params, signal, onUpdate) {
+    async execute(_id, params, signal, onUpdate, ctx) {
       return run(async index => {
         onUpdate?.({ content: [{ type: "text", text: params.refresh === false ? "Searching local history…" : "Refreshing changed history sources…" }], details: {} });
         const refresh = params.refresh === false ? undefined : await index.refresh(signal);
         signal?.throwIfAborted();
-        return { content: [{ type: "text", text: bounded({ ...index.search(params), refresh }) }], details: {} };
+        const text = bounded({ ...index.search(params), refresh });
+        return { content: [{ type: "text", text: formatOutput(JSON.parse(text), ctx) }], details: {} };
       }, signal);
     },
   });
@@ -51,8 +53,11 @@ export default function history(pi: ExtensionAPI) {
       offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
       includeTools: Type.Optional(Type.Boolean()),
     }),
-    async execute(_id, params, signal) {
-      return run(async index => ({ content: [{ type: "text", text: bounded(await index.read(params.session, params, signal)) }], details: {} }), signal);
+    async execute(_id, params, signal, _update, ctx) {
+      return run(async index => {
+        const text = bounded(await index.read(params.session, params, signal));
+        return { content: [{ type: "text", text: formatOutput(JSON.parse(text), ctx) }], details: {} };
+      }, signal);
     },
   });
   pi.registerCommand("history", {
@@ -103,7 +108,7 @@ export default function history(pi: ExtensionAPI) {
       await ctx.waitForIdle();
       try {
         const result = await run(index => args.trim() === "status" ? index.stats() : index.refresh());
-        if (ctx.hasUI) ctx.ui.notify(JSON.stringify(result), "info");
+        if (ctx.hasUI) ctx.ui.notify(formatOutput(result, ctx), "info");
       } catch (error) { if (ctx.hasUI) ctx.ui.notify(String(error), "error"); }
     },
   });

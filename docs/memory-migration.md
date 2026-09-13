@@ -1,10 +1,24 @@
 # OptMem migration: offline import and review
 
-Status: **implemented and fixture-tested offline tooling; no real-data cutover**.
+Status: **implemented and fixture-tested offline tooling; user-approved local
+archive originals approved into default personal memory; no session activation**.
 The [native foreground runtime](memory-runtime.md) is also implemented, default off.
 The agreed initial destination is the **unassigned review inbox**, not automatic
 personal/global recall. At the user's request the OptMem runtime integration was
-removed; original OptMem files remain untouched for a separately reviewed migration.
+removed; original OptMem files remain untouched for rollback. The local staged
+import preserved 513 originals and 511 summary artifacts. Export validation,
+source hashes and idempotent retry were checked; private paths/identities and
+reports remain outside the repository.
+
+Following explicit user approval of the archive as legitimate personal memory,
+all 1,024 records were classified into the default personal scope. The 513 originals
+were separately accepted; 511 summaries remain candidate artifacts, excluded from
+recall. Every original revision, body and source/provenance field was preserved.
+The resulting 2,561-revision export validates, and the rebuilt index contains 513
+accepted originals. The existing project mapping was retained; personal lookup and
+project-only exclusion were checked without a model call. A private before/after
+export, approval plan with stable operation IDs, and report support inspection
+and safe retries. This local approval is not a blanket auto-accept rule for future imports.
 
 ## Implemented
 
@@ -125,7 +139,9 @@ interrupted writes, filesystem snapshots or backups. No secure disk-erasure clai
 Canonical mutations now remove the [disposable native recall index](memory-index.md)
 and its owned interrupted build files under the store lock. Already-open handles
 may retain unlinked bytes until closed; generation checks reject stale lookups.
-No worker payloads exist yet; future workers need equivalent invalidation.
+The optional read-only housekeeping reviewer retains no persistent payload/report;
+it rechecks selected originals before displaying results. Already-sent provider
+requests cannot be recalled.
 
 ## Supported bounds and failure behavior
 
@@ -178,6 +194,8 @@ and personal UUID mappings and provider disclosure, then activate native memory.
 Keep the old files and validate rollback/export. Manual TUI/RPC usability and
 real-data recall quality are not established by the synthetic tests.
 
-A separate indexing model can follow; it is **not required** to escape OptMem's
-foreground wake/nap loop. No migration, personality activation, provider consent,
+An optional [separate housekeeping reviewer](memory-runtime.md#optional-housekeeping-model)
+now supports explicit model selection and human-triggered suggestions, without
+changing originals or the local lexical index. It is **not required** to escape
+OptMem's foreground wake/nap loop. No migration, personality activation, provider consent,
 or backend switch is implied by installing or pushing this code.

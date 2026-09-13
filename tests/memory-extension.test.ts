@@ -43,7 +43,7 @@ function harness(existing?: ReturnType<typeof fixture>, sm?: SessionManager) {
     if (options.bind !== false) manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: callId, name: "memory", arguments: args }],
       provider: "fixture-provider", model: "fixture-model", api: "openai-completions", stopReason: "toolUse", timestamp: Date.now(),
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
-    return JSON.parse((await tools.memory.execute(callId, args, options.signal, undefined, ctx)).content[0].text);
+    return (await tools.memory.execute(callId, args, options.signal, undefined, ctx)).details.result;
   };
   const command = (args: string) => commands.memory.handler(args, ctx);
   return { ...f, manager, ctx, pi, controller, emit, user, call, command, inputs, notifications, confirms: () => confirms };
@@ -170,7 +170,7 @@ test("human acceptance/pinning and model budget stay explicit; no automatic remi
   h.ctx.model.contextWindow = 2048;
   await h.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" }); expect((await h.emit("context", projection())).messages).toHaveLength(1);
   await h.emit("agent_end", { messages: [] }); // no hook, no extra provider turn
-  expect(readMemoryPolicy(h.ctx).profile).toBe("project");
+  expect(readMemoryPolicy(h.ctx).profile).toBe("default");
   unlinkSync(join(h.root, INDEX_FILE)); await h.command("reindex");
 });
 
@@ -203,4 +203,142 @@ test("two native runtimes share the writer queue but retain independent host pro
   expect(a.id).not.toBe(b.id);
   expect(first.store.read(a.id, [first.project]).capture?.sessionId).toBe(first.manager.getSessionId());
   expect(first.store.read(b.id, [first.project]).capture?.sessionId).toBe(second.manager.getSessionId());
+});
+
+function housekeepingHarness() {
+  const h = harness(); h.ctx.mode = "rpc";
+  const settings = { enabled: true, provider: "fixture-small", model: "small/model" };
+  const c = readMemoryConfig(h.path); saveMemoryConfig(h.path, { ...c.value!, housekeeping: settings }, c.digest);
+  const calls: any[] = [], reports: string[] = [];
+  h.ctx.modelRegistry = {
+    find: () => ({ provider: settings.provider, id: settings.model, maxTokens: 4096, contextWindow: 32000 }),
+    getAvailable: () => [{ provider: settings.provider, id: settings.model }],
+    complete: async (...args: any[]) => { calls.push(args); return { stopReason: "stop", content: [{ type: "text", text: "Review suggestion" }], usage: { totalTokens: 10 } }; },
+  };
+  h.ctx.ui.editor = async (_title: string, text: string) => { reports.push(text); return "Ignored editor changes"; };
+  return { ...h, calls, reports, settings };
+}
+test("housekeeping is explicitly confirmed, read-only, separate, and not projected to the agent", async () => {
+  const h = housekeepingHarness(); await h.emit("session_start");
+  const row = h.store.note({ ...note("unassigned"), status: "candidate" }, randomUUID()), before = h.store.export();
+  await h.command(`housekeep ${row.id}`);
+  expect(h.confirms()).toBe(1); expect(h.calls).toHaveLength(1); expect(h.reports).toEqual(["Review suggestion"]);
+  expect(h.store.export()).toBe(before); expect(h.controller()).toBe(false);
+  const audit = h.manager.getBranch().filter(e => e.type === "custom" && e.customType === "generalist:memory:housekeeping-run-v1");
+  expect(audit).toHaveLength(1); expect(JSON.stringify(audit)).not.toContain("Review suggestion");
+  expect((await h.emit("context", projection())).messages).toHaveLength(1);
+  const foreign = h.store.note(note(h.other), randomUUID());
+  await expect(h.command(`housekeep ${foreign.id}`)).rejects.toThrow("allowed scopes");
+  const personal = h.store.note(note(h.personal), randomUUID());
+  await expect(h.command(`housekeep ${personal.id}`)).rejects.toThrow("allowed scopes");
+  expect(h.calls).toHaveLength(1);
+});
+test("housekeeping confirmation decline or selection mutation prevents provider disclosure", async () => {
+  const h = housekeepingHarness(); const row = h.store.note(note(h.project), randomUUID());
+  h.ctx.ui.confirm = async () => false;
+  await h.command(`housekeep ${row.id}`); expect(h.calls).toHaveLength(0);
+  h.ctx.ui.confirm = async () => { h.store.revise(row.id, 1, note(h.project, "Changed"), "Correction", randomUUID()); return true; };
+  await expect(h.command(`housekeep ${row.id}`)).rejects.toThrow("changed"); expect(h.calls).toHaveLength(0);
+});
+test("off, tree and shutdown cancel workers; stale responses never publish reports", async () => {
+  for (const stop of ["off", "session_tree", "session_shutdown", "mutation", "config"]) {
+    const h = housekeepingHarness(); await h.emit("session_start"); const row = h.store.note(note(h.project), randomUUID());
+    let release!: (value: any) => void, entered!: () => void;
+    const ready = new Promise<void>(resolve => entered = resolve);
+    h.ctx.modelRegistry.complete = async () => { entered(); return new Promise(resolve => release = resolve); };
+    const pending = h.command(`housekeep ${row.id}`).then(() => "success", (error: unknown) => String(error)); await ready;
+    await expect(h.command(`housekeep ${row.id}`)).rejects.toThrow("already running");
+    if (stop === "off") await h.command("off");
+    else if (stop === "mutation") h.store.revise(row.id, 1, note(h.project, "Changed"), "Correction", randomUUID());
+    else if (stop === "config") { const c = readMemoryConfig(h.path); saveMemoryConfig(h.path, { ...c.value!, housekeeping: { ...h.settings, enabled: false } }, c.digest); }
+    else await h.emit(stop);
+    release({ stopReason: "stop", content: [{ type: "text", text: "Stale report" }], usage: {} });
+    expect(await pending).not.toBe("success"); expect(h.reports).toHaveLength(0);
+  }
+});
+test("housekeeping settings persist exact model, disable recall, and survive same-store configure", async () => {
+  const h = housekeepingHarness(); await h.emit("session_start"); await h.command("on");
+  const choices = ["Choose model and enable manual reviews", "fixture-small/small/model"];
+  h.ctx.ui.select = async () => choices.shift();
+  await h.controller.configureHousekeeping(h.ctx);
+  expect(h.controller()).toBe(false); expect(readMemoryConfig(h.path).value?.housekeeping).toEqual(h.settings);
+  h.inputs.push(h.root, h.project.slice(8), ""); await h.command("configure");
+  expect(readMemoryConfig(h.path).value?.housekeeping).toEqual(h.settings);
+  h.ctx.ui.select = async () => "Disable"; await h.command("housekeeping");
+  expect(readMemoryConfig(h.path).value?.housekeeping?.enabled).toBe(false);
+  await expect(h.command(`housekeep ${randomUUID()}`)).rejects.toThrow("Enable a separate model");
+});
+
+function defaultPersonalHarness() {
+  const h = harness(), c = readMemoryConfig(h.path);
+  saveMemoryConfig(h.path, { ...c.value!, defaultPersonalId: h.personal.slice(9) }, c.digest);
+  return h;
+}
+test("default personal recall works without a project, and project-only remains an explicit exclusion", async () => {
+  const h = defaultPersonalHarness(); h.ctx.cwd = fixture().root;
+  const personal = h.store.note(note(h.personal, "Personal fixture cache"), randomUUID());
+  h.store.note(note(h.project, "Other directory fixture cache"), randomUUID());
+  await h.emit("session_start"); expect(h.controller()).toBe(false);
+  await h.command("on"); h.user();
+  const start = await h.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" });
+  expect(start.systemPrompt).toContain(h.personal); expect(start.systemPrompt).not.toContain(h.project);
+  const packet = (await h.emit("context", projection())).messages.find((m: any) => m.customType === PACKET_TYPE);
+  expect(packet.content).toContain("Personal fixture cache"); expect(packet.content).not.toContain("Other directory");
+  expect((await h.call({ action: "read", id: personal.id })).scope).toBe(h.personal);
+  await h.command("off"); await h.command("profile project");
+  await expect(h.command("on")).rejects.toThrow("No configured memory scope");
+  await h.command("profile default"); await h.command("on"); expect(h.controller()).toBe(true);
+});
+test("mapped project and default personal notes coexist; explicit project-only survives reload", async () => {
+  const h = defaultPersonalHarness();
+  const project = h.store.note(note(h.project, "Fixture uses tabs"), randomUUID());
+  const personal = h.store.note(note(h.personal, "Fixture preference: spaces"), randomUUID());
+  await h.emit("session_start"); await h.command("on"); h.user();
+  const start = await h.emit("before_agent_start", { prompt: "Fixture", systemPrompt: "base" });
+  expect(start.systemPrompt).toContain("project-specific exceptions take precedence");
+  expect(start.systemPrompt).toContain(h.project); expect(start.systemPrompt).toContain(h.personal);
+  const result = await h.call({ action: "recall", query: "Fixture" });
+  expect(result.items.map((r: any) => r.id)).toEqual([project.id, personal.id]);
+  await h.command("profile project");
+  expect((await h.call({ action: "recall", query: "Fixture" })).items.map((r: any) => r.id)).toEqual([project.id]);
+  await h.emit("session_shutdown"); const restored = harness(h, h.manager); await restored.emit("session_start");
+  expect(restored.controller()).toBe(true); expect(readMemoryPolicy(restored.ctx).profile).toBe("project");
+  await expect(restored.call({ action: "read", id: personal.id })).rejects.toThrow("allowed scopes");
+});
+test("personal setting is confirmed, cancellation-safe, persistent, and never grants activation", async () => {
+  const h = harness(); await h.emit("session_start"); await h.command("on");
+  h.ctx.ui.select = async () => "Use/create default personal profile";
+  h.inputs.push(""); h.ctx.ui.confirm = async () => false;
+  const before = readMemoryConfig(h.path).digest;
+  await h.controller.configurePersonal(h.ctx); expect(readMemoryConfig(h.path).digest).toBe(before);
+  h.inputs.push(""); h.ctx.ui.confirm = async () => true;
+  await h.command("personal"); const config = readMemoryConfig(h.path).value!;
+  expect(config.personalIds).toContain(config.defaultPersonalId!); expect(h.controller()).toBe(false);
+  expect(readMemoryPolicy(h.ctx).profile).toBe("default");
+  h.ctx.ui.select = async () => "Project-only default"; await h.command("personal");
+  expect(readMemoryConfig(h.path).value?.defaultPersonalId).toBeUndefined();
+  expect(readMemoryConfig(h.path).value?.personalIds).toEqual(config.personalIds); // never deletes data/profile identities
+});
+test("changing default profile suspends old grants; new/fork sessions still start off", async () => {
+  const h = defaultPersonalHarness(); await h.emit("session_start"); await h.command("on");
+  const c = readMemoryConfig(h.path), next = { ...c.value! }; delete next.defaultPersonalId; saveMemoryConfig(h.path, next, c.digest);
+  await h.emit("before_agent_start", { prompt: "fixture", systemPrompt: "base" }); expect(h.controller()).toBe(false);
+  await expect(h.call({ action: "recall", query: "fixture" })).rejects.toThrow("configuration changed");
+  const forkManager = SessionManager.inMemory(h.root);
+  for (const e of h.manager.getBranch()) if (e.type === "custom") forkManager.appendCustomEntry(e.customType, e.data);
+  const fork = harness(h, forkManager); await fork.emit("session_start"); expect(fork.controller()).toBe(false);
+});
+test("pairing preference alone never enables memory; personal-only configure needs no project UUID", async () => {
+  const h = harness(); await h.emit("session_start");
+  h.ctx.ui.select = async () => "Yes"; await h.controller.configurePairing(h.ctx);
+  expect(h.controller.prefersCompanion()).toBe(true); expect(h.controller()).toBe(false);
+  h.inputs.push(h.root, "", "new"); await h.command("configure");
+  expect(readMemoryConfig(h.path).value?.projects).toEqual(h.config.projects);
+  expect(readMemoryConfig(h.path).value?.defaultPersonalId).toBeDefined();
+  expect(readMemoryConfig(h.path).value?.preferMeitanMemory).toBe(true);
+  const newStore = fixture(); h.inputs.push(newStore.root, "", "new"); await h.command("configure");
+  const c = readMemoryConfig(h.path).value!;
+  expect(c.projects).toEqual([]); expect(c.personalIds).toEqual([c.defaultPersonalId!]);
+  expect(c.preferMeitanMemory).toBeUndefined(); expect(h.controller()).toBe(false);
+  h.controller.enableDefault(h.ctx); expect(h.controller()).toBe(true);
 });

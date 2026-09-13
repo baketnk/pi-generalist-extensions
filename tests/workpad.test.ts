@@ -25,7 +25,7 @@ function harness(f: ReturnType<typeof fixture>, entries: any[] = [], manager?: S
     ui: { setStatus() {}, notify: (text: string) => notices.push(text), editor: async () => undefined, select: async () => undefined },
   };
   workpad(pi, () => f.root);
-  const call = async (params: any, signal?: AbortSignal) => JSON.parse((await tools.workpad.execute("id", params, signal, undefined, ctx)).content[0].text);
+  const call = async (params: any, signal?: AbortSignal) => (await tools.workpad.execute("id", params, signal, undefined, ctx)).details.result;
   const request = (messages: any[] = []) => events.context!({ messages }, ctx).messages as any[];
   const command = (args: string) => commands.workpad.handler(args, ctx);
   return { events, tools, commands, entries, notices, ctx, call, request, command };
@@ -309,6 +309,60 @@ test("legacy oversized attachments fail explicitly, remain readable, and recover
     await h.command("size 8");
     expect(h.request().at(-1).content).toContain("revision 1");
   } finally { f.clean(); }
+});
+
+test("viewer opens while busy without mutations and reopens at the latest revision", async () => {
+  const f = fixture();
+  try {
+    const h = harness(f);
+    f.store.create("task", "# Original");
+    await h.call({ action: "attach", id: "task" });
+    const entries = structuredClone(h.entries);
+    let waits = 0;
+    h.ctx.waitForIdle = () => { waits++; return new Promise(() => {}); };
+    const theme = { fg: (_color: string, text: string) => text };
+    const keys = { getKeys: () => [] };
+    const views: WorkpadView[] = [];
+    h.ctx.ui.custom = async (factory: Function, options: any) => {
+      expect(options.overlay).toBe(true);
+      views.push(factory({ terminal: { rows: 24 }, requestRender() {} }, theme, keys, () => {}));
+    };
+    const first = h.command("");
+    expect(views).toHaveLength(1); // Must open before any idle promise resolves.
+    await first;
+    expect(views[0]!.render(120).join("\n")).toContain("# Original");
+    await h.call({ action: "update", expectedRevision: 1, content: "# Updated" });
+    expect(views[0]!.render(120).join("\n")).toContain("# Original");
+    await h.command("");
+    expect(views[1]!.render(120).join("\n")).toContain("# Updated");
+    expect(waits).toBe(0);
+    expect(h.entries).toEqual(entries);
+    expect(h.notices).toEqual([]);
+  } finally { f.clean(); }
+});
+
+test("mutating commands, including the list picker, still wait for idle", async () => {
+  for (const args of ["new draft", "attach task", "list", "edit", "off", "size 2", "refresh 25"]) {
+    const f = fixture();
+    try {
+      const h = harness(f);
+      f.store.create("task", "# Original");
+      await h.call({ action: "attach", id: "task" });
+      const entries = structuredClone(h.entries);
+      let release!: () => void, waits = 0, prompts = 0;
+      const idle = new Promise<void>(resolve => { release = resolve; });
+      h.ctx.waitForIdle = () => { waits++; return idle; };
+      h.ctx.ui.editor = h.ctx.ui.select = async () => { prompts++; return undefined; };
+      const pending = h.command(args);
+      expect(waits).toBe(1);
+      expect(prompts).toBe(0);
+      expect(h.entries).toEqual(entries);
+      expect(h.notices).toEqual([]);
+      release();
+      await pending;
+      expect(h.notices.some(n => n.includes("Error"))).toBe(false);
+    } finally { f.clean(); }
+  }
 });
 
 test("commands cancel safely, recover conflict drafts, and viewer fits narrow terminals", async () => {

@@ -6,6 +6,7 @@ import { Type } from "typebox";
 import { DEFAULT_PAGE_BYTES, PAGE_BYTES, validateContent, WorkpadStore } from "../lib/workpad/store.ts";
 import { digest, snapshotContext, SNAPSHOT, type Snapshot } from "../lib/workpad/context.ts";
 import { plain, WorkpadView } from "../lib/workpad/view.ts";
+import { formatOutput } from "../lib/output.ts";
 
 export const ATTACHMENT = "workpad-attachment-v1";
 export const CONTEXT = SNAPSHOT;
@@ -109,7 +110,7 @@ export default function workpad(pi: ExtensionAPI, root = () => join(getAgentDir(
           result = s.update(id, params.expectedRevision, requireContent()); break;
         }
       }
-      return { content: [{ type: "text", text: JSON.stringify(result) }], details: {} };
+      return { content: [{ type: "text", text: formatOutput(result, ctx) }], details: { result } };
     },
   });
   pi.registerCommand("workpad", {
@@ -122,8 +123,9 @@ export default function workpad(pi: ExtensionAPI, root = () => join(getAgentDir(
         ctx.ui.notify("Usage: /workpad [new ID|attach ID|list|edit|off|size 2/4/8|refresh off/PERCENT]", "warning"); return;
       }
       if (!action && ctx.mode !== "tui") { ctx.ui.notify("The workpad viewer requires TUI mode. Use the tool to read in other modes.", "warning"); return; }
-      // Avoid replacing active context midway through a user-requested edit/attach.
-      await ctx.waitForIdle();
+      // Viewing is a read-only snapshot and can open while the agent works.
+      // All subcommands can mutate state (including list's attachment picker).
+      if (action) await ctx.waitForIdle();
       try {
         const s = store(ctx);
         if (action === "size" || action === "refresh") {

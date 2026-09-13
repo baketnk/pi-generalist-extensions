@@ -21,7 +21,10 @@ explicitly at their execution boundary.
 
 Queries use bounded Unicode word tokens, not executable FTS syntax. Common
 stopwords are excluded. Manual searches AND the tokens; automatic selection ORs
-them and ranks scope-filtered hits by matching title/body terms then date/ID.
+them and ranks hits within each scope by matching title/body terms then date/ID.
+Project matches are selected before personal matches, reserving one personal hit
+when both scopes match and the limit is greater than one. Project-only lookups
+never fetch personal hits. This ordering is not semantic conflict detection.
 No global-corpus ranking or network query expansion is used. Pin IDs are resolved
 inside the same selected scopes. An older explicitly pinned preference can remain
 available without matching today's query. Empty/stopword-only queries select no
@@ -32,6 +35,10 @@ complete JSON packet at 8 KiB, with framing headroom, at most 2 KiB of human pin
 and 1 KiB of pinned open threads inside that allowance. Oversized pins report
 `pinOverflow`, not silent truncation. Dates, authorship, record/source hashes,
 selection reasons and a historical-data notice travel with the selected body.
+For mixed scopes, one small personal item (serialized size <= one quarter of the
+packet budget) gets an early budget opportunity after the first project item.
+Final display is project-first. Existing pin/byte limits still apply, so both scopes
+are not guaranteed to fit; originals are never merged or rewritten.
 Byte caps are not token guarantees; the Pi adapter must additionally respect the
 active model's context allowance. Other extensions/history still consume context.
 
@@ -48,7 +55,9 @@ Already-open read handles in another process can temporarily retain unlinked
 bytes, but generation checks prevent knowingly returning those as fresh memory.
 Already sent packets, prior exports and external filesystem backups cannot be
 recalled or securely erased. The index is not an encryption or process sandbox.
-There are no worker payloads yet; adding them requires equivalent invalidation.
+The manual housekeeping reviewer retains no persistent payload/report. It checks
+selected records/configuration before showing results; already-sent requests and
+already-displayed text cannot be recalled.
 
 ## Validation
 

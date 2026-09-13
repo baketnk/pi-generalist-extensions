@@ -9,8 +9,9 @@ already-running processes do not update themselves.
 
 Requires Pi 0.85.1 and Node 24+ with `node:sqlite`/FTS5. It also works as a standalone
 `pi -e /absolute/path/extensions/memory.ts` resource; do not load it twice alongside
-the package. No network/model call, timer, worker, automatic save reminder,
-compression pass or shutdown note is created by this extension.
+the package. Ordinary recall/capture creates no extra model calls, automatic save reminders,
+compression passes or shutdown notes. A separately configured, human-triggered
+[housekeeping reviewer](#optional-housekeeping-model) can make one bounded model call.
 
 ## First use — human approval
 
@@ -20,24 +21,31 @@ compression pass or shutdown note is created by this extension.
    Alternatively stage an approved inactive archive with the
    [offline importer](memory-migration.md). Never point native memory at the old
    OptMem directory.
-2. In TUI/RPC, `/memory configure` asks for that initialized directory, a project
-   UUID (blank generates one), and an optional personal-profile UUID. It shows
-   the complete mapping for confirmation and **leaves memory off**. Use an
-   existing classification UUID when connecting migrated records.
+2. In TUI/RPC, `/memory configure` asks for that initialized directory, an optional
+   project UUID (`new` generates one; blank preserves an existing mapping or none),
+   and a default personal UUID (`new` generates one; blank keeps the existing default
+   or leaves it off). It shows the mapping and provider-disclosure warning for
+   confirmation and **leaves memory off**. Use existing classification UUIDs when
+   connecting migrated records. A personal-only setup needs no project mapping.
 3. `/memory on` shows the store and selected scopes before enabling. The startup
    picker/settings controller can also enable an already configured store through
    an explicit human selection. Activation rebuilds the disposable index once;
    failure leaves the prior activation decision unchanged.
-4. Project-only recall is the default. `/memory profile continuity UUID` explicitly
-   adds that configured personal profile, alongside the current project if mapped.
-   `/memory profile project` removes personal scope. Changing profile while on
-   applies immediately at the idle command boundary; while off it stays off.
+4. `/memory profile default` selects the opted-in default personal profile plus the
+   mapped project, if any. In unmapped directories, personal recall still works.
+   Without a default personal profile, default mode is project-only.
+   `/memory profile project` explicitly excludes all personal memory;
+   `/memory profile continuity UUID` chooses a specific configured personal profile
+   instead of the default, alongside the project. Changing profile while on applies
+   at the idle boundary; while off it stays off. Old explicit project-only decisions
+   are preserved—use `profile default` to change them.
 
 Configuration lives at `native-memory.json` under Pi's agent directory. Override
 with `--memory-config /absolute/config.json`; the flag alone does not enable it.
 No configuration/store is read during factory loading or ordinary off-state
 prompts. Configuration contains an explicit store UUID/root, exact canonical-cwd
-project aliases, personal UUIDs, and up to 16 scoped pin IDs. Subdirectories are
+project aliases, personal UUIDs, an optional `defaultPersonalId`, optional
+`preferMeitanMemory` picker preference, and up to 16 scoped pin IDs. Subdirectories are
 **not** implicitly the same project. Multiple aliases must be explicitly added to
 the private JSON config, or configured at each cwd with the same project UUID.
 
@@ -46,6 +54,37 @@ branch binds the config digest, session ID, cwd and profile. External config edi
 suspend access until reviewed activation again; they cannot silently add personal
 scope. Config is local access policy, not canonical memory. Back it up separately;
 portable store exports intentionally contain no local filesystem aliases or pins.
+
+## Default personal memory and Meitan pairing
+
+`/generalist personal` (or `/memory personal`) configures the default personal
+identity with a disclosure confirmation. Blank UUID keeps the current default or
+creates one; selecting an existing identity reuses its notes. Project-only default
+removes the fallback without deleting notes or personal identities. Settings changes
+leave memory off and select the default policy for the current branch.
+
+The default personal profile is **global context, not global activation**. Once
+configured, enabling memory can recall it from any directory, and selected notes
+may go to the current provider. New/forked sessions still start off. Meitan alone,
+including `/meitan on` and its CLI flag, never grants memory access.
+
+`/generalist pairing` remembers whether the startup picker should offer Meitan+
+memory first. It does not auto-select it, alter `/meitan`, schedule work, or enable
+either feature. `/generalist companion` explicitly enables both Meitan and the
+default memory profile in the current branch. These settings are also entries in
+`/generalist`. The startup picker still requires a choice and retains its existing
+launcher/reload/automation suppression rules.
+
+Project matches rank ahead of personal matches, with a reserved personal candidate
+when both match and the search limit exceeds one. Packet construction gives a
+small personal item an early budget opportunity (at most one quarter of the packet
+budget per eligible item), then displays selected project items first. This is
+best-effort under existing pin/byte limits, not a guarantee every scope fits.
+Scope labels and originals remain intact. Guidance tells the active model to use
+relevant project-specific exceptions over conflicting personal defaults, while
+keeping unrelated personal context. **No semantic conflict detector or automatic
+merger exists**; current user instructions always win. New notes still require an
+explicit scope, with active scope IDs supplied in the memory guidance.
 
 ## Tool and human controls
 
@@ -84,7 +123,8 @@ unavailable**; do not repeat the write. Use `/memory reindex`.
 
 Human commands (never model tool actions):
 
-- `/memory status`: branch request/effective state and last availability warning.
+- `/memory status`: branch request/effective state, effective scope IDs, default
+  personal identity and last availability warning.
 - `/memory context`: exact last packet prepared by this hook, request ID,
   generation and selection reasons; identifies whether one is currently selected.
 - `/memory review [offset]`: bounded candidate metadata, including unassigned inbox.
@@ -104,6 +144,45 @@ Classification, confirmed purge, export/restore and archive import remain explic
 canonical data must use the validated store API with expected revisions; never
 rewrite records in place. Unpin an assistant note before requesting an ordinary
 model revision, or use human maintenance for protected originals.
+
+## Optional housekeeping model
+
+The active conversational model authors `memory note/revise` calls; retrieval and
+reindexing use local SQLite, not an LLM. Housekeeping is a **separate read-only
+reviewer**, not an automatic saver or replacement for active-agent note authorship.
+
+After `/memory configure`, open **Memory housekeeping model** in `/generalist`,
+or use `/generalist housekeeping` (standalone: `/memory housekeeping`). Select an
+available Pi provider/model and explicitly enable manual reviews. The exact
+`housekeeping: { enabled, provider, model }` selection persists in native-memory.json.
+Absent means off. There is no default, active-model fallback, or automatic schedule.
+Selecting a lighter/local model does not change the conversation model. Changing
+settings turns recall off; `/memory on` reviews the new configuration again.
+
+Use `/memory review` to find candidate IDs, then `/memory housekeep ID [ID…]`:
+
+- One to eight explicitly selected records, at most 24 KiB total. Current project
+  and explicitly selected personal scopes only, plus the unassigned review inbox.
+  Unassigned can contain mixed private data; every run shows the exact selected
+  payload and destination model for human confirmation, even when recall is off.
+- Only titles, bodies and classification metadata are sent. No conversation,
+  system/personality context, retained source excerpts, tool access or whole-store scan.
+- One completion, requested reasoning off, at most 2,048 output tokens/8 KiB text,
+  with a 60-second deadline. No extension retries. Provider transport retries and
+  model-specific thinking behavior remain provider-controlled.
+- Escape in TUI or `/memory housekeep-cancel` cancels waiting; off, branch navigation,
+  shutdown/reload also abort. Config/source changes suppress stale results. A provider
+  ignoring abort may continue remotely; cancellation cannot retract disclosed text.
+- Suggestions appear in a temporary editor for human inspection. Edits to that
+  editor are ignored. Nothing is accepted, rewritten, classified, deleted, persisted
+  as a report, or injected into the active agent. Sources remain authoritative.
+- Successful runs append only provider/model, record IDs/revisions and usage metadata
+  to a custom audit entry. This usage is **not** included in Pi's built-in session
+  totals. Failed/cancelled requests may still incur provider charges.
+
+Model/auth failures do not fall back to the active agent. Configure authentication
+through Pi's normal provider settings; the memory config contains no credentials.
+Tests use mocked completions, not real provider calls or a live quality evaluation.
 
 ## Prompt and lifecycle contract
 
@@ -142,7 +221,8 @@ source excerpts, exact packet audits, exports and backups remain outside its
 removal boundary. Ordinary shell/read tools still have the user's filesystem
 permissions. Use a new session to avoid historical influence. The configured
 provider receives selected memory when enabled, including personal memory only
-in an explicitly selected continuity profile.
+through either an opted-in default personal profile or an explicitly selected
+continuity profile.
 
 The [index contract](memory-index.md) covers purge invalidation and stale readers.
 A missing/corrupt/stale index suppresses automatic recall with a UI warning and
@@ -159,7 +239,9 @@ archive or live model is used. Mocked lifecycle tests additionally cover
 compaction retry, reload/tree/fork, scoping, malformed config, queued cancellation,
 CAS, review, pins and budgets. These are not a full manual TUI/RPC cutover test.
 
-Before live use: review the chosen inactive snapshot, real store path, project and
-personal UUIDs, candidate classifications and provider disclosure. The original
-OptMem files remain untouched for rollback. **No live import or activation was
-performed by implementing this extension.**
+The local OptMem archive was first staged into unassigned candidates. The user
+subsequently approved its originals as legitimate personal memory: originals are
+accepted in the default personal profile, and summaries remain classified artifacts
+excluded from recall. Original revisions and source files are preserved. No model
+calls or session activation accompany this offline approval. Private migration
+manifests, before/after exports and verification reports stay outside this repository.

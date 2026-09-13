@@ -4,6 +4,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { EvidenceStore, MAX_LINES, type Evidence, type EvidenceKind } from "../lib/evidence/store.ts";
 import { EvidenceView, safeText } from "../lib/evidence/view.ts";
+import { formatOutput } from "../lib/output.ts";
 
 const kinds = ["source-observation", "test-contract-inspected"] as const;
 const format = (e: Evidence) => `${e.id}: ${e.title}\nKind: ${e.kind} (not a test run or verdict)\nSource: ${e.source}:${e.start}–${e.end}\nCaptured: ${e.capturedAt}\nWhole-file SHA-256: ${e.fileHash}\n\nCAPTURED EXCERPT\n${e.excerpt}`;
@@ -40,9 +41,9 @@ export default function evidence(pi: ExtensionAPI, root = () => join(getAgentDir
         else if (params.action === "check") result = s.check(params.id);
         else result = { captured: s.read(params.id), current: s.check(params.id, true) };
       }
-      const text = JSON.stringify(result);
-      if (Buffer.byteLength(text) > 48 * 1024) throw new Error("Result exceeds 48 KiB; use individual read/check operations or capture a smaller excerpt. No output was truncated.");
-      return { content: [{ type: "text", text }], details: {} };
+      const serialized = JSON.stringify(result);
+      if (Buffer.byteLength(serialized) > 48 * 1024) throw new Error("Result exceeds 48 KiB; use individual read/check operations or capture a smaller excerpt. No output was truncated.");
+      return { content: [{ type: "text", text: formatOutput(result, ctx) }], details: {} };
     },
   });
   pi.registerCommand("evidence", {
@@ -81,7 +82,7 @@ export default function evidence(pi: ExtensionAPI, root = () => join(getAgentDir
         if (!mode) return;
         const e = s.read(chosen);
         if (mode === "check") {
-          ctx.ui.notify(safeText(JSON.stringify(s.check(chosen), null, 2)), "info"); return;
+          ctx.ui.notify(safeText(formatOutput(s.check(chosen), ctx)), "info"); return;
         }
         let content = format(e);
         if (mode === "compare") {

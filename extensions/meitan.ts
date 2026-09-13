@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { registerToggle } from "../lib/toggle.ts";
+import type { StatusIconsController } from "../lib/status-icons.ts";
 
 export async function loadMeitanContext(home: string) {
   if (!isAbsolute(home)) throw new Error("PI_MEITAN_HOME must be an absolute directory");
@@ -18,8 +19,8 @@ export async function loadMeitanContext(home: string) {
   return text;
 }
 
-export default function meitan(pi: ExtensionAPI) {
-  const enabled = registerToggle(pi, "meitan", "Toggle Meitan personality");
+export default function meitan(pi: ExtensionAPI, statusIcons?: StatusIconsController, defaultEnabled?: () => boolean | undefined) {
+  const enabled = registerToggle(pi, "meitan", "Toggle Meitan personality", undefined, statusIcons, { defaultEnabled });
   pi.on("before_agent_start", async (event, ctx) => {
     if (!enabled()) return;
     const home = process.env.PI_MEITAN_HOME || join(homedir(), ".meitan");

@@ -1,15 +1,26 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { StatusIconsController } from "./status-icons.ts";
+
+export type ToggleController = (() => boolean) & {
+  set(value: boolean, ctx: ExtensionContext): void;
+};
+
+type ToggleOptions = { defaultEnabled?: () => boolean | undefined };
 
 /** Branch-local state; CLI flags seed only branches with no saved decision. */
 export function registerToggle(pi: ExtensionAPI, name: string, description: string,
-  changed: (enabled: boolean, ctx: ExtensionContext) => void = () => {}) {
+  changed: (enabled: boolean, ctx: ExtensionContext) => void = () => {}, statusIcons?: StatusIconsController,
+  options: ToggleOptions = {}): ToggleController {
   const key = `generalist:${name}:enabled`;
   let enabled = false;
+  let lastContext: ExtensionContext | undefined;
   pi.registerFlag(name, { description, type: "boolean", default: false });
   const update = (ctx: ExtensionContext) => {
+    lastContext = ctx;
     changed(enabled, ctx);
-    if (ctx.hasUI) ctx.ui.setStatus(key, enabled ? `${name}: on` : undefined);
+    if (ctx.hasUI) ctx.ui.setStatus(key, statusIcons?.format(name, enabled) ?? (enabled ? `${name}: on` : undefined));
   };
+  statusIcons?.onChange(() => { if (lastContext) update(lastContext); });
   const restore = (ctx: ExtensionContext) => {
     enabled = pi.getFlag(name) === true;
     let saved = false;
@@ -20,7 +31,9 @@ export function registerToggle(pi: ExtensionAPI, name: string, description: stri
         saved = true;
       }
     }
-    if (!saved && enabled) pi.appendEntry(key, { enabled });
+    const defaultEnabled = options.defaultEnabled?.();
+    if (!saved && defaultEnabled !== undefined) enabled = defaultEnabled;
+    if (!saved && (enabled || defaultEnabled !== undefined)) pi.appendEntry(key, { enabled });
     update(ctx);
   };
   const set = (value: boolean, ctx: ExtensionContext) => {

@@ -38,6 +38,17 @@ test("ambiguous aliases, unconfigured pins, unknown fields and symlinked configu
   expect(() => readMemoryConfig(alias)).toThrow(); expect(() => saveMemoryConfig(alias, f.config, "missing")).toThrow();
 });
 
+test("default personal identity must belong to configured profiles; legacy configs do not opt in", () => {
+  const f = fixture(); saveMemoryConfig(f.path, f.config, "missing");
+  expect(readMemoryConfig(f.path).value?.defaultPersonalId).toBeUndefined();
+  expect(() => validateConfig({ ...f.config, defaultPersonalId: randomUUID() })).toThrow("not configured");
+  expect(() => validateConfig({ ...f.config, defaultPersonalId: "default" })).toThrow("UUID");
+  expect(() => validateConfig({ ...f.config, preferMeitanMemory: "yes" })).toThrow("preference");
+  const config = { ...f.config, projects: [], defaultPersonalId: f.config.personalIds[0], preferMeitanMemory: true };
+  saveMemoryConfig(f.path, config, readMemoryConfig(f.path).digest);
+  expect(readMemoryConfig(f.path).value).toEqual(config);
+});
+
 test("branch policy restores only its session/cwd, forks stay off, malformed latest state fails closed", () => {
   const sessionId = randomUUID(), cwd = "/synthetic/project", branch: unknown[] = [];
   const ctx = { cwd, sessionManager: { getSessionId: () => sessionId, getBranch: () => branch } } as unknown as ExtensionContext;

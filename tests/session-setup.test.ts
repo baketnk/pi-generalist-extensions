@@ -91,6 +91,15 @@ test("fresh session asks personality first, records both off/on decisions, then 
   expect(h.toggles.meitan()).toBe(true);
 });
 
+test("remembered companion preference only reorders explicit startup choices", async () => {
+  const h = harness(); Object.assign(h.toggles.memory, { prefersCompanion: () => true });
+  h.answers.push(undefined); await h.emit("session_start");
+  expect(h.prompts[0].options[0]).toContain("Preferred — Meitan + native memory");
+  expect(h.toggles.memory()).toBe(false); expect(h.toggles.meitan()).toBe(false);
+  h.answers.push(0, undefined); await h.commands["session-setup"].handler("", h.ctx);
+  expect(h.toggles.memory()).toBe(true); expect(h.toggles.meitan()).toBe(true);
+});
+
 test("MRU pairs appear first, selection promotes them and applies model before thinking", async () => {
   const h = harness();
   rememberPreset(h.historyPath, preset("beta", "max"));

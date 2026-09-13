@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { getAgentDir, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { BorderedLoader, getAgentDir, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
@@ -12,6 +12,9 @@ import { POLICY_ENTRY, readMemoryPolicy, type MemoryPolicy } from "../lib/memory
 import { RecallIndex, rebuildRecallIndex, storeStamp } from "../lib/memory/index.ts";
 import { makePacket, packetText, parsePacket, PACKET_TYPE, PACKET_BYTES, type MemoryPacket } from "../lib/memory/select.ts";
 import { captureOrigin, operationId, retainedSource, sourceCatalog } from "../lib/memory/capture.ts";
+import { boundedHousekeeping, housekeepingPayload, reviewMemory } from "../lib/memory/housekeeping.ts";
+import { formatOutput } from "../lib/output.ts";
+import type { StatusIconsController } from "../lib/status-icons.ts";
 
 const AUDIT_ENTRY = "generalist:memory:supplied-v1";
 const parameters = Type.Object({
@@ -30,17 +33,21 @@ const GUIDANCE = "Use memory for scoped durable context, not workpad/checklist s
 interface Access { config: MemoryConfig; digest: string; policy: MemoryPolicy; scopes: Scope[] }
 interface Supplied { sessionId: string; requestId: string; accessHash: string; packet: MemoryPacket }
 const accessHash = (a: Access) => hash(canonical({ digest: a.digest, policy: a.policy, scopes: a.scopes }));
-function reply(value: unknown) {
-  const text = canonical(value);
-  if (Buffer.byteLength(text) > 48 * 1024) throw new Error("Memory result exceeds 48 KiB; narrow the request");
-  return { content: [{ type: "text" as const, text }], details: {} };
+function reply(value: unknown, ctx?: ExtensionContext) {
+  // Check the canonical payload before presentation; plain text must not bypass the tool bound.
+  if (Buffer.byteLength(canonical(value)) > 48 * 1024) throw new Error("Memory result exceeds 48 KiB; narrow the request");
+  return { content: [{ type: "text" as const, text: formatOutput(value, ctx) }], details: { result: value } };
 }
-function scopesFor(config: MemoryConfig, policy: MemoryPolicy, cwd: string): Scope[] {
+export function scopesFor(config: MemoryConfig, policy: MemoryPolicy, cwd: string): Scope[] {
   const project = projectFor(config, cwd), scopes: Scope[] = project ? [`project:${project}`] : [];
   if (policy.profile === "continuity") {
     if (!policy.personalId || !config.personalIds.includes(policy.personalId)) throw new Error("Personal profile is not explicitly configured");
     scopes.push(`personal:${policy.personalId}`);
-  } else if (!project) throw new Error("Current canonical cwd has no explicit project alias; use /memory configure");
+  } else if (policy.profile === "default" && config.defaultPersonalId) {
+    if (!config.personalIds.includes(config.defaultPersonalId)) throw new Error("Default personal profile is not explicitly configured");
+    scopes.push(`personal:${config.defaultPersonalId}`);
+  }
+  if (!scopes.length) throw new Error("No configured memory scope here; use /memory personal for a global default or /memory configure for a project");
   return scopes;
 }
 function latestUser(ctx: ExtensionContext) {
@@ -53,19 +60,26 @@ function budgetFor(ctx: ExtensionContext): number {
 }
 
 /** Default off. No config/store access, resources or provider calls during factory load. */
-export default function memory(pi: ExtensionAPI) {
+export default function memory(pi: ExtensionAPI, statusIcons?: StatusIconsController) {
   let closed = false, epoch = 0, on = false, problem: string | undefined;
   let pending: { accessHash: string; packet: MemoryPacket; requestId?: string } | undefined;
   let supplied: Supplied | undefined;
+  let housekeepingJob: AbortController | undefined;
+  let lastContext: ExtensionContext | undefined;
+  const cancelHousekeeping = () => { housekeepingJob?.abort(); };
   pi.registerFlag("memory-config", { type: "string", description: "Explicit native memory config path (does not enable memory)" });
   const configPath = () => {
     const flag = pi.getFlag("memory-config");
     return typeof flag === "string" ? flag : join(getAgentDir(), "native-memory.json");
   };
+  const syncStatus = (ctx: ExtensionContext) => {
+    if (ctx.hasUI) ctx.ui.setStatus("native-memory", problem ? "memory: suspended" : statusIcons?.format("memory", on) ?? (on ? "memory: on" : undefined));
+  };
   const syncTools = (ctx: ExtensionContext) => {
+    lastContext = ctx;
     const active = pi.getActiveTools().filter(t => t !== "memory");
     pi.setActiveTools(on ? [...active, "memory"] : active);
-    if (ctx.hasUI) ctx.ui.setStatus("native-memory", on ? "memory: on" : problem ? "memory: suspended" : undefined);
+    syncStatus(ctx);
   };
   const access = (ctx: ExtensionContext): Access => {
     if (closed) throw new Error("Native memory runtime closed");
@@ -79,7 +93,7 @@ export default function memory(pi: ExtensionAPI) {
   const set = (enabled: boolean, ctx: ExtensionContext, profile?: Pick<MemoryPolicy, "profile" | "personalId">) => {
     if (closed) throw new Error("Native memory runtime closed");
     let policy: MemoryPolicy = { ...readMemoryPolicy(ctx), ...profile, enabled };
-    if (profile?.profile === "project") delete policy.personalId;
+    if (profile && profile.profile !== "continuity") delete policy.personalId;
     if (enabled) {
       if (!ctx.hasUI) throw new Error("Activation requires interactive/RPC human review; print mode can only restore an approved session");
       const { value: config, digest } = readMemoryConfig(configPath());
@@ -89,10 +103,10 @@ export default function memory(pi: ExtensionAPI) {
       policy = { ...policy, configDigest: digest };
     }
     pi.appendEntry(POLICY_ENTRY, policy);
-    epoch++; pending = undefined; on = enabled; problem = undefined; syncTools(ctx);
+    cancelHousekeeping(); epoch++; pending = undefined; on = enabled; problem = undefined; syncTools(ctx);
   };
   const restore = (ctx: ExtensionContext) => {
-    closed = false; epoch++; on = false; pending = undefined; supplied = undefined; problem = undefined;
+    cancelHousekeeping(); closed = false; epoch++; on = false; pending = undefined; supplied = undefined; problem = undefined;
     // Audits are historical inspection only. Never replay a packet on reload/tree/fork.
     for (const e of ctx.sessionManager.getBranch()) {
       if (e.type !== "custom" || e.customType !== AUDIT_ENTRY) continue;
@@ -106,9 +120,10 @@ export default function memory(pi: ExtensionAPI) {
     syncTools(ctx);
     if (problem && ctx.hasUI) ctx.ui.notify(problem, "warning");
   };
+  statusIcons?.onChange(() => { if (!closed && lastContext) syncStatus(lastContext); });
   pi.on("session_start", (_e, ctx) => restore(ctx));
   pi.on("session_tree", (_e, ctx) => restore(ctx));
-  pi.on("session_shutdown", () => { closed = true; epoch++; on = false; pending = undefined; supplied = undefined; });
+  pi.on("session_shutdown", () => { cancelHousekeeping(); closed = true; epoch++; on = false; pending = undefined; supplied = undefined; });
   pi.on("model_select", () => { pending = undefined; }); // never carry an old model allowance to a new model
   pi.on("session_compact", event => { if (!event.willRetry) pending = undefined; });
   pi.on("before_agent_start", (event, ctx) => {
@@ -134,7 +149,7 @@ export default function memory(pi: ExtensionAPI) {
     } catch { pending = undefined; problem = "Native recall unavailable; inspect /memory status or run /memory reindex"; }
     syncTools(ctx);
     if (problem && ctx.hasUI) ctx.ui.notify(problem, "warning");
-    return on ? { systemPrompt: `${event.systemPrompt}\n\n# Native memory\n${GUIDANCE}` } : undefined;
+    return on ? { systemPrompt: `${event.systemPrompt}\n\n# Native memory\n${GUIDANCE}\nActive memory scopes: ${a.scopes.join(", ")}. Use the project scope for repository-specific notes; use personal scope for cross-project preferences and continuity. Relevant project-specific exceptions take precedence over conflicting personal defaults; unrelated personal context still applies. Current user instructions always win.` } : undefined;
   });
   pi.on("context", (event, ctx) => {
     const messages = event.messages.filter(m => m.role !== "custom" || m.customType !== PACKET_TYPE);
@@ -164,16 +179,16 @@ export default function memory(pi: ExtensionAPI) {
     async execute(toolCallId, args, signal, _update, ctx) {
       if (!Check(parameters, args)) throw new Error("Invalid memory arguments");
       signal?.throwIfAborted(); const a = access(ctx), ticket = epoch;
-      if (args.action === "sources") return reply({ sources: sourceCatalog(ctx) });
+      if (args.action === "sources") return reply({ sources: sourceCatalog(ctx) }, ctx);
       if (args.action === "recall" || args.action === "threads") {
         const index = new RecallIndex(a.config.storeRoot, a.config.storeId);
-        try { return reply(makePacket(index.generation, index.search(args.query ?? "", a.scopes, { threads: args.action === "threads" }).items)); }
+        try { return reply(makePacket(index.generation, index.search(args.query ?? "", a.scopes, { threads: args.action === "threads" }).items), ctx); }
         finally { index.close(); }
       }
       if (args.action === "read") {
         const row = inspectStore(a).read(args.id!, a.scopes);
         if (row.status !== "accepted" || row.kind === "artifact") throw new Error("Record is not accepted recall; use human review");
-        return reply(row);
+        return reply(row, ctx);
       }
       // Queue the whole canonical read-modify-write, then recheck session/off/config after waiting.
       return withFileMutationQueue(join(a.config.storeRoot, "store.json"), async () => {
@@ -198,20 +213,133 @@ export default function memory(pi: ExtensionAPI) {
         let indexed = true;
         try { rebuildRecallIndex(a.config.storeRoot, a.config.storeId, signal); } catch { indexed = false; }
         return reply({ id: row.id, revision: row.revision, status: row.status, claim: row.claim, indexed,
-          ...(indexed ? {} : { warning: "Note committed; index unavailable. Do not repeat the write; run /memory reindex." }) });
+          ...(indexed ? {} : { warning: "Note committed; index unavailable. Do not repeat the write; run /memory reindex." }) }, ctx);
       });
     },
   });
 
+  const configurePersonal = async (ctx: ExtensionContext) => {
+    if (closed || !ctx.hasUI) throw new Error("Personal memory settings require interactive/RPC human review");
+    const ticket = epoch, path = configPath(), old = readMemoryConfig(path);
+    if (!old.value) throw new Error("Connect a native store with /memory configure first");
+    const choice = await ctx.ui.select(`Default personal memory (${old.value.defaultPersonalId ?? "not configured"})`,
+      ["Use/create default personal profile", "Project-only default"]);
+    if (!choice) return;
+    const config = { ...old.value, personalIds: [...old.value.personalIds] };
+    if (choice === "Project-only default") delete config.defaultPersonalId;
+    else {
+      const answer = (await ctx.ui.input("Personal UUID (blank keeps the default or creates one)", config.defaultPersonalId))?.trim();
+      if (answer === undefined) return;
+      const personalId = answer || config.defaultPersonalId || randomUUID(); id(personalId);
+      if (!config.personalIds.includes(personalId)) config.personalIds.push(personalId);
+      config.defaultPersonalId = personalId;
+    }
+    if (!await ctx.ui.confirm("Save default memory profile?", JSON.stringify({ defaultPersonalId: config.defaultPersonalId ?? null,
+      warning: "When memory is enabled with the default profile, selected personal notes may be sent to the current provider from ANY directory. Mapped project exceptions take precedence. No notes are accepted or deleted by this setting. Memory remains off until enabled." }, null, 2))) return;
+    if (closed || ticket !== epoch) throw new Error("Memory session changed during settings review");
+    saveMemoryConfig(path, config, old.digest); set(false, ctx, { profile: "default" });
+    ctx.ui.notify("Default profile saved, memory off. Use /memory on to enable it here; /memory profile project excludes personal recall.", "info");
+  };
+  const configurePairing = async (ctx: ExtensionContext) => {
+    if (closed || !ctx.hasUI) throw new Error("Pairing settings require interactive/RPC human review");
+    const ticket = epoch, path = configPath(), old = readMemoryConfig(path);
+    if (!old.value) throw new Error("Configure native memory first");
+    const choice = await ctx.ui.select("Prefer Meitan + memory in the startup picker? (never auto-enables either)", ["Yes", "No"]);
+    if (!choice) return;
+    if (closed || ticket !== epoch) throw new Error("Memory session changed during settings review");
+    saveMemoryConfig(path, { ...old.value, preferMeitanMemory: choice === "Yes" }, old.digest);
+    set(false, ctx);
+    ctx.ui.notify("Pairing preference saved; memory off after configuration changes. /generalist companion explicitly enables both. /meitan remains independent.", "info");
+  };
+  const configureHousekeeping = async (ctx: ExtensionContext) => {
+    if (closed || !ctx.hasUI) throw new Error("Housekeeping settings require interactive/RPC human review");
+    const ticket = epoch, path = configPath(), old = readMemoryConfig(path);
+    if (!old.value) throw new Error("Configure the native store with /memory configure first");
+    const current = old.value.housekeeping;
+    const choice = await ctx.ui.select(`Memory housekeeping (${current?.enabled ? `${current.provider}/${current.model}` : "off"})`,
+      ["Choose model and enable manual reviews", "Disable"]);
+    if (!choice) return;
+    let housekeeping = current;
+    if (choice === "Disable") {
+      if (!current) return;
+      housekeeping = { ...current, enabled: false };
+    } else {
+      const available = ctx.modelRegistry.getAvailable();
+      const choices = available.map(m => `${m.provider}/${m.id}`).sort();
+      if (!choices.length) throw new Error("No available models; configure provider authentication in Pi first");
+      const selected = await ctx.ui.select("Separate housekeeping model (no active-model fallback)", choices);
+      if (!selected) return;
+      const model = available.find(m => `${m.provider}/${m.id}` === selected);
+      if (!model) throw new Error("Unknown housekeeping model");
+      if (!await ctx.ui.confirm("Enable manual memory housekeeping?", `Selected records will be sent to ${selected}, independently of the chat model. Each run requires confirmation. No automatic scheduling, acceptance, deletion or original edits.`)) return;
+      housekeeping = { enabled: true, provider: model.provider, model: model.id };
+    }
+    if (closed || ticket !== epoch) throw new Error("Memory session changed during settings review");
+    saveMemoryConfig(path, { ...old.value, housekeeping }, old.digest);
+    set(false, ctx);
+    ctx.ui.notify("Housekeeping settings saved. Recall is off after configuration changes; review /memory on to restore it. Run /memory housekeep ID [ID…] for a separate read-only review.", "info");
+  };
+  const housekeep = async (ids: string[], ctx: ExtensionContext) => {
+    if (closed || !ctx.hasUI) throw new Error("Housekeeping requires interactive/RPC human review");
+    if (housekeepingJob) throw new Error("Housekeeping already running; use /memory housekeep-cancel");
+    const ticket = epoch, c = readMemoryConfig(configPath());
+    if (!c.value?.housekeeping?.enabled) throw new Error("Enable a separate model in /generalist housekeeping or /memory housekeeping first");
+    const scopes = [...scopesFor(c.value, readMemoryPolicy(ctx), ctx.cwd), "unassigned" as const];
+    if (!ids.length || ids.length > 8) throw new Error("Use /memory housekeep with one to eight memory IDs");
+    const store = new MemoryStore(c.value.storeRoot, c.value.storeId);
+    const rows = ids.map(recordId => store.read(recordId, scopes)), payload = housekeepingPayload(rows);
+    const policy = canonical(readMemoryPolicy(ctx));
+    const fresh = () => {
+      if (closed || ticket !== epoch || readMemoryConfig(configPath()).digest !== c.digest || canonical(readMemoryPolicy(ctx)) !== policy ||
+          housekeepingPayload(ids.map(recordId => store.read(recordId, scopes))) !== payload) throw new Error("Memory selection/configuration changed; review cancelled");
+    };
+    const controller = new AbortController(); housekeepingJob = controller;
+    try {
+      const selectedModel = `${c.value.housekeeping.provider}/${c.value.housekeeping.model}`;
+      if (!await ctx.ui.confirm(`Send selected memory to ${selectedModel}?`, `${payload}\n\nOnly these records; unassigned may contain mixed personal/project data. Output is advisory only, not saved to memory.`, { signal: controller.signal })) return;
+      controller.signal.throwIfAborted(); fresh();
+      const run = () => boundedHousekeeping(controller, async signal => {
+        fresh();
+        const result = await reviewMemory(ctx, c.value!.housekeeping!, payload, signal);
+        signal.throwIfAborted(); fresh();
+        return result;
+      });
+      const result = ctx.mode === "tui"
+        ? await ctx.ui.custom<Awaited<ReturnType<typeof reviewMemory>> | undefined>((tui, theme, _keys, done) => {
+          const loader = new BorderedLoader(tui, theme, `Reviewing memory with ${selectedModel} (60s limit)…`);
+          loader.onAbort = () => { controller.abort(); done(undefined); };
+          run().then(done).catch(() => done(undefined));
+          return loader;
+        })
+        : await run();
+      if (!result) { ctx.ui.notify("Housekeeping cancelled, failed or stale; no memory changes made.", "warning"); return; }
+      controller.signal.throwIfAborted(); fresh();
+      // Metadata only: the report/payload is not persisted or injected into the active agent.
+      pi.appendEntry("generalist:memory:housekeeping-run-v1", { provider: result.provider, model: result.model,
+        records: rows.map(r => ({ id: r.id, revision: r.revision })), usage: result.usage, timestamp: Date.now() });
+      await ctx.ui.editor("Housekeeping suggestions — unsaved, unverified; closing makes no changes", result.text);
+      ctx.ui.notify("Review closed. No records changed; usage is recorded in the housekeeping audit entry (not Pi session totals).", "info");
+    } finally { if (housekeepingJob === controller) housekeepingJob = undefined; }
+  };
+
   pi.registerCommand("memory", {
-    description: "Native memory: status|configure|on|off|profile project|profile continuity UUID|reindex|context|review [offset]|show ID|accept ID REV|pin ID|unpin ID",
-    getArgumentCompletions: prefix => ["status", "configure", "on", "off", "profile project", "profile continuity", "reindex", "context", "review", "show", "accept", "pin", "unpin"].filter(v => v.startsWith(prefix)).map(value => ({ value, label: value })),
+    description: "Native memory: status|configure|on|off|profile|reindex|context|review|show|accept|pin|unpin|personal|housekeeping|housekeep ID [ID…]|housekeep-cancel",
+    getArgumentCompletions: prefix => ["status", "configure", "personal", "on", "off", "profile default", "profile project", "profile continuity", "reindex", "context", "review", "show", "accept", "pin", "unpin", "housekeeping", "housekeep", "housekeep-cancel"].filter(v => v.startsWith(prefix)).map(value => ({ value, label: value })),
     async handler(raw, ctx) {
       const [action = "status", arg, revision, ...extra] = raw.trim().split(/\s+/).filter(Boolean);
+      if (action === "housekeep-cancel" && !arg) { cancelHousekeeping(); return; }
+      if (action === "personal" && !arg) { await ctx.waitForIdle(); await configurePersonal(ctx); return; }
+      if (action === "housekeeping" && !arg) { await ctx.waitForIdle(); await configureHousekeeping(ctx); return; }
+      if (action === "housekeep") { await ctx.waitForIdle(); await housekeep([arg, revision, ...extra].filter((v): v is string => v !== undefined), ctx); return; }
       if (extra.length) throw new Error("Too many memory command arguments");
-      const notify = (value: unknown) => { if (ctx.hasUI) ctx.ui.notify(typeof value === "string" ? value : JSON.stringify(value, null, 2), "info"); };
+      const notify = (value: unknown) => { if (ctx.hasUI) ctx.ui.notify(typeof value === "string" ? value : formatOutput(value, ctx), "info"); };
       if (action === "off") { set(false, ctx); notify("Native memory off. Previous provider requests and session traces are not erased."); return; }
-      if (action === "status") { notify({ requested: readMemoryPolicy(ctx).enabled, active: on, profile: readMemoryPolicy(ctx).profile, problem: problem ?? null }); return; }
+      if (action === "status") {
+        const policy = readMemoryPolicy(ctx), config = readMemoryConfig(configPath()).value;
+        let scopes: Scope[] = []; try { if (config) scopes = scopesFor(config, policy, ctx.cwd); } catch { /* status also works in unmapped project-only mode */ }
+        notify({ requested: policy.enabled, active: on, profile: policy.profile, scopes,
+          defaultPersonalId: config?.defaultPersonalId ?? null, problem: problem ?? null }); return;
+      }
       if (action === "context") { notify({ currentlySelected: pending?.packet.id ?? null, problem: problem ?? null, lastSupplied: supplied ?? null }); return; }
       await ctx.waitForIdle(); const ticket = epoch;
       const stillHere = () => { if (closed || ticket !== epoch) throw new Error("Memory session/activation changed; command cancelled"); };
@@ -222,27 +350,36 @@ export default function memory(pi: ExtensionAPI) {
         const root = (await ctx.ui.input("Existing initialized native store directory (absolute)", old.value?.storeRoot))?.trim();
         if (!root) return; stillHere();
         const store = new MemoryStore(root), snapshot = decodeSnapshot(boundedFile(join(store.root, "store.json"), STORE_BYTES));
-        const project = (await ctx.ui.input("Project UUID (blank creates a new identity)"))?.trim();
-        if (project === undefined) return; const projectId = project || randomUUID(); id(projectId);
-        const personal = (await ctx.ui.input("Personal profile UUID (optional; blank leaves it unconfigured)"))?.trim();
-        if (personal === undefined) return; if (personal) id(personal); stillHere();
+        const project = (await ctx.ui.input("Project UUID ('new' creates one; blank keeps existing mapping or none)"))?.trim();
+        if (project === undefined) return; const projectId = project === "new" ? randomUUID() : project; if (projectId) id(projectId);
+        const answer = (await ctx.ui.input("Default personal UUID ('new' creates one; blank keeps existing default or off)"))?.trim();
+        if (answer === undefined) return; const personal = answer === "new" ? randomUUID() : answer;
+        if (personal) id(personal); stillHere();
         const cwd = realpathSync(ctx.cwd), same = old.value?.storeId === snapshot.storeId && old.value.storeRoot === store.root;
         const config: MemoryConfig = { version: 1, storeRoot: store.root, storeId: snapshot.storeId,
-          projects: same ? old.value!.projects.map(p => ({ ...p, paths: p.paths.filter(path => path !== cwd) })).filter(p => p.paths.length) : [],
-          personalIds: same ? [...old.value!.personalIds] : [], pins: same ? old.value!.pins : [] };
-        const mapped = config.projects.find(p => p.id === projectId);
-        if (mapped) mapped.paths.push(cwd); else config.projects.push({ id: projectId, paths: [cwd] });
+          projects: same ? old.value!.projects.map(p => ({ ...p, paths: p.paths.filter(path => !projectId || path !== cwd) })).filter(p => p.paths.length) : [],
+          personalIds: same ? [...old.value!.personalIds] : [], pins: same ? old.value!.pins : [],
+          ...(same && old.value!.housekeeping ? { housekeeping: old.value!.housekeeping } : {}),
+          ...(same && old.value!.defaultPersonalId ? { defaultPersonalId: old.value!.defaultPersonalId } : {}),
+          ...(same && old.value!.preferMeitanMemory !== undefined ? { preferMeitanMemory: old.value!.preferMeitanMemory } : {}) };
+        if (projectId) {
+          const mapped = config.projects.find(p => p.id === projectId);
+          if (mapped) mapped.paths.push(cwd); else config.projects.push({ id: projectId, paths: [cwd] });
+        }
+        if (personal) config.defaultPersonalId = personal;
         if (personal && !config.personalIds.includes(personal)) config.personalIds.push(personal);
         config.pins = config.pins.filter(p => p.scope.startsWith("personal:") || config.projects.some(project => p.scope === `project:${project.id}`));
-        if (!await ctx.ui.confirm("Approve native memory mapping? (stays off)", JSON.stringify(config, null, 2))) return;
-        stillHere(); saveMemoryConfig(path, config, old.digest); notify("Configured, still off. Use /memory on for project scope; /memory profile continuity UUID opts into personal context."); return;
+        if (!await ctx.ui.confirm("Approve native memory mapping? (stays off)", JSON.stringify({ ...config, warning: "A default personal profile applies in ANY directory when memory is enabled; selected notes may be sent to your current provider. Project exceptions take precedence. No recall enabled by configuration." }, null, 2))) return;
+        stillHere(); saveMemoryConfig(path, config, old.digest); set(false, ctx, { profile: "default" });
+        notify("Configured, still off. /memory on uses the default personal profile plus mapped project; /memory profile project excludes personal memory."); return;
       }
       if (action === "on" || action === "profile") {
         let profile: Pick<MemoryPolicy, "profile" | "personalId"> | undefined;
         if (action === "profile") {
-          if (arg === "project" && !revision) profile = { profile: "project" };
+          if (arg === "default" && !revision) profile = { profile: "default" };
+          else if (arg === "project" && !revision) profile = { profile: "project" };
           else if (arg === "continuity") { id(revision); profile = { profile: "continuity", personalId: revision }; }
-          else throw new Error("Use /memory profile project or /memory profile continuity UUID");
+          else throw new Error("Use /memory profile default, /memory profile project or /memory profile continuity UUID");
         }
         if (action === "on") {
           if (!ctx.hasUI) throw new Error("Initial activation requires interactive/RPC human review");
@@ -284,5 +421,8 @@ export default function memory(pi: ExtensionAPI) {
       throw new Error("Unknown /memory action; see command help");
     },
   });
-  return Object.assign(() => on, { set });
+  return Object.assign(() => on, { set, configureHousekeeping, configurePersonal, configurePairing,
+    prefersCompanion: () => readMemoryConfig(configPath()).value?.preferMeitanMemory === true,
+    enableDefault: (ctx: ExtensionContext) => set(true, ctx, { profile: "default" }),
+  });
 }
