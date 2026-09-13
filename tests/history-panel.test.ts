@@ -16,14 +16,38 @@ test("history table pages, expands cited excerpts, scrolls, goes back and closes
   const panel = new HistoryPanel("query", results, "0 warnings", theme, keys, () => 24, () => redraws++, () => closed++);
   expect(panel.render(110).join("\n")).toContain("DATE");
   panel.handleInput("pageDown");
-  expect(panel.render(110).join("\n")).toContain("match-14");
+  expect(panel.render(110).join("\n")).toContain("match-13");
   panel.handleInput("confirm");
-  expect(panel.render(110).join("\n")).toContain("/fixture/session.jsonl (line:14)");
+  expect(panel.render(110).join("\n")).toContain("/fixture/session.jsonl (line:13)");
   panel.handleInput("pageDown");
   expect(panel.render(110).join("\n")).not.toContain("/fixture/session.jsonl");
   panel.handleInput("cancel"); expect(closed).toBe(0);
   panel.handleInput("cancel"); expect(closed).toBe(1);
   expect(redraws).toBeGreaterThan(0);
+});
+
+test("history detail loads bounded conversation context and ignores a load after going back", async () => {
+  let finish!: (context: any) => void;
+  const load = () => new Promise<any>(resolve => finish = resolve);
+  const panel = new HistoryPanel("query", results.slice(0, 1), "ok", theme, keys, () => 30, () => {}, () => {}, load);
+  panel.handleInput("confirm");
+  expect(panel.render(100).join("\n")).toContain("Loading conversation context");
+  finish({ branch: "Recorded branch", warnings: [], sourceChangedSinceIndex: false, sourceChangedDuringRead: false,
+    messages: [{ id: "0", role: "user", time: "2026-09-13", text: "surrounding conversation" }] });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const detail = panel.render(100).join("\n");
+  expect(detail).toContain("CONTEXT — result 1 of 1");
+  expect(detail).toContain("→ 2026-09-13 | user");
+  expect(detail).toContain("surrounding conversation");
+  expect(detail).toContain("┌"); expect(detail).toContain("┘");
+
+  let late!: (context: any) => void;
+  const leaving = new HistoryPanel("query", results.slice(0, 1), "ok", theme, keys, () => 30, () => {}, () => {},
+    () => new Promise<any>(resolve => late = resolve));
+  leaving.handleInput("confirm"); leaving.handleInput("cancel");
+  late({ branch: "late", warnings: [], sourceChangedSinceIndex: false, sourceChangedDuringRead: false, messages: [] });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(leaving.render(100).join("\n")).toContain("DATE");
 });
 
 test("history rendering fits narrow/resized terminals and strips terminal controls", () => {

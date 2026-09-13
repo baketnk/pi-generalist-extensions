@@ -4,9 +4,10 @@ Two on-demand Pi tools, independent of Meitan and OptMem:
 
 - `history_search`: SQLite FTS5 search, optional variants, harness/cwd/date/role
   filters, or recent-message browsing with an empty query. Quotes make phrases;
-  unquoted terms are ANDed within a message chunk; variants are ORed. Returns at
-  most 20 messages, deduplicating chunks of a message. The 200-candidate retrieval
-  bound may return fewer results when one long message dominates matches.
+  unquoted terms are ANDed within a message chunk; variants are ORed. Matching
+  messages are returned newest first (FTS rank breaks timestamp ties), at most 20,
+  with chunks of the same message deduplicated. The 200-candidate retrieval bound
+  may return fewer results when one long message dominates matches.
 - `history_read`: use the opaque `session` key from a search result, optionally
   its `entry` ID. Returns the newest window in chronological order. `nextOffset`
   walks backward without skipping messages. `includeTools` reads tool evidence
@@ -15,19 +16,23 @@ Two on-demand Pi tools, independent of Meitan and OptMem:
 ## User-facing search
 
 After `/reload`, use `/history Parakeet benchmark` (or `/history` for recent
-messages). It runs the same local search as the agent tool, with changed-source
-refresh and a 20-result limit, in a dismissible terminal overlay. The table shows
-date, harness, role, project and excerpt; narrow terminals use a compact layout.
-Arrow keys select, Page Up/Down page through matches, Enter opens the selected
-excerpt with source citation, and Escape returns/closes. Within an excerpt,
-arrows/Page Up/Down scroll. Configured `tui.select.*` bindings are respected.
-Refresh is cancellable with Escape. Quotes retain the tool's phrase semantics.
+messages). It runs the same newest-first local search as the agent tool, with
+changed-source refresh and a 20-result limit, in a dismissible terminal overlay.
+The table shows date, harness, role, project and excerpt; narrow terminals use a
+compact layout.
+The overlay has a visible frame and labels its results/context state. Arrow keys
+select, Page Up/Down page through matches, and Enter loads a bounded window of the
+original conversation leading to the selected hit. Escape or Enter returns from
+context; Escape closes the result list. Within context, arrows/Page Up/Down scroll.
+Configured `tui.select.*` bindings are respected. Refresh is cancellable with
+Escape. Quotes retain the tool's phrase semantics.
 
 The command does not call a model, add conversation messages/custom entries,
-change sessions, or paste results into the editor. Closing removes the overlay;
+change sessions, or paste results into the editor. Enter's context view reads the
+cited source on demand but does not send it to a model. Closing removes the overlay;
 run the command again to reopen. It is TUI-only, not an RPC custom UI. The agent
-tools and standalone CLI remain available separately. Results are bounded search
-excerpts, not full transcripts; use `history_read`/the CLI for more context.
+tools and standalone CLI remain available separately. Context windows are bounded,
+not full transcripts; use `history_read`/the CLI for deeper paging.
 
 `/history-index` refreshes; `/history-index status` shows counts and sizes. Node
 24+ provides `node:sqlite`/FTS5, with no added runtime dependency. Standalone CLI:

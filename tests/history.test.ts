@@ -50,6 +50,22 @@ test("FTS searches late messages, citations, variants, filters and source freshn
   } finally { f.clean(); }
 });
 
+test("text search returns newer matches before more relevant older matches", async () => {
+  const f = fixture();
+  try {
+    const older = { ...msg("old", null, "user", "recencyneedle ".repeat(100)), timestamp: "2026-01-01T00:00:00.000Z" };
+    const newer = { ...msg("new", "old", "user", "recencyneedle"), timestamp: "2026-09-13T02:00:00.000Z" };
+    f.write([header, older, newer]);
+    const index = new HistoryIndex(f.config);
+    try {
+      await index.refresh();
+      const found = index.search({ query: "recencyneedle", limit: 1 }).results;
+      expect(found).toHaveLength(1);
+      expect(found[0].entry).toBe("new");
+    } finally { index.close(); }
+  } finally { f.clean(); }
+});
+
 test("Pi branch reads follow non-prose ancestor nodes, never mix siblings or thinking", async () => {
   const f = fixture();
   try {

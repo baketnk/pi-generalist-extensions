@@ -89,6 +89,7 @@ export default function history(pi: ExtensionAPI) {
           args.trim(), result.results,
           `${result.milliseconds}ms search; ${result.refresh.failed} failed sources, ${result.refresh.warningCount} warnings`,
           theme, keys, () => tui.terminal.rows, () => tui.requestRender(), () => done(),
+          (match, signal) => run(index => index.read(match.session, { entry: match.entry, limit: 12 }, signal), signal),
         ), { overlay: true, overlayOptions: { width: "95%", maxHeight: "80%" } });
       } catch (error) { ctx.ui.notify(String(error), "error"); }
     },

@@ -146,7 +146,7 @@ export class HistoryIndex {
       FROM ${match ? "history_fts JOIN chunks c ON c.id=history_fts.rowid" : "chunks c"}
       JOIN sessions s ON s.key=c.session_key JOIN sources src ON src.path=s.path
       ${conditions.length ? "WHERE " + conditions.join(" AND ") : ""}
-      ORDER BY ${match ? "bm25(history_fts)," : ""} c.time DESC,c.seq DESC LIMIT 200`;
+      ORDER BY c.time DESC,c.seq DESC${match ? ",bm25(history_fts)" : ""} LIMIT 200`;
     const rows = this.db.prepare(sql).all(...(match ? [match, ...values] : values)) as any[];
     const results: any[] = [], seen = new Set<string>();
     const limit = Math.max(1, Math.min(20, Math.trunc(options.limit || 10)));
