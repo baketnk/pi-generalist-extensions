@@ -1,8 +1,8 @@
 # Portable memory store prototype
 
 Implemented: a **bounded, harness-independent foundation**, not the complete
-[memory proposal](memory-proposal.md) or a live memory extension. No existing
-OptMem behavior, personality configuration or workpad attachment changes.
+[memory proposal](memory-proposal.md). The separate [native Pi adapter](memory-runtime.md)
+now uses it; the store library itself changes no personality or workpad state.
 
 The intended boundary is **workpad inside the active session; memory outside
 it**. This implementation does not promote workpad contents or ingest history.
@@ -97,18 +97,20 @@ to reconcile for canonical records. A [disposable recall index](memory-index.md)
 now supports explicit FTS maintenance and bounded lookup; it is not canonical.
 The prototype format is explicitly named and versioned; it is not
 a promise that future scalable storage will use this layout. Current snapshot
-schema is version 3; versions 1 and 2 remain readable and upgrade on explicit writes
+schema is version 4; versions 1–3 remain readable and upgrade on explicit writes
 or restore, preserving original revisions. Version 3 adds optional Pi capture
-metadata and claim labels. These are validated data fields, not proof of host
-binding: the foreground adapter still needs to obtain them from the actual host.
+metadata and claim labels; version 4 adds source-entry origins. These are validated
+data fields, not proof of host
+binding by themselves: the foreground adapter obtains capture and source-entry
+origin from the actual host; standalone callers still declare their own provenance.
 The transfer envelope remains version 1. Old readers cannot read newer snapshot
 versions. Reads never rewrite an older store.
 
-`lib/memory/config.ts` and `policy.ts` provide tested adapter foundations, not an
-activated extension: digest-gated private configuration writes, exact canonical
-project aliases, explicitly named personal profiles, scoped pins, and session/cwd
-bound branch policy. Forks do not inherit native activation. No command, startup
-hook or backend switch currently invokes these helpers.
+`lib/memory/config.ts` and `policy.ts` support the default-off native adapter:
+digest-gated private configuration writes, exact canonical project aliases,
+explicitly named personal profiles, scoped pins, and session/cwd/config-bound
+branch policy. Forks do not inherit native activation. See the runtime contract
+for command, hook, provider-disclosure and source-binding behavior.
 
 Limits: 8,192 total revisions, 16 MiB canonical store, 8 KiB UTF-8 note bodies,
 32 KiB complete revisions, up to eight retained sources of 8 KiB each. Bounds
@@ -153,19 +155,17 @@ interrupted-lock/orphan-file fixtures, injected directory-flush failure (includi
 retry acknowledgement), and the standalone CLI. These are not Pi
 lifecycle tests or a physical power-loss/crash campaign.
 
-Still required before a live memory feature:
+Remaining expansion/review gates (beyond the implemented foreground adapter):
 
-- Host-bound source provenance, approved source registration and external-source
-  changed/missing states; inference/candidate policy and human-controlled core.
+- Optional external-source registration and changed/missing states. The native
+  adapter currently accepts only exact current-branch user/assistant text sources.
 - Worker dependency invalidation if workers are added. Canonical mutations now
   remove the disposable recall index and its owned interrupted build files;
   confirmed purge still cannot erase old exports or external copies.
-- Stable project alias configuration, scoped FTS, recall budgets and inspectable
-  context packets.
-- Pi activation/off/branch/compaction contracts and independently loaded entrypoint.
 - Scalable storage/reconciliation and stronger fault-injection/platform coverage.
 - Optional worker/provider controls and a reviewed live migration/cutover. Offline
-  legacy snapshot tooling is implemented separately; activation is not.
+  legacy snapshot tooling and native activation are implemented, but no real
+  snapshot import or activation has been performed.
 
 This is a **partial first implementation slice**, not completion of the proposal's
 portable-store acceptance gate. No live store, diary import or backend switch is

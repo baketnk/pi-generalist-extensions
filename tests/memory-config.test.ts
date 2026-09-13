@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { projectFor, readMemoryConfig, saveMemoryConfig, validateConfig, type MemoryConfig } from "../lib/memory/config.ts";
-import { POLICY_ENTRY, readMemoryPolicy, optmemRequested } from "../lib/memory/policy.ts";
+import { POLICY_ENTRY, readMemoryPolicy } from "../lib/memory/policy.ts";
 import { MemoryStore } from "../lib/memory/store.ts";
 import { decodeTransfer, encodeTransfer, validateNote, validateSnapshot, type Note } from "../lib/memory/schema.ts";
 
@@ -50,18 +50,15 @@ test("branch policy restores only its session/cwd, forks stay off, malformed lat
   branch.push({ type: "custom", customType: POLICY_ENTRY, data: null }); expect(readMemoryPolicy(ctx).enabled).toBe(false);
   branch.push({ type: "custom", customType: POLICY_ENTRY, data: { ...policy, profile: "continuity", personalId: randomUUID() } });
   expect(readMemoryPolicy(ctx).profile).toBe("continuity");
-  expect(optmemRequested(ctx, true)).toBe(true);
-  branch.push({ type: "custom", customType: "generalist:optmem:enabled", data: { enabled: false } });
-  expect(optmemRequested(ctx, true)).toBe(false);
 });
 
-test("capture metadata round-trips in v3; old versions reject new fields and invalid authorship", () => {
+test("capture metadata round-trips; old versions reject new fields and invalid authorship", () => {
   const f = fixture(), store = new MemoryStore(f.root); store.initialize();
   const note: Note = { scope: `project:${f.config.projects[0].id}`, kind: "reflection", title: "Synthetic reflection", body: "Fixture only",
     status: "candidate", author: "assistant", sources: [], claim: "inference",
     capture: { harness: "pi", sessionId: randomUUID(), entryId: "abc12345", toolCallId: "fixture-call", provider: "fixture", model: "fixture-model" } };
   const row = store.note(note, randomUUID()), snapshot = decodeTransfer(Buffer.from(store.export()));
-  expect(snapshot.version).toBe(3); expect(snapshot.revisions[0].capture).toEqual(row.capture);
+  expect(snapshot.version).toBe(4); expect(snapshot.revisions[0].capture).toEqual(row.capture);
   expect(() => validateSnapshot({ ...snapshot, version: 2 })).toThrow("version 3");
   expect(() => validateNote({ ...note, author: "user" })).toThrow("origin");
   expect(() => validateNote({ ...note, claim: "source-backed" })).toThrow("retained source");
@@ -70,5 +67,5 @@ test("capture metadata round-trips in v3; old versions reject new fields and inv
   const restoredRoot = fixture().root, restored = new MemoryStore(restoredRoot);
   restored.import(Buffer.from(encodeTransfer(old)), false);
   const upgraded = decodeTransfer(Buffer.from(restored.export()));
-  expect(upgraded.version).toBe(3); expect(upgraded.revisions).toEqual(old.revisions);
+  expect(upgraded.version).toBe(4); expect(upgraded.revisions).toEqual(old.revisions);
 });

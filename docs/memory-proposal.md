@@ -1,6 +1,6 @@
 # Proposal: pi-native memory with selective continuity
 
-Status: **design proposal; store and offline migration foundations implemented** in the [portable store prototype](memory-store.md) and [OptMem snapshot migration/review tooling](memory-migration.md). The full first acceptance gate and all Pi runtime integration remain incomplete. The agreed initial import destination is an unassigned review inbox; no live archive has been migrated. Requested direction: build for our Pi extensions now, keep data portable, and design an original replacement rather than making OptMem's CLI protocol the architecture. This document does not migrate personal data, enable model calls, or change existing runtime behavior.
+Status: **broader design proposal; bounded foreground MVP implemented** in the [portable store](memory-store.md), [scoped index](memory-index.md), [native Pi runtime](memory-runtime.md) and [offline migration tooling](memory-migration.md). Optional workers, external-source registration and unlimited storage remain future scope. The agreed initial import destination is an unassigned review inbox; no live archive has been migrated. The user subsequently requested removal of the OptMem runtime rather than maintaining dual-backend controls. Current implementation contracts take precedence over the prospective details below.
 
 Related: [roadmap](ROADMAP.md), [history search](history-search.md), [workpad](workpad.md), [background jobs proposal](bg-tasks-proposal.md).
 
@@ -183,7 +183,7 @@ Subagents do not inherit the memory tool, profiles, source roots or worker crede
 
 Coordinate with the [independent-entrypoint proposal](bg-tasks-proposal.md#independent-extension-loading-one-repository-is-sufficient). `generalist.ts` currently directly initializes modules; package filters cannot undo its imports. Do not expose both aggregator and child entrypoints by default.
 
-Initially make memory an explicitly loaded experimental entrypoint. Later adapt `lib/session-setup.ts` through a small capability interface so it offers available backends/profiles without requiring an unloaded extension. Keep a single active writable memory backend: `off`, `optmem`, or `native`. Restore old saved OptMem choices faithfully; never translate `/optmem on` into consent to native storage, personal recall or remote indexing. Refuse conflicting activation visibly rather than running two note/review loops. Meitan toggle semantics stay unchanged.
+Updated user direction: remove the OptMem runtime, flags, wake guidance and reminder entirely; retain only the offline compatibility importer. The package exposes default-off native memory through the existing picker/controller interface, also usable as a standalone resource. Old OptMem choices never become native consent. Original archive files remain untouched, and existing launchers must remove obsolete flags/resource paths before reload. Meitan toggle semantics stay unchanged.
 
 Migration sequence:
 

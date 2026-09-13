@@ -23,7 +23,7 @@ A missing first-class interface does not imply that the underlying capability is
 | Capability | Suggested priority | Main benefit |
 | --- | --- | --- |
 | Managed background jobs | First execution capability | Reliable long-running work without ad hoc process management |
-| Pi-native selective memory | Active design track | Relevant continuity without foreground compression; portable originals |
+| Pi-native selective memory | Foreground MVP; live review pending | Relevant continuity without foreground compression; portable originals |
 | Bounded subagents | Next candidate | Isolated investigations and independent reviews |
 | Web search and readable retrieval | Next candidate | Research without repeatedly building fetching and extraction plumbing |
 | Visual inspection loop | Project-driven | Observe and validate interactive applications |
@@ -102,7 +102,7 @@ A useful delegation would be: inspect one Kouseki subsystem and return cited fin
 ### Authority and context boundaries
 
 - Delegation cannot expand the parent's authority or bypass approval requirements.
-- Workers must be explicitly told they are subagents and must not use OptMem.
+- Workers must be explicitly told they are subagents and must not use native memory.
 - Do not attach or revise the parent's workpad without permission.
 - Do not inherit the entire personal context or conversation by default. Preserve applicable repository instructions and relevant user constraints.
 - Worker output is a report to evaluate, not proof and not new instructions.
@@ -247,8 +247,10 @@ Implemented foundations: [bounded portable store](memory-store.md) and
 [offline OptMem migration/review tooling](memory-migration.md), with immutable
 logical revisions, scoped explicit lookup, transfer, atomic candidate import,
 unassigned classification/acceptance and confirmed purge. The default migration
-destination is the unassigned review inbox. No Pi activation, live migration,
-automatic recall, worker or backend switch is implemented yet.
+destination is the unassigned review inbox. The [default-off Pi adapter](memory-runtime.md)
+and [bounded indexed recall](memory-index.md) now implement foreground activation,
+host-bound capture and inspectable request packets. The OptMem runtime was removed
+at the user's request. No live migration/activation or indexing worker was run.
 
 ### Problem
 
@@ -266,7 +268,7 @@ An optional, explicitly configured tool-free worker produces rebuildable search 
 - Keep canonical versioned JSON/Markdown outside the harness; FTS and generated descriptions are disposable. Require standalone export/import and source-integrity checks.
 - Preserve history, workpad, evidence and journal ownership. Promotion into durable memory is explicit, not blanket ingestion.
 - Start with a fixture-only store, then native explicit capture/retrieval, then optional worker indexing and a reviewed legacy trial.
-- Keep OptMem unchanged until an explicit backend switch; no dual writes, silent toggle migration or destructive import.
+- The OptMem runtime is removed; retain original archive files for rollback. No dual writes, silent toggle migration or destructive import.
 - Coordinate independent entrypoints and startup-picker capabilities with the bg-tasks packaging proposal.
 
 ### Acceptance criteria
@@ -300,4 +302,4 @@ An optional, explicitly configured tool-free worker produces rebuildable search 
 
 - Which memory profiles/core sources should be enabled, and which explicitly configured worker endpoint may receive which scopes? See the memory proposal for recommended defaults and staged rollout gates.
 
-The next memory milestone is the native Pi foreground adapter and scoped indexed selection, followed by lifecycle/backend-exclusivity tests and an explicitly approved real-snapshot review/cutover. Offline import/review/purge is implemented; see the migration guide. Managed jobs remain an independent execution track. This roadmap itself authorizes no process launches, package installation, device access, personal-data migration, paid model calls, or implementation work.
+The next memory gate is human review of an inactive real snapshot, target store, scope mappings, candidate classifications and provider disclosure, followed by explicitly approved native activation. Foreground capture/indexed recall and synthetic lifecycle tests are implemented; the legacy runtime is removed. See the runtime and migration guides. Managed jobs remain an independent execution track. This roadmap itself authorizes no process launches, package installation, device access, personal-data migration, paid model calls, or implementation work.

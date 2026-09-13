@@ -5,7 +5,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 export const POLICY_ENTRY = "generalist:memory:policy-v1";
 export interface MemoryPolicy {
   version: 1; sessionId: string; cwd: string; enabled: boolean;
-  profile: "project" | "continuity"; personalId?: string;
+  profile: "project" | "continuity"; personalId?: string; configDigest?: string;
 }
 export function readMemoryPolicy(ctx: ExtensionContext): MemoryPolicy {
   const sessionId = ctx.sessionManager.getSessionId();
@@ -19,20 +19,11 @@ export function readMemoryPolicy(ctx: ExtensionContext): MemoryPolicy {
       if (data.version !== 1 || typeof data.enabled !== "boolean" || !isAbsolute(data.cwd) || !["project", "continuity"].includes(data.profile)) continue;
       if (data.profile === "continuity") id(data.personalId);
       else if (data.personalId !== undefined) continue;
+      if (data.configDigest !== undefined && !/^[a-f0-9]{64}$/.test(data.configDigest)) continue;
       state = { version: 1, sessionId, cwd: ctx.cwd, enabled: data.enabled, profile: data.profile,
-        ...(data.personalId ? { personalId: data.personalId } : {}) };
+        ...(data.personalId ? { personalId: data.personalId } : {}),
+        ...(data.configDigest ? { configDigest: data.configDigest } : {}) };
     } catch { /* malformed state stays off */ }
   }
   return state;
-}
-export function nativeRequested(ctx: ExtensionContext): boolean {
-  // Old test/tool contexts without a session ID have no native activation grant.
-  return !!ctx.sessionManager.getSessionId && readMemoryPolicy(ctx).enabled;
-}
-export function optmemRequested(ctx: ExtensionContext, initialFlag: unknown): boolean {
-  let enabled = initialFlag === true;
-  for (const entry of ctx.sessionManager.getBranch()) {
-    if (entry.type === "custom" && entry.customType === "generalist:optmem:enabled" && typeof (entry.data as { enabled?: unknown })?.enabled === "boolean") enabled = (entry.data as { enabled: boolean }).enabled;
-  }
-  return enabled;
 }

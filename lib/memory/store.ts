@@ -47,7 +47,10 @@ export function withStoreLock<T>(root: string, action: () => T): T {
 /** Bounded local store; no Pi API, provider, default home or timers. */
 export class MemoryStore {
   readonly root: string;
-  constructor(root: string) {
+  readonly expectedStoreId?: string;
+  constructor(root: string, expectedStoreId?: string) {
+    if (expectedStoreId !== undefined) id(expectedStoreId);
+    this.expectedStoreId = expectedStoreId;
     if (!isAbsolute(root)) throw new Error("Explicit absolute store root required");
     this.root = resolve(root);
     checkRoot(this.root); // caller creates the private directory explicitly
@@ -55,10 +58,13 @@ export class MemoryStore {
   private locked<T>(action: () => T): T { return withStoreLock(this.root, action); }
   private load(): Snapshot {
     checkRoot(this.root);
-    return decodeSnapshot(boundedFile(join(this.root, "store.json"), STORE_BYTES));
+    const snapshot = decodeSnapshot(boundedFile(join(this.root, "store.json"), STORE_BYTES));
+    if (this.expectedStoreId !== undefined && snapshot.storeId !== this.expectedStoreId) throw new Error("Configured store identity changed");
+    return snapshot;
   }
   private publish(value: Snapshot) {
-    value.version = 3; // old stores upgrade on explicit writes, never on reads
+    if (this.expectedStoreId !== undefined && value.storeId !== this.expectedStoreId) throw new Error("Configured store identity changed");
+    value.version = 4; // old stores upgrade on explicit writes, never on reads
     validateSnapshot(value);
     invalidateRecallIndex(this.root); // includes purge: derived copies cannot outlive originals
     const target = join(this.root, "store.json");
@@ -76,7 +82,8 @@ export class MemoryStore {
     return this.locked(() => {
       try { return this.load().storeId; }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-      const snapshot: Snapshot = { format: "pi-memory-prototype", version: 3, storeId: randomUUID(), revisions: [] };
+      if (this.expectedStoreId !== undefined) throw new Error("Configured store is missing; initialization refused");
+      const snapshot: Snapshot = { format: "pi-memory-prototype", version: 4, storeId: randomUUID(), revisions: [] };
       this.publish(snapshot); return snapshot.storeId;
     });
   }
@@ -158,9 +165,10 @@ export class MemoryStore {
       try { snapshot = this.load(); }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        snapshot = { format: "pi-memory-prototype", version: 3, storeId: randomUUID(), revisions: [] };
+        if (this.expectedStoreId !== undefined) throw new Error("Configured store is missing; initialization refused");
+        snapshot = { format: "pi-memory-prototype", version: 4, storeId: randomUUID(), revisions: [] };
       }
-      snapshot.version = 3;
+      snapshot.version = 4;
       const operations = new Map(snapshot.revisions.map(r => [r.operation, r]));
       const seen = new Set<string>();
       let added = 0, existing = 0, skippedPurged = 0;
@@ -204,6 +212,7 @@ export class MemoryStore {
   /** Same-store merge or explicit empty-root restore; never silently combines stores. */
   import(bytes: Buffer, dryRun = true) {
     const incoming = decodeTransfer(bytes); // validate all input before taking lock or publishing
+    if (this.expectedStoreId !== undefined && incoming.storeId !== this.expectedStoreId) throw new Error("Configured store identity changed");
     return this.locked(() => {
       let local: Snapshot;
       try { local = this.load(); }
@@ -227,7 +236,7 @@ export class MemoryStore {
         if (old && canonical(old) !== canonical(row)) throw new Error("Import revision conflict");
         if (!old) { local.revisions.push(row); added++; }
       }
-      local.version = 3;
+      local.version = 4;
       validateSnapshot(local);
       if (!dryRun) this.publish(local);
       return { storeId: local.storeId, added, dryRun };

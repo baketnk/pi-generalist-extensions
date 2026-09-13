@@ -202,11 +202,11 @@ describe("portable memory prototype", () => {
     expect(s.read(row.id, [project])).toEqual(row);
     expect(decodeTransfer(Buffer.from(s.export())).version).toBe(1);
     s.note(note({ title: "Schema upgrade" }), randomUUID());
-    expect(decodeTransfer(Buffer.from(s.export())).version).toBe(3);
+    expect(decodeTransfer(Buffer.from(s.export())).version).toBe(4);
     expect(s.read(row.id, [project])).toEqual(row);
     const restored = new MemoryStore(root()); restored.import(Buffer.from(encodeTransfer(old)), false);
     expect(restored.read(row.id, [project])).toEqual(row);
-    expect(decodeTransfer(Buffer.from(restored.export())).version).toBe(3);
+    expect(decodeTransfer(Buffer.from(restored.export())).version).toBe(4);
   });
   test("canonical serialization is key-order independent, not array-order independent", () => {
     expect(canonical({ z: 1, a: [2, 1] })).toBe(canonical({ a: [2, 1], z: 1 }));

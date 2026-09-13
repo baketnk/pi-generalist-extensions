@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import meitan from "../extensions/meitan.ts";
-import optmem from "../extensions/optmem.ts";
+import { registerToggle } from "../lib/toggle.ts"; // Picker stub; native lifecycle has separate tests.
 import { hasLaunchOverrides, registerSessionSetup } from "../lib/session-setup.ts";
 import { HISTORY_LIMIT, readHistory, rememberPreset, type ModelPreset } from "../lib/model-history.ts";
 import { pickModel } from "../lib/model-picker.ts";
@@ -61,7 +61,7 @@ function harness(argv: string[] = [], historyPath = join(temp(), "history.json")
     setModel: async (value: any) => { model = value; changes.push(`model:${model.id}`); return true; },
     setThinkingLevel: (level: ModelPreset["thinking"]) => { thinking = level; changes.push(`thinking:${level}`); },
   };
-  const toggles = { meitan: meitan(pi), optmem: optmem(pi) };
+  const toggles = { meitan: meitan(pi), memory: registerToggle(pi, "memory", "Fixture memory controller") };
   registerSessionSetup(pi, toggles, { argv, historyPath });
   const emit = async (name: string, event: any = { reason: "startup" }) => {
     for (const fn of events[name] ?? []) await fn(event, ctx);
@@ -75,8 +75,8 @@ test("fresh session asks personality first, records both off/on decisions, then 
   await h.emit("session_start");
   expect(h.prompts.map(p => p.title)).toEqual(["1/2 · Personality / memory", "2/2 · Model / thinking preset (most recent first)"]);
   expect(h.toggles.meitan()).toBe(true);
-  expect(h.toggles.optmem()).toBe(true);
-  expect(h.pi.getActiveTools()).toEqual(["read", "bash", "other", "memo"]);
+  expect(h.toggles.memory()).toBe(true);
+  expect(h.pi.getActiveTools()).toEqual(["read", "bash", "other"]);
   expect(readHistory(h.historyPath)).toEqual([preset()]);
   expect(h.changes).toEqual([]); // Keep current doesn't set model or thinking.
   await h.emit("session_start", { reason: "reload" });
@@ -101,7 +101,7 @@ test("MRU pairs appear first, selection promotes them and applies model before t
   expect(h.changes).toEqual(["model:beta", "thinking:max"]);
   expect(readHistory(h.historyPath)[0]).toEqual(preset("beta", "max"));
   expect(h.toggles.meitan()).toBe(false);
-  expect(h.toggles.optmem()).toBe(true);
+  expect(h.toggles.memory()).toBe(true);
 });
 
 test("browse creates a preset using only supported thinking levels", async () => {
@@ -112,7 +112,7 @@ test("browse creates a preset using only supported thinking levels", async () =>
   expect(h.changes).toEqual(["model:beta", "thinking:max"]);
   expect(readHistory(h.historyPath)).toEqual([preset("beta", "max")]);
   expect(h.toggles.meitan()).toBe(false);
-  expect(h.toggles.optmem()).toBe(false);
+  expect(h.toggles.memory()).toBe(false);
 });
 
 test("scoped models restrict browse/history, and scope thinking preference leads", async () => {
@@ -150,7 +150,7 @@ test("cancel at any stage preserves model/thinking; initial cancel changes no to
 
 test("explicit launch configuration, prompts, and resume flags never trigger questions", async () => {
   for (const argv of [["--model", "alpha"], ["--model=alpha"], ["--provider", "test"], ["--thinking", "high"],
-    ["--models", "*"], ["--meitan"], ["--optmem=false"], ["--preset", "work"], ["--no-session-setup"],
+    ["--models", "*"], ["--meitan"], ["--memory-config", "/synthetic/native-memory.json"], ["--preset", "work"], ["--no-session-setup"],
     ["-c"], ["--resume"], ["--session", "a.jsonl"], ["--fork", "a.jsonl"], ["--session-id", "id"],
     ["Help me"], ["--", "--model"], ["@prompt.md"], ["--some-launcher-flag"]]) {
     const h = harness(argv); await h.emit("session_start");
@@ -185,11 +185,11 @@ test("saved sessions, forks, reload/resume and non-TUI modes are untouched", asy
 });
 
 test("CLI flags seed independently and saved toggle decisions still win", async () => {
-  const h = harness(); h.flags.meitan = true; h.flags.optmem = true;
-  h.entries.push({ type: "custom", customType: "generalist:optmem:enabled", data: { enabled: false } });
+  const h = harness(); h.flags.meitan = true; h.flags.memory = true;
+  h.entries.push({ type: "custom", customType: "generalist:memory:enabled", data: { enabled: false } });
   await h.emit("session_start");
   expect(h.prompts).toEqual([]);
-  expect(h.toggles.meitan()).toBe(true); expect(h.toggles.optmem()).toBe(false);
+  expect(h.toggles.meitan()).toBe(true); expect(h.toggles.memory()).toBe(false);
 });
 
 test("/new asks again; manual command works despite launch flags and waits for idle", async () => {
@@ -199,7 +199,7 @@ test("/new asks again; manual command works despite launch flags and waits for i
   const fresh = harness(); fresh.answers.push(0, 0);
   await fresh.emit("session_start"); fresh.entries.length = 0;
   fresh.answers.push(1, 0); await fresh.emit("session_start", { reason: "new" });
-  expect(fresh.prompts).toHaveLength(4); expect(fresh.toggles.optmem()).toBe(true);
+  expect(fresh.prompts).toHaveLength(4); expect(fresh.toggles.memory()).toBe(true);
 });
 
 test("failed authentication keeps thinking and history unchanged", async () => {

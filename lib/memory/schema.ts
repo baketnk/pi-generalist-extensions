@@ -5,10 +5,11 @@ export const MAX_REVISIONS = 8192;
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export type Scope = `project:${string}` | `personal:${string}` | "unassigned";
 export interface Source {
-  // Caller-declared provenance, not host-verified transcript provenance.
+  // Library callers declare provenance; the Pi adapter binds origin and exact text.
   id: string; author: "user" | "assistant" | "import";
   timestamp?: string; precision?: "day" | "instant" | "unknown";
   excerpt: string; sha256: string;
+  origin?: { harness: "pi"; sessionId: string; entryId: string };
 }
 export interface LegacyOrigin {
   format: "optmem-fixed-v1"; archiveId: string;
@@ -32,7 +33,7 @@ export interface Revision extends Note {
   operation: string;
 }
 export interface Purged { id: string; operations: string[] }
-export interface Snapshot { format: "pi-memory-prototype"; version: 1 | 2 | 3; storeId: string; revisions: Revision[]; purged?: Purged[] }
+export interface Snapshot { format: "pi-memory-prototype"; version: 1 | 2 | 3 | 4; storeId: string; revisions: Revision[]; purged?: Purged[] }
 export interface Envelope { format: "pi-memory-transfer"; version: 1; sha256: string; snapshot: Snapshot }
 export const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 /** Sorted object keys, preserved array order, UTF-8 JSON, no trailing newline. */
@@ -93,7 +94,12 @@ function fields(value: Record<string, unknown>) {
   if (value.claim === "source-backed" && !value.sources.length) throw new Error("Source-backed notes require a retained source");
   const ids = new Set();
   for (const source of value.sources) {
-    object(source, ["id", "author", "timestamp", "precision", "excerpt", "sha256"]);
+    object(source, ["id", "author", "timestamp", "precision", "excerpt", "sha256", "origin"]);
+    if (source.origin !== undefined) {
+      object(source.origin, ["harness", "sessionId", "entryId"]);
+      if (source.origin.harness !== "pi" || source.author === "import") throw new Error("Invalid source origin");
+      id(source.origin.sessionId); text(source.origin.entryId, 128);
+    }
     id(source.id); text(source.excerpt, 8192);
     if (source.precision !== undefined && !["day", "instant", "unknown"].includes(source.precision as string)) throw new Error("Invalid time precision");
     if (source.timestamp === undefined) {
@@ -109,7 +115,7 @@ function fields(value: Record<string, unknown>) {
 export function validateNote(value: unknown): asserts value is Note { object(value, noteKeys); fields(value); }
 export function validateSnapshot(value: unknown): asserts value is Snapshot {
   object(value, ["format", "version", "storeId", "revisions", "purged"]);
-  if (value.format !== "pi-memory-prototype" || ![1, 2, 3].includes(value.version as number)) throw new Error("Unsupported store format");
+  if (value.format !== "pi-memory-prototype" || ![1, 2, 3, 4].includes(value.version as number)) throw new Error("Unsupported store format");
   id(value.storeId);
   if (!Array.isArray(value.revisions) || value.revisions.length > MAX_REVISIONS) throw new Error("Revision quota exceeded");
   if (value.version === 1 && value.purged !== undefined) throw new Error("Purge tombstones require schema version 2");
@@ -130,7 +136,8 @@ export function validateSnapshot(value: unknown): asserts value is Snapshot {
   for (const row of value.revisions) {
     object(row, [...noteKeys, "id", "revision", "createdAt", "reason", "operation"]); fields(row);
     if (value.version === 1 && (row.legacy !== undefined || row.scope === "unassigned" || row.kind === "artifact" || (row.sources as Source[]).some(s => s.precision !== undefined || s.timestamp === undefined))) throw new Error("Migration fields require schema version 2");
-    if (value.version !== 3 && (row.capture !== undefined || row.claim !== undefined)) throw new Error("Native capture fields require schema version 3");
+    if (![3, 4].includes(value.version as number) && (row.capture !== undefined || row.claim !== undefined)) throw new Error("Native capture fields require schema version 3");
+    if (value.version !== 4 && (row.sources as Source[]).some(s => s.origin !== undefined)) throw new Error("Source entry origins require schema version 4");
     id(row.id); id(row.operation); date(row.createdAt); text(row.reason, 1024);
     const previous = latest.get(row.id);
     if (purgedIds.has(row.id) || row.revision !== (previous?.revision ?? 0) + 1 || operations.has(row.operation)) throw new Error("Invalid revision chain or duplicate operation");

@@ -8,10 +8,10 @@ import { presetLabel, readHistory, rememberPreset, type ModelPreset, type Thinki
 
 const marker = "generalist:session-setup";
 const personalities = [
-  { label: "Plain coding — personality off, memory off", meitan: false, optmem: false },
-  { label: "Coding + memory — OptMem on", meitan: false, optmem: true },
-  { label: "Meitan — personality on, memory off", meitan: true, optmem: false },
-  { label: "Meitan + memory — both on", meitan: true, optmem: true },
+  { label: "Plain coding — personality off, memory off", meitan: false, memory: false },
+  { label: "Coding + native memory — requires /memory configure", meitan: false, memory: true },
+  { label: "Meitan — personality on, memory off", meitan: true, memory: false },
+  { label: "Meitan + native memory — requires /memory configure", meitan: true, memory: true },
 ];
 
 /** Only bare interactive launches (plus UI/resource options) get unsolicited UI.
@@ -37,7 +37,7 @@ export function hasLaunchOverrides(argv: string[]) {
   return false;
 }
 
-type Toggles = Record<"meitan" | "optmem", ReturnType<typeof registerToggle>>;
+type Toggles = Record<"meitan" | "memory", ReturnType<typeof registerToggle>>;
 
 export function registerSessionSetup(pi: ExtensionAPI, toggles: Toggles,
   options: { argv?: string[]; historyPath?: string } = {}) {
@@ -129,14 +129,15 @@ export function registerSessionSetup(pi: ExtensionAPI, toggles: Toggles,
       const personality = personalities.find(p => p.label === selected);
       if (!personality) return; // Cancel leaves everything unchanged; no second question.
       toggles.meitan.set(personality.meitan, ctx);
-      toggles.optmem.set(personality.optmem, ctx);
+      try { toggles.memory.set(personality.memory, ctx); }
+      catch (error) { ctx.ui.notify(`Native memory unchanged: ${String(error)}`, "warning"); }
       await choosePreset(ctx); // Cancel here retains the personality choice and current model.
     } finally { busy = false; }
   }
 
   pi.on("session_start", async (event, ctx) => {
     if (ctx.mode !== "tui" || !["startup", "new"].includes(event.reason)) return;
-    if (pi.getFlag("no-session-setup") || pi.getFlag("meitan") || pi.getFlag("optmem") || hasLaunchOverrides(argv)) return;
+    if (pi.getFlag("no-session-setup") || pi.getFlag("meitan") || pi.getFlag("memory-config") || hasLaunchOverrides(argv)) return;
     // Fresh sessions already contain initial model/thinking entries. Any saved
     // session, conversation, or extension decision should not be reconfigured.
     const file = ctx.sessionManager.getSessionFile();

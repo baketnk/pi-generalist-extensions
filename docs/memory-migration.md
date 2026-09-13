@@ -1,9 +1,10 @@
 # OptMem migration: offline import and review
 
-Status: **implemented and fixture-tested offline tooling; not a live native Pi
-backend or a completed cutover**. The agreed initial destination is the
-**unassigned review inbox**, not personal/global automatic recall. OptMem remains
-unchanged until an explicitly reviewed backend switch.
+Status: **implemented and fixture-tested offline tooling; no real-data cutover**.
+The [native foreground runtime](memory-runtime.md) is also implemented, default off.
+The agreed initial destination is the **unassigned review inbox**, not automatic
+personal/global recall. At the user's request the OptMem runtime integration was
+removed; original OptMem files remain untouched for a separately reviewed migration.
 
 ## Implemented
 
@@ -150,7 +151,8 @@ No worker payloads exist yet; future workers need equivalent invalidation.
   after rename may be uncertain: inspect and retry with the same archive identity.
   See [store failure contract](memory-store.md) for lock and fsync limitations.
 - Snapshot schema v2 adds migration provenance, day/unknown source-time precision,
-  unassigned/artifact kinds and purge tombstones. Original v1 stores remain readable
+  unassigned/artifact kinds and purge tombstones. Schemas v3/v4 add native
+  capture, claim and source-origin metadata. Original v1–3 stores remain readable
   and upgrade on explicit writes/restore; original revision contents are preserved.
 
 ## Validation and remaining cutover gates
@@ -163,18 +165,18 @@ classification/acceptance, purge/reimport behavior, old-schema upgrades and CLI
 approval/digest handling. A real subprocess export test checks large piped output
 is complete. No private archive fixture is stored in the repository.
 
-**Still needed before calling this an OptMem replacement inside Pi:**
+**Implemented runtime gates:** native configuration/profile mapping and host-bound
+capture; prepared scoped FTS, budgets and inspectable packets; tested off/reload/
+branch/fork/compaction projection behavior. The old tool, wake guidance and hidden
+reminder are removed together, rather than translating an old toggle into native
+consent. A real Node/Pi loader and scripted agent-loop fixture validates capture
+and packet invalidation without contacting a provider.
 
-1. A native extension with explicit profile/project mapping and host-bound capture
-   provenance; no arbitrary transcript paths or model-supplied user authorship.
-2. Scoped FTS/retrieval budgets and inspectable selection packets, with no whole
-   archive lookup/serialization on each prompt. The bounded snapshot store is
-   adequate for offline staging, not the final prompt-path storage architecture.
-3. Tested activation/off/reload/resume/fork/tree/compaction behavior and a single
-   writable-backend guard. Turning native memory on must disable the OptMem tool,
-   wake guidance and hidden reminder together, not silently reinterpret old flags.
-4. A read-only comparison on an explicitly approved real snapshot, review of
-   candidates, then a human-approved switch with the old files retained for rollback.
+**Still requires human review:** select an inactive real snapshot and target store,
+run the read-only comparison/dry-run, inspect/classify candidates, approve project
+and personal UUID mappings and provider disclosure, then activate native memory.
+Keep the old files and validate rollback/export. Manual TUI/RPC usability and
+real-data recall quality are not established by the synthetic tests.
 
 A separate indexing model can follow; it is **not required** to escape OptMem's
 foreground wake/nap loop. No migration, personality activation, provider consent,

@@ -11,27 +11,27 @@ pi install ~/workspace/pi-generalist-extensions
 Run `/reload` in an existing pi session, or start a new one.
 
 - `/meitan [on|off|status]`: toggle personality; no argument flips it.
-- `/optmem [on|off|status]`: independently toggle compact memory.
+- `/memory`: native memory status; `/memory configure`, `/memory on`, `/memory off`, `/memory context` and review controls.
 - `/tasks [clear]`: view or clear the branch-local task checklist.
 - `/questions [list|clear]`: answer, inspect, or discard asynchronously queued questions; `Ctrl+Shift+Q` opens the oldest batch.
-- `pi --meitan --optmem`: enable both initially, including print mode.
+- `pi --meitan`: enable personality initially. `--memory-config /absolute/config.json` selects native configuration but does not enable memory.
 
-Both default off until selected. Decisions are saved in the current session branch and restored on reload/resume/fork/tree navigation. Saved decisions take precedence over CLI flags. Slash-command changes wait for idle and apply to the next prompt. Enabled toggles appear in the footer.
+Both default off. Native memory requires an explicitly configured store and project/profile mapping, and a human activation decision. Memory grants are session/cwd/config-bound: reload/resume/tree restore them, but new/forked sessions start off. `/memory off` immediately blocks new captures and recall; other changes wait for idle. Personality retains its existing branch/CLI behavior. Enabled features appear in the footer.
 
 ## Startup questions
 
 A fresh interactive `pi` (or `/new` in an unconfigured launch) asks, in order:
 
-1. **Personality / memory:** plain coding, coding + OptMem, Meitan only, or Meitan + OptMem.
+1. **Personality / memory:** plain coding, coding + native memory, Meitan only, or Meitan + native memory. Memory requires `/memory configure` first; unavailable configuration warns without blocking model selection.
 2. **Model / thinking preset:** recently used combinations, keep the current combination, or choose another model and thinking level. The model browser supports typing to filter; thinking choices reflect the selected model's supported levels.
 
 The eight most recently used model/thinking combinations appear first, newest first. Choosing one promotes it; combinations actually used after `/model` or thinking changes are also remembered. History lives in `~/.pi/agent/generalist-model-history.json` (under pi's agent directory when overridden), shared across projects. It stores only provider/model IDs and thinking levels—not credentials or conversation content. Writes are atomic and best-effort; simultaneous pi processes may race on recency. Unavailable, out-of-scope, and no-longer-supported combinations are hidden. Pi's configured default model/thinking settings are **not** changed, and previous choices are never applied silently to a new session.
 
 No automatic questions for resumed/forked/saved sessions, `/reload`, print/JSON/RPC mode, or launches with explicit model/provider/thinking/scoped-model/preset/toggle flags (including Kouseki launches). Initial prompts/files and unknown launcher switches also suppress the picker conservatively. Ordinary name, extension/resource, offline, and terminal-display options are allowed. `pi --no-session-setup` explicitly skips startup questions.
 
-Use **`/session-setup`** to open both steps manually in an interactive session, even when launch flags suppressed startup. Existing `/meitan`, `/optmem`, and `/model` commands still work independently. Cancel the first question to keep everything unchanged; cancel model selection to keep the chosen personality/memory but leave model/thinking unchanged. No automatic re-prompt on reload. History errors warn without blocking session choices; delete a corrupt history file to reset recents.
+Use **`/session-setup`** to open both steps manually in an interactive session, even when launch flags suppressed startup. Existing `/meitan`, `/memory`, and `/model` commands still work independently. Cancel the first question to keep everything unchanged; cancel model selection to keep the chosen personality/memory but leave model/thinking unchanged. No automatic re-prompt on reload. History errors warn without blocking session choices; delete a corrupt history file to reset recents.
 
-The package now loads `extensions/generalist.ts`, which initializes both independent toggles before the picker. The original `meitan.ts` and `optmem.ts` remain usable as standalone extensions without startup questions; don't load them separately alongside the package.
+The package loads `extensions/generalist.ts`, which initializes both independent features before the picker. `meitan.ts` and `memory.ts` also work as standalone extensions without startup questions; don't load them separately alongside the package.
 
 ## Tasks and user questions
 
@@ -47,27 +47,26 @@ Both extensions are original Pi-native implementations with no runtime dependenc
 
 Set `PI_MEITAN_HOME` to another **absolute** directory if needed. This repo contains code, not personal context; it never creates or edits your context files. The initial local migration copied Hermes files without changing the originals; future changes are not synchronized. Journal stays at `~/workspace/meitan_journal`.
 
-## OptMem
+## Native memory
 
-Uses `~/.optmem/memo`, or `PI_OPTMEM_MEMO` (executable path, not a shell command). Inherits OptMem's `MEMORY_DIR`; it does not create a new memory store. The `memo` tool accepts an argument array for wake, note, nap, recall, zoom, and read-only config. Execution is shell-free, cancellable, and limited to 30 seconds. Output is capped at 2000 lines / 50 KB.
+The `memory` tool provides scoped indexed recall, accepted-original reads, authored
+notes/revisions, exact host-bound source excerpts and open-thread cues. Automatic
+recall is bounded, request-frozen and inspectable with `/memory context`. Candidates
+and unassigned records are never automatically recalled; personal scope requires
+an explicitly selected continuity profile. No worker, provider call, compression,
+post-answer reminder or shutdown save is added by this extension.
 
-The model is instructed to wake before work after enable/start/reload/tree/compaction, complete pagination and requested compression, and consider saving only useful nonredundant facts before its final answer. Wake/nap sequencing is prompt guidance, not a hard tool gate. No startup subprocess, direct automated memory writes, or shutdown notes. Administrative commands remain outside the tool. Disabling removes the tool and its injected instructions; execute also checks the toggle.
-
-After a normal completed answer, OptMem checks the active session branch since the latest user message for a `memo` tool call with `args[0] === "note"`. If none exists, it queues one hidden, extension-authored memory-review follow-up (not an impersonated user message). This adds model work after the initial answer has already streamed; the model may save nothing and is instructed not to repeat the answer or resume project work. The reminder is hidden, not its subsequent model/tool activity. This is a reminder, not a semantic classifier or a guarantee that a memory is saved.
-
-A branch-local request marker prevents recursive reminders and survives reload/resume/compaction. Earlier requests' saves do not suppress later reviews. Any note *attempt* suppresses the reminder, including failed/interrupted writes that might have landed; it never encourages an automatic write retry. Wake/recall/nap calls and text merely mentioning `memo note` do not count. Errors, cancellation, truncation, terminating tool batches and already-pending messages suppress follow-up injection. Nothing runs on session shutdown. Subagents remain instructed not to use memory. `/reload` or a new pi process loads changes; existing processes do not hot-update automatically.
-
-**Off is not a privacy sandbox or amnesia:** ordinary bash/read tools can still reach local files, and prior tool outputs, responses, or summaries remain in conversation history. Use a new session to avoid historical influence. Model/provider behavior still affects personality; pi's coding instructions remain intact.
-
-## Native memory migration (offline staging)
-
-The native store now has an offline OptMem snapshot importer, dry-run reports,
-versioned export/restore, unassigned candidate review, separate classification and
-acceptance, and confirmed purge with anti-resurrection tombstones. No live data is
-imported automatically and no native memory tool or backend switch is enabled yet.
+See [first-use setup, commands and privacy/lifecycle contract](docs/memory-runtime.md),
+[index semantics and budgets](docs/memory-index.md), and [portable store](docs/memory-store.md).
 Workpad remains in-session working context; durable memory is out-of-session.
-See [migration steps and remaining cutover gates](docs/memory-migration.md),
-[store contract](docs/memory-store.md), and [roadmap](docs/ROADMAP.md).
+**Off is not amnesia or a filesystem sandbox:** prior outputs, packet audits,
+exports and backups remain. Ordinary shell/read tools retain filesystem access.
+
+The OptMem runtime is removed. Remove obsolete standalone `optmem.ts` resources
+and `--optmem` launcher flags, then reload Pi. Existing archives remain untouched.
+The [offline importer](docs/memory-migration.md) remains for a separately approved
+migration, with digest-gated staging, unassigned review, classification/acceptance,
+and confirmed purge. No live archive is imported or native backend enabled automatically.
 
 ## Cross-harness history search
 
@@ -89,7 +88,7 @@ creation/attachment, reads and revision-checked updates. Revision-labelled snaps
 are journalled and replayed at fixed conversation boundaries for append-only cache
 reuse. `/workpad size 2|4|8` selects the KiB cap (default 4); `/workpad refresh 10`
 adds optional reminders after estimated context growth (off by default).
-New/forked sessions start detached. Independent of personality and OptMem.
+New/forked sessions start detached. Independent of personality and native memory.
 See [storage, context/privacy, limitations and phase-two scope](docs/workpad.md).
 
 ## Evidence shelf
@@ -110,6 +109,6 @@ bun test
 bun run typecheck
 ```
 
-Tests use temporary context/history and a mocked pi API, plus a component-level model-picker test; they do not read/write personal memory or call a model. On the original machine, installation of the exact already-installed pi 0.85.1 required `bun install --minimum-release-age=0` because it was newer than the local release-age policy.
+Tests use synthetic temporary context/history, mocked hooks and real Pi session branches. A separate Node/Pi loader/agent-loop fixture uses a scripted stream with network disabled; tests do not read/write personal memory or call a live model. On the original machine, installation of the exact already-installed pi 0.85.1 required `bun install --minimum-release-age=0` because it was newer than the local release-age policy.
 
 Uninstall: `pi remove ~/workspace/pi-generalist-extensions`, then `/reload`. Personal context and memory are retained.

@@ -12,7 +12,7 @@ export interface Generation { storeId: string; stamp: string; hash: string }
 export interface RecallItem {
   id: string; revision: number; scope: Scope; kind: Revision["kind"]; author: Revision["author"];
   title: string; body: string; date: string; recordHash: string; sourceHashes: string[];
-  provenance: string; threadStatus?: Revision["threadStatus"]; reason: "human pin" | "lexical match";
+  provenance: string; claim?: Revision["claim"]; capture?: Revision["capture"]; threadStatus?: Revision["threadStatus"]; reason: "human pin" | "lexical match";
 }
 export function storeStamp(root: string): string {
   checkRoot(root);
@@ -41,7 +41,7 @@ export function rebuildRecallIndex(root: string, expectedStoreId: string, signal
     let db: DatabaseSync | undefined;
     try {
       db = new DatabaseSync(temp);
-      db.exec(`PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA user_version=1;
+      db.exec(`PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA user_version=2;
         CREATE TABLE metadata(json TEXT NOT NULL);
         CREATE TABLE records(id TEXT UNIQUE NOT NULL, scope TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, date TEXT NOT NULL, json TEXT NOT NULL);
         CREATE INDEX scope_lookup ON records(scope);
@@ -57,6 +57,7 @@ export function rebuildRecallIndex(root: string, expectedStoreId: string, signal
         const item: RecallItem = { id: r.id, revision: r.revision, scope: r.scope, kind: r.kind, author: r.author,
           title: r.title, body: r.body, date, recordHash: hash(canonical(r)), sourceHashes: r.sources.map(s => s.sha256),
           provenance: r.legacy ? "Imported OptMem original; original author unknown; date has day precision" : "Authored note; source hashes check bytes, not truth or entailment",
+          ...(r.claim ? { claim: r.claim } : {}), ...(r.capture ? { capture: r.capture } : {}),
           ...(r.threadStatus ? { threadStatus: r.threadStatus } : {}), reason: "lexical match" };
         const result = insert.run(r.id, r.scope, r.title, r.body, date, canonical(item));
         insertFts.run(result.lastInsertRowid, r.title, r.body); count++;
@@ -80,13 +81,15 @@ export function rebuildRecallIndex(root: string, expectedStoreId: string, signal
 export class RecallIndex {
   private db: DatabaseSync;
   readonly generation: Generation;
-  constructor(readonly root: string, expectedStoreId: string) {
+  readonly root: string;
+  constructor(root: string, expectedStoreId: string) {
+    this.root = root;
     id(expectedStoreId); const stamp = storeStamp(root), path = join(root, INDEX_FILE), stat = lstatSync(path);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > INDEX_BYTES) throw new Error("Unavailable recall index");
     this.db = new DatabaseSync(path, { readOnly: true });
     try {
       this.db.exec("PRAGMA query_only=ON; PRAGMA busy_timeout=0; PRAGMA trusted_schema=OFF;");
-      if ((this.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version !== 1) throw new Error("Unsupported recall index");
+      if ((this.db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version !== 2) throw new Error("Unsupported recall index");
       const row = this.db.prepare("SELECT json FROM metadata LIMIT 1").get() as { json?: string } | undefined;
       if (!row?.json || Buffer.byteLength(row.json) > 1024) throw new Error("Invalid recall generation");
       this.generation = JSON.parse(row.json);
