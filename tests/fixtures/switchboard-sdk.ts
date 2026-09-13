@@ -14,7 +14,7 @@ globalThis.fetch = (() => { throw new Error("Provider network forbidden in switc
 const paths = { root, socket: join(root, "board.sock") }, board = await serve(paths);
 const parent = new BoardClient(paths, secret());
 const card = { cwd: root, worktree: root, project: root, name: "parent-fixture", summary: "fixture review", activity: "idle" as const };
-await parent.connect(card);
+const parentCard = await parent.connect(card);
 const worker = await parent.call<{ id: string; token: string }>("provision", { runId: "fixture-run" });
 const workerFile = join(root, "worker.json"); await writeFile(workerFile, JSON.stringify({ token: worker.token }), { mode: 0o600 });
 process.env.PI_SWITCHBOARD_WORKER_FILE = workerFile;
@@ -38,10 +38,11 @@ let turns = 0; const outgoing: string[] = []; let inputPromise: Promise<void> | 
 session.agent.streamFunction = (_model, context) => {
   outgoing.push(JSON.stringify(context)); turns++;
   const waiting = turns === 1 || turns === 3;
+  const args = waiting ? { action: "wait", seconds: 10 } : turns === 5 ? { action: "read" } : turns === 7 ? { action: "send", recipient: parentCard.handle, body: "handle-routed fixture reply" } : undefined;
   const stream = createAssistantMessageEventStream();
   const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
-    stopReason: waiting ? "toolUse" : "stop",
-    content: waiting ? [{ type: "toolCall", id: `wait-${turns}`, name: "switchboard", arguments: { action: "wait", seconds: 10 } }] : [{ type: "text", text: "Fixture done" }],
+    stopReason: args ? "toolUse" : "stop",
+    content: args ? [{ type: "toolCall", id: `call-${turns}`, name: "switchboard", arguments: args }] : [{ type: "text", text: "Fixture done" }],
     usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
   stream.push({ type: "done", reason: message.stopReason as "stop" | "toolUse", message }); stream.end(); return stream;
 };
@@ -59,6 +60,7 @@ try {
   await session.prompt("Wait for the peer.");
   assert.equal(turns, 2, JSON.stringify({ errors, messages: session.messages }));
   assert.ok(outgoing[0]!.includes("parent-fixture"));
+  assert.ok(outgoing[0]!.includes(parentCard.handle));
   assert.ok(!outgoing.join("").includes("private body, not an automatic preview"));
   let results = session.messages.filter(m => m.role === "toolResult");
   assert.ok(JSON.stringify(results[0]).includes('mail'));
@@ -73,6 +75,16 @@ try {
   assert.ok(JSON.stringify(results[1]).includes("user_input"), JSON.stringify(results));
   assert.deepEqual(errors, []);
   assert.equal(turns, 4);
+  const next = await parent.send("fixture-read", { recipient: worker.id, body: "explicit ID-free read body" }) as { id: string };
+  await session.prompt("Read the oldest pending message.");
+  results = session.messages.filter(m => m.role === "toolResult");
+  assert.ok(JSON.stringify(results[2]).includes("explicit ID-free read body"));
+  assert.equal(board.store.snapshot(worker.token).pending, 1, "Read is not acknowledgement");
+  assert.equal(board.store.snapshot(worker.token).inbox[0]!.id, next.id);
+  await session.prompt("Send the fixture reply by handle.");
+  assert.equal(board.store.snapshot(parent.token).pending, 1);
+  assert.equal(turns, 8);
+  assert.deepEqual(errors, []);
   await session.prompt("/switchboard off");
   assert.equal(board.store.inspect(parent.token, worker.id).online, false);
   console.log(JSON.stringify({ mailWait: true, userWait: true, turns, noNetwork: true, errors }));

@@ -19,7 +19,7 @@ export async function serve(paths: Paths, options: { staleSocket?: boolean; now?
   let closing = false;
   const server = createServer(async (req, res) => {
     const reply = (status: number, data: unknown) => {
-      if (!res.destroyed && !res.writableEnded) { res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(data)); }
+      if (!res.destroyed && !res.writableEnded) { res.writeHead(status, { "content-type": "application/json", "x-switchboard-version": String(VERSION) }); res.end(JSON.stringify(data)); }
     };
     try {
       if (closing) throw new BoardError("Service closing.", 503);
@@ -39,8 +39,13 @@ export async function serve(paths: Paths, options: { staleSocket?: boolean; now?
         case "archive": result = store.archive(token, runtime); break;
         case "provision": result = store.provision(token, runtime, args.runId); break;
         case "inspect": result = store.inspect(token, args.id); break;
+        case "queue_reload": result = store.queueReload(token, runtime); break;
+        case "take_reload": result = store.takeReload(token, runtime); break;
         case "send": result = store.send(token, runtime, args); break;
-        case "read": result = store.read(token, runtime, args.id, true); break;
+        case "offer": result = store.offers.request(token, runtime, args); break;
+        case "mail": result = store.mail(token, runtime, args.recent); break;
+        case "peek": result = store.peek(token, runtime, args.id); break;
+        case "read": result = args.id === undefined ? store.readNext(token, runtime) : store.read(token, runtime, args.id, true); break;
         case "status": result = store.read(token, runtime, args.id, false); break;
         case "ack": result = store.ack(token, runtime, args.id); break;
         case "snapshot": result = store.snapshot(token, args.project, args.all === true); break;
@@ -68,7 +73,7 @@ export async function serve(paths: Paths, options: { staleSocket?: boolean; now?
         default: throw new BoardError("Unknown action.");
       }
       reply(200, result ?? {});
-      if (!["snapshot", "watch", "inspect", "status"].includes(action)) changed();
+      if (!["snapshot", "watch", "inspect", "status", "mail", "peek"].includes(action)) changed();
     } catch (error) {
       // Never log requests or arbitrary exception text (which may contain bodies).
       reply(error instanceof BoardError ? error.status : 400, { error: error instanceof BoardError ? error.message : "Invalid request or storage failure." });

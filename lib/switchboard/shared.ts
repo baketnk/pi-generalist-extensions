@@ -4,21 +4,34 @@ import { lstat, mkdir, realpath, readFile, open, rename } from "node:fs/promises
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 
-export const VERSION = 1;
+export const VERSION = 5;
 export const LEASE_MS = 60_000;
 export const BODY_BYTES = 16 * 1024;
 export type Activity = "idle" | "working" | "waiting-for-user" | "unknown";
 export type Kind = "note" | "question" | "reply" | "handoff";
 export interface Project { project: string; worktree: string; cwd: string }
 export interface Card extends Project {
-  id: string; name: string; summary: string; activity: Activity; updatedAt: number;
+  id: string; handle: string; name: string; summary: string; activity: Activity; updatedAt: number;
   online: boolean; type: "agent" | "human" | "observer"; parentId?: string; runId?: string;
 }
 export interface Mail {
   id: string; sender: string; recipient: string; kind: Kind; createdAt: number;
+  senderHandle?: string; recipientHandle?: string;
   expiresAt: number; replyTo?: string; fetchedAt?: number; ackAt?: number; body?: string | null;
 }
-export interface Snapshot { peers: Card[]; total: number; inbox: Mail[]; pending: number; version: string }
+export type OfferPolicy = "manual" | "queue" | "off";
+export type OfferState = "offered" | "accepted" | "declined" | "cancelled" | "expired" | "delivery-claimed" | "delivery-unknown" | "delivered";
+export interface Offer {
+  id: string; creator: string; recipient: string; project: string; worktree: string;
+  originalTask: string; authority: "human-ui"; state: OfferState; generation: number;
+  createdAt: number; updatedAt: number; expiresAt: number; policyGeneration: number;
+  deliveryRuntime?: string;
+}
+export type OfferSummary = Omit<Offer, "originalTask" | "deliveryRuntime">;
+export interface OfferPolicyRecord { participant: string; policy: OfferPolicy; generation: number }
+export interface Snapshot { peers: Card[]; total: number; inbox: Mail[]; pending: number; reloadPending: boolean; version: string;
+  offers?: OfferSummary[]; offerTotal?: number; offerPolicy?: OfferPolicyRecord;
+}
 export interface Paths { root: string; socket: string }
 export const hash = (s: string) => createHash("sha256").update(s).digest("hex");
 export const secret = () => randomBytes(32).toString("hex");

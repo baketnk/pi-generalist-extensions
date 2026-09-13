@@ -5,7 +5,7 @@ import { paths, plain, projectAt, type Card, type Mail, type Snapshot } from "..
 
 const argv = process.argv.slice(2);
 if (!argv.length || argv.includes("--help")) {
-  console.log("Usage: node tools/switchboard.ts list|watch|inspect ID|inbox|read ID|ack ID|send ID TEXT|reply ID TEXT|retry OP\nOptions: --project PATH --all --json --as human|observer (default observer for list/watch/inspect, human otherwise).\nStarts the per-user local helper if absent. No model calls; no implicit agent identity from the shell.");
+  console.log("Usage: node tools/switchboard.ts list|watch|inspect ID_OR_HANDLE|inbox|read [ID]|ack ID|send ID_OR_HANDLE TEXT|reply ID TEXT|retry OP\nOptions: --project PATH --all --json --as human|observer (default observer for list/watch/inspect, human otherwise).\nStarts the per-user local helper if absent. No model calls; no implicit agent identity from the shell.");
 } else {
   const take = (key: string) => { const index = argv.indexOf(key); if (index < 0) return; const value = argv[index + 1]; if (!value || value.startsWith("--")) throw new Error(`${key} needs a value.`); argv.splice(index, 2); return value; };
   const flag = (key: string) => { const index = argv.indexOf(key); if (index < 0) return false; argv.splice(index, 1); return true; };
@@ -14,7 +14,7 @@ if (!argv.length || argv.includes("--help")) {
   const type = as ?? (["list", "watch", "inspect"].includes(action!) ? "observer" : "human");
   if (!["human", "observer"].includes(type)) throw new Error("--as must be human or observer; cannot impersonate an agent.");
   if (!["list", "watch", "inspect", "inbox", "read", "ack", "send", "reply", "retry"].includes(action!)) throw new Error("Unknown action; use --help.");
-  if (["list", "watch", "inbox"].includes(action!) ? !!target : !target || (!["send", "reply"].includes(action!) && words.length > 0)) throw new Error("Invalid arguments; use --help.");
+  if (["list", "watch", "inbox"].includes(action!) ? !!target : (action !== "read" && !target) || (!["send", "reply"].includes(action!) && words.length > 0)) throw new Error("Invalid arguments; use --help.");
   const p = paths(), stop = new AbortController();
   process.once("SIGINT", () => stop.abort()); process.once("SIGTERM", () => stop.abort());
   await ensureService(p, stop.signal);
@@ -29,7 +29,7 @@ if (!argv.length || argv.includes("--help")) {
     else if (data && typeof data === "object" && "peers" in data) {
       const s = data as Snapshot;
       console.log(`Registered agents: ${s.total} (showing ${s.peers.length})`);
-      for (const c of s.peers) console.log(`${c.id}  ${plain(c.name)}  ${c.activity}  ${c.worktree === project.worktree ? "same checkout" : plain(c.worktree)}${c.parentId ? `  child of ${c.parentId}` : ""}${c.summary ? `  ${plain(c.summary)}` : ""}`);
+      for (const c of s.peers) console.log(`${c.handle}  ${c.id}${c.name !== c.handle ? `  ${plain(c.name)}` : ""}  ${c.activity}  ${c.worktree === project.worktree ? "same checkout" : plain(c.worktree)}${c.parentId ? `  child of ${c.parentId}` : ""}${c.summary ? `  ${plain(c.summary)}` : ""}`);
     } else console.log(JSON.stringify(data, (_key, value) => typeof value === "string" ? plain(value) : value, 2));
   };
   try {

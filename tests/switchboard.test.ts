@@ -6,9 +6,10 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { BoardStore } from "../lib/switchboard/store.ts";
 import { BoardClient, bindingAt, rpc } from "../lib/switchboard/client.ts";
-import { secret, projectAt, type Snapshot } from "../lib/switchboard/shared.ts";
+import { secret, projectAt, VERSION, type Snapshot } from "../lib/switchboard/shared.ts";
+import { formatSwitchboard } from "../lib/switchboard/presentation.ts";
 
-const card = (name: string, project = "/repo/.git") => ({ name, project, cwd: "/repo", worktree: "/repo", summary: "", activity: "idle" });
+const card = (name: string, project = "/repo/.git") => ({ name, project, cwd: "/repo", worktree: "/repo", summary: "", activity: "idle" as const });
 function fixture() {
   let now = 100_000;
   const store = new BoardStore(":memory:", () => now);
@@ -19,6 +20,23 @@ function fixture() {
   return { store, a, b, observer, pa, pb, advance: (ms: number) => { now += ms; } };
 }
 describe("switchboard durable contract", () => {
+  test("human presentation uses tables and explicit empty states instead of JSON", () => {
+    const peers = formatSwitchboard("peers", { total: 1, omitted: 0, peers: [{ ...card("reviewer"), id: "p_1", type: "agent", online: true, updatedAt: 1, location: "same checkout", activity: "working" }] });
+    expect(peers).toContain("Name"); expect(peers).toContain("Activity"); expect(peers).toContain("reviewer");
+    expect(peers).not.toContain('"peers"'); expect(peers).not.toContain("{");
+    expect(formatSwitchboard("inbox", { pending: 0, messages: [] })).toBe("No messages");
+  });
+  test("client omits optional existingOnly unless fail-closed worker reconnect is requested", async () => {
+    const client = new BoardClient({ root: "/unused", socket: "/unused" }, secret());
+    const calls: Array<{ action: string; args: Record<string, unknown> }> = [];
+    client.call = async (action: string, args: Record<string, unknown> = {}) => {
+      calls.push({ action, args }); return {} as any;
+    };
+    await client.connect(card("normal"));
+    await client.connect(card("worker"), "agent", undefined, true);
+    expect(calls[0]).toEqual({ action: "connect", args: { card: card("normal"), type: "agent" } });
+    expect(calls[1]).toEqual({ action: "connect", args: { card: card("worker"), type: "agent", existingOnly: true } });
+  });
   test("directory scope, lease expiry, body privacy and observer restrictions", () => {
     const f = fixture(); try {
       f.store.connect(secret(), { runtime: "elsewhere", card: card("other", "/elsewhere") });
@@ -141,18 +159,23 @@ test("Node service: socket requests, long-poll, revoked stream, restart/offline 
     await a.connect(card("a") as any); const pb = await b.connect(card("b") as any);
     const initial = await b.snapshot();
     const watch = b.call<Snapshot>("watch", { since: initial.version });
-    const result = await a.send("operation-1", { recipient: pb.id, body: "durable message" }) as { id: string };
+    expect(await a.call("inspect", { id: pb.handle })).toMatchObject({ id: pb.id, handle: pb.handle });
+    const result = await a.send("operation-1", { recipient: pb.handle, body: "durable message" }) as { id: string };
     expect((await watch).pending).toBe(1);
     expect((await a.retry("operation-1") as { id: string }).id).toBe(result.id);
     expect(await readFile(bound.file, "utf8")).toContain(bound.binding.token);
     await stop(); await start();
     expect((await a.snapshot()).peers).toHaveLength(0);
-    await a.connect(card("a") as any); await b.connect(card("b") as any);
+    await a.connect(card("a") as any);
+    expect(await b.connect(card("renamed") as any)).toMatchObject({ id: pb.id, handle: pb.handle });
     expect((await b.snapshot()).pending).toBe(1);
+    expect(await b.call("read")).toMatchObject({ id: result.id, body: "durable message", ackAt: null });
+    expect(await b.call("read")).toMatchObject({ id: result.id });
+    expect(await a.call("read")).toMatchObject({ empty: true });
     const pending = await b.snapshot();
     const revoked = b.call("watch", { since: pending.version }).catch(e => e.status);
     await b.call("archive"); expect(await revoked).toBe(401);
-    expect(await rpc<{ version: number }>(paths, "", undefined)).toMatchObject({ version: 1 });
+    expect(await rpc<{ version: number }>(paths, "", undefined)).toMatchObject({ version: VERSION });
   } finally { await stop(); await rm(root, { recursive: true, force: true }); }
 }, 20_000);
 

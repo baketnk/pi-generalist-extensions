@@ -10,8 +10,13 @@ export interface Observation {
 }
 export interface Exposure { key: string; roster: unknown; hints: { id: string; sender: string; kind: string }[]; relevant: boolean }
 export function shortCard(card: Card, own?: Card) {
-  return { id: card.id, name: clipped(plain(card.name), 100), summary: clipped(plain(card.summary), 160), activity: card.activity,
+  return { id: card.id, handle: card.handle, name: card.name === card.handle ? undefined : clipped(plain(card.name), 100), summary: clipped(plain(card.summary), 160), activity: card.activity,
     location: card.worktree === own?.worktree ? "same checkout" : clipped(plain(card.worktree), 160), parentId: card.parentId, runId: card.runId };
+}
+/** Other registered participants, split so direct children never inflate the peer count. */
+export function participantCounts(cards: Card[], own?: Card) {
+  const subagents = own ? cards.filter(card => card.parentId === own.id).length : 0;
+  return { peers: cards.length - subagents, subagents };
 }
 export function exposure(runtime: BoardRuntime): Exposure | undefined {
   if (runtime.state === "starting") return;
@@ -30,7 +35,7 @@ export function exposure(runtime: BoardRuntime): Exposure | undefined {
   // Don't churn model context just because a peer alternates tool work / idle.
   const key = hash(JSON.stringify({ ...roster, cards: cards.map(({ activity, ...c }) => c) }));
   const hinted = new Set(runtime.binding?.hinted ?? []);
-  const hints = s.inbox.filter(m => !hinted.has(m.id)).slice(0, 5).map(m => ({ id: m.id, sender: m.sender, kind: m.kind }));
+  const hints = s.inbox.filter(m => !hinted.has(m.id)).slice(0, 5).map(m => ({ id: m.id, sender: m.sender, senderHandle: m.senderHandle, kind: m.kind }));
   return { key, roster, hints, relevant: s.total > 0 || hints.length > 0 };
 }
 /** Own durable journal; never relocates a prior snapshot on ordinary appended requests. */

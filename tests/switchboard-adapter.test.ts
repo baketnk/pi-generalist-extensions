@@ -8,7 +8,7 @@ import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { serve } from "../lib/switchboard/server.ts";
 import { BoardRuntime, WakeHub } from "../lib/switchboard/runtime.ts";
 import { BoardClient, ensureService, rpc } from "../lib/switchboard/client.ts";
-import { exposure, projectObservations, type Observation } from "../lib/switchboard/context.ts";
+import { exposure, participantCounts, projectObservations, type Observation } from "../lib/switchboard/context.ts";
 import { secret, hash, privateFile } from "../lib/switchboard/shared.ts";
 
 async function until(predicate: () => boolean) { for (let i = 0; i < 200; i++) { if (predicate()) return; await Bun.sleep(10); } throw new Error("Timed out waiting for fixture state"); }
@@ -33,8 +33,9 @@ test("opt-out runtime: default registration, metadata-only hints, reload binding
     expect(exposure(a)!.hints[0]!.id).toBe(m.id);
     await a.hint([m.id]); expect(exposure(a)!.hints).toHaveLength(0);
     await a.configure("manual"); expect(exposure(a)!.key).toBe("inactive"); expect(a.state).toBe("online");
-    const original = a.card!.id; await a.close();
+    const original = a.card!.id, originalHandle = a.card!.handle; await a.close();
     const resumed = make("a"); await resumed.start(); expect(resumed.card!.id).toBe(original); expect(resumed.manual).toBe(true);
+    expect(resumed.card!.handle).toBe(originalHandle);
     expect(resumed.binding!.hinted).toContain(m.id);
     await resumed.configure("off"); expect(resumed.state).toBe("off");
     resumed.update({ summary: "tree navigated" }); await resumed.sync(); expect(resumed.state).toBe("off");
@@ -45,9 +46,42 @@ test("opt-out runtime: default registration, metadata-only hints, reload binding
     const headless = make("unprovisioned", "print"); await headless.start(); expect(headless.state).toBe("off"); expect(headless.client).toBeUndefined();
     const off = make("disabled", "tui", true); await off.start(); expect(off.client).toBeUndefined();
     // No registration content comes from a prompt/transcript. Name hooks are explicit.
+    const bHandle = b.card!.handle;
+    b.update({ name: "", summary: "" }); await b.sync();
+    expect(b.card!.name).toBe(bHandle);
     b.update({ name: "renamed", summary: "declared task" }); await b.sync();
+    expect(b.card!.handle).toBe(bHandle);
     await until(() => resumed.snapshot?.peers.some(p => p.name === "renamed") === true);
   } finally { await Promise.all(live.map(r => r.close())); await board.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("reload-all queues every other connected agent once for programmatic non-interrupting reload", async () => {
+  const root = await mkdtemp(join(tmpdir(), "switchboard-reload-"));
+  const paths = { root, socket: join(root, "board.sock") };
+  const board = await serve(paths);
+  let queued = 0;
+  const a = new BoardRuntime({ paths, sessionId: "a", cwd: root, name: "a", mode: "tui", ensure: async () => {}, intervalMs: 100, onReload: () => { queued++; } });
+  const b = new BoardRuntime({ paths, sessionId: "b", cwd: root, name: "b", mode: "tui", ensure: async () => {}, intervalMs: 100 });
+  try {
+    await a.start(); await b.start();
+    await until(() => a.snapshot?.total === 1 && b.snapshot?.total === 1);
+    await expect(b.requireClient().queueReloadAll()).resolves.toEqual({ queued: 1 });
+    await until(() => queued === 1);
+    await a.refresh();
+    expect(queued).toBe(1);
+    expect(a.snapshot?.reloadPending).toBe(false);
+  } finally { await a.close(); await b.close(); await board.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("participant counts separate direct subagents from peers", () => {
+  const own = { id: "p_self" } as any;
+  const cards = [
+    { id: "p_peer" },
+    { id: "p_child_a", parentId: "p_self" },
+    { id: "p_child_b", parentId: "p_self" },
+  ] as any[];
+  expect(participantCounts(cards, own)).toEqual({ peers: 1, subagents: 2 });
+  expect(participantCounts(cards)).toEqual({ peers: 3, subagents: 0 });
 });
 
 test("append-only observations: quiet alone, stable wire prefixes, retries, forks, compaction, complete tool pairs", () => {
