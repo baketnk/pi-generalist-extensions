@@ -12,6 +12,8 @@ Run `/reload` in an existing pi session, or start a new one.
 
 - `/meitan [on|off|status]`: toggle personality; no argument flips it.
 - `/optmem [on|off|status]`: independently toggle compact memory.
+- `/tasks [clear]`: view or clear the branch-local task checklist.
+- `/questions [list|clear]`: answer, inspect, or discard asynchronously queued questions; `Ctrl+Shift+Q` opens the oldest batch.
 - `pi --meitan --optmem`: enable both initially, including print mode.
 
 Both default off until selected. Decisions are saved in the current session branch and restored on reload/resume/fork/tree navigation. Saved decisions take precedence over CLI flags. Slash-command changes wait for idle and apply to the next prompt. Enabled toggles appear in the footer.
@@ -31,6 +33,14 @@ Use **`/session-setup`** to open both steps manually in an interactive session, 
 
 The package now loads `extensions/generalist.ts`, which initializes both independent toggles before the picker. The original `meitan.ts` and `optmem.ts` remain usable as standalone extensions without startup questions; don't load them separately alongside the package.
 
+## Tasks and user questions
+
+`update_plan` maintains an atomic, ordered checklist for meaningful multi-step work. Every update supplies the complete list with `pending`, `in_progress`, or `completed` status; at most one step may be in progress. State lives in session history, follows branches, and appears as a compact editor widget and footer count. `/tasks` opens the full list and `/tasks clear` removes it.
+
+`ask_user` blocks on one to three questions when work cannot proceed without an answer. Questions can provide choices with tradeoff descriptions, and always permit free text. In TUI mode they use a compact right-side overlay with numbered choices, inline free-text editing, progress across a batch, and cancellation that leaves queued questions pending; RPC uses native select/input requests. `queue_questions` instead records a batch immediately so useful work can continue. Pending questions appear in a widget; `Ctrl+Shift+Q` answers the oldest batch without disturbing the main editor draft, while `/questions` can select among batches. Answers become a new user message—steering the active turn when work is still running, or starting a turn when idle. `/questions list` inspects the inbox and `/questions clear` discards it. Queued state is branch-aware and survives reload/resume. Blocking questions require TUI or RPC UI; queued questions can be created without UI and answered in a later interactive run.
+
+Both extensions are original Pi-native implementations with no runtime dependency beyond Pi's bundled APIs. They are also usable as standalone files (`extensions/tasks.ts` and `extensions/questions.ts`), but should not be loaded separately alongside the package entrypoint.
+
 ## Context ownership
 
 `~/.meitan/` owns the personality independently of Hermes. SOUL.md and COMPANION_CONTEXT.md are re-read on each enabled prompt (combined cap 50 KB). USER_NOTES.md, PROJECT_NOTES.md, and NOTES_CONVENTIONS.md are on-demand references, not auto-injected. Missing required files produce a visible error and an explicit unavailable-context instruction; no fallback to Hermes or stale cached context.
@@ -48,6 +58,16 @@ After a normal completed answer, OptMem checks the active session branch since t
 A branch-local request marker prevents recursive reminders and survives reload/resume/compaction. Earlier requests' saves do not suppress later reviews. Any note *attempt* suppresses the reminder, including failed/interrupted writes that might have landed; it never encourages an automatic write retry. Wake/recall/nap calls and text merely mentioning `memo note` do not count. Errors, cancellation, truncation, terminating tool batches and already-pending messages suppress follow-up injection. Nothing runs on session shutdown. Subagents remain instructed not to use memory. `/reload` or a new pi process loads changes; existing processes do not hot-update automatically.
 
 **Off is not a privacy sandbox or amnesia:** ordinary bash/read tools can still reach local files, and prior tool outputs, responses, or summaries remain in conversation history. Use a new session to avoid historical influence. Model/provider behavior still affects personality; pi's coding instructions remain intact.
+
+## Native memory migration (offline staging)
+
+The native store now has an offline OptMem snapshot importer, dry-run reports,
+versioned export/restore, unassigned candidate review, separate classification and
+acceptance, and confirmed purge with anti-resurrection tombstones. No live data is
+imported automatically and no native memory tool or backend switch is enabled yet.
+Workpad remains in-session working context; durable memory is out-of-session.
+See [migration steps and remaining cutover gates](docs/memory-migration.md),
+[store contract](docs/memory-store.md), and [roadmap](docs/ROADMAP.md).
 
 ## Cross-harness history search
 
