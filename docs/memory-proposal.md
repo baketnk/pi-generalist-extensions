@@ -2,6 +2,12 @@
 
 Status: **broader design proposal; bounded foreground MVP implemented** in the [portable store](memory-store.md), [scoped index](memory-index.md), [native Pi runtime](memory-runtime.md) and [offline migration tooling](memory-migration.md). Optional workers, external-source registration and unlimited storage remain future scope. The agreed initial import destination is an unassigned review inbox; no live archive has been migrated. The user subsequently requested removal of the OptMem runtime rather than maintaining dual-backend controls. Current implementation contracts take precedence over the prospective details below.
 
+The separately approved [reflective continuity adapter](continuity.md) now provides
+human-selected Markdown originals, explicit local indexing and a bounded return
+attachment. It is independent of native memory profiles and activation; it does not
+implement automatic cross-source selection, worker descriptions or blanket journal
+integration in the native memory index.
+
 Related: [roadmap](ROADMAP.md), [history search](history-search.md), [workpad](workpad.md), [background jobs proposal](bg-tasks-proposal.md).
 
 ## Recommendation

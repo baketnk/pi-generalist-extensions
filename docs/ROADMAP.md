@@ -280,6 +280,55 @@ An optional, explicitly configured tool-free worker produces rebuildable search 
 - Originals and provenance survive export/import without Pi; unresolved external references are reported.
 - Pi reload/branch/compaction/off semantics, legacy rollback and model quality are tested separately from pure store fixtures.
 
+## 7. Reflective originals and explicit return context
+
+User-approved foreground MVP implemented: **reflective original sources** and a
+**small, inspectable continuity attachment**, with append-only fixed-boundary
+snapshots to preserve the session cache prefix. Detailed MVP contract:
+[reflective continuity](continuity.md). This is not approval to register personal
+files, enable automatic recall, or send journals to a separate model.
+
+The current Meitan toggle supplies personality instructions and journal routing,
+not journal passages. Native memory's personal scope also contains technical
+history; allocating space to a personal item does not ensure reflective continuity.
+
+### Approved first slices
+
+1. Human-selected Markdown originals, preserved without summary rewriting, with
+   explicit local indexing, bounded original reads and surrounding-text locators.
+   Registration, refresh and removal are human operations. Changed or missing
+   external files must never silently substitute a newer original.
+2. An independently opt-in `/continuity` attachment: one selected anchor and an
+   optional second reflection, bounded and inspectable, stable over tool turns.
+   No startup selection, quotation rotation, automatic journal capture or mandatory
+   journaling. New/forked sessions begin off; restored context is historical data,
+   not identity proof, instructions or authority to resume an old task.
+
+Implement these as a separate reflective-source adapter, leaving journal ownership
+and native memory activation intact. Reuse existing primitives where their
+contracts fit, rather than forcing external originals into compact fact records.
+
+### Later candidates (not authorized by this implementation approval)
+
+- **Purpose-aware retrieval:** distinguish facts, episodes and reflections; measure
+  thresholds, source diversity and empty results before adding embeddings or a
+  configured indexing worker. Personal scope is not a relevance verdict.
+- **Conversational bookmarks:** optional exact exchanges/corrections and source
+  links across compaction, separate from the task workpad. No inferred current mood,
+  automatic extraction, or conversion of an old interest into a pending task.
+- **Continuity quality evaluation:** compare persona-only, current recall and
+  original-passage recall using synthetic or separately approved cases. Check
+  specificity, corrections, false autobiographical claims and ordinary technical
+  conversation. Do not reward affection frequency, stock metaphors or impersonation.
+- **Automatic return selection:** separately reviewed policy and privacy controls,
+  only after explicit attachment is useful. No model calls or startup archive scan.
+
+Acceptance includes byte-preserved originals, bounded Unicode handling, stale and
+missing sources, scope/activation isolation, concurrent publication, cancellation,
+reload/resume/fork/tree/compaction behavior and inspectable actual context. Unit and
+scripted SDK checks are not evidence that subjective continuity improved; that
+requires human evaluation in ordinary use.
+
 ## Cross-cutting design rules
 
 1. **Prefer explicit capabilities to a feature bundle.** Each addition should be independently useful and, where practical, independently enabled.

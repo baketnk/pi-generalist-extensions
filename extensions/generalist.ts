@@ -4,6 +4,7 @@ import memory from "./memory.ts";
 import history from "./history.ts";
 import workpad from "./workpad.ts";
 import evidence from "./evidence.ts";
+import continuity from "./continuity.ts";
 import tasks from "./tasks.ts";
 import questions from "./questions.ts";
 import { registerSessionSetup } from "../lib/session-setup.ts";
@@ -14,6 +15,7 @@ export default function generalist(pi: ExtensionAPI) {
   history(pi);
   workpad(pi);
   evidence(pi);
+  continuity(pi);
   tasks(pi);
   questions(pi);
 }

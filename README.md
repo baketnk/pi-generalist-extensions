@@ -85,6 +85,25 @@ The [offline importer](docs/memory-migration.md) remains for a separately approv
 migration, with digest-gated staging, unassigned review, classification/acceptance,
 and confirmed purge. No live archive is imported or native backend enabled automatically.
 
+## Reflective continuity
+
+`/continuity` provides a separate, explicit shelf for reflective Markdown originals
+and a bounded return-context attachment. It does not change `/meitan` or `/memory`
+activation and never installs or scans personal journals automatically.
+
+Register selected files with `/continuity register ID /absolute/file.md`, then
+`/continuity reindex` for local lexical search. `/continuity on` approves read-only
+model access for this session/cwd. `/continuity attach ID:START-END [ID:START-END]`
+previews and approves one anchor plus an optional second original passage (8 KiB
+complete packet). `/continuity context` shows the actual last projection audit;
+`/continuity off` revokes new tool access immediately and marks earlier selections
+historical. Snapshots stay at fixed message boundaries for cache-prefix reuse;
+unchanged passages are not moved or repeated on each user turn. New/forked sessions
+start off. Originals remain exact writing, not summary-derived
+personality instructions; missing/changed sources are explicit. No automatic
+selection, worker calls, journal writing or reminders. See [commands, privacy,
+storage and lifecycle limits](docs/continuity.md).
+
 ## Cross-harness history search
 
 The package also exposes `history_search` and `history_read`, independently of the

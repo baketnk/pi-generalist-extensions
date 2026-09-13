@@ -24,11 +24,13 @@ export function snapshotContext(
   desired: { key: string; content: string } | undefined,
   refreshTokens: number | undefined,
   save: (snapshot: Snapshot) => void,
+  namespace?: { type: string; legacyTypes?: string[]; prefix?: string },
 ): AgentMessage[] {
   // These are our request projections, not transcript messages. Strip only our
   // types if another context hook passes a prior projection back to us.
-  const messages = input.filter(m => !(m.role === "custom" &&
-    (m.customType === SNAPSHOT || m.customType === "workpad-context-v1")));
+  const customType = namespace?.type ?? SNAPSHOT;
+  const ownedTypes = new Set([customType, ...(namespace?.legacyTypes ?? (namespace ? [] : ["workpad-context-v1"]))]);
+  const messages = input.filter(m => !(m.role === "custom" && ownedTypes.has(m.customType)));
   if (!desired && !journal.length) return messages;
   const hash = createHash("sha256");
   const anchors = [hash.copy().digest("hex")];
@@ -55,7 +57,7 @@ export function snapshotContext(
     const snapshot: Snapshot = {
       epoch, position: messages.length, anchor: anchors[messages.length]!,
       key: desired.key,
-      content: `${last?.key === desired.key ? "Workpad reminder (same revision). " : "Workpad state update. "}${desired.content}`,
+      content: `${namespace?.prefix ?? (last?.key === desired.key ? "Workpad reminder (same revision). " : "Workpad state update. ")}${desired.content}`,
       timestamp: Date.now(), reset,
     };
     save(snapshot); // Persist before returning the projection, including retries.
@@ -69,7 +71,7 @@ export function snapshotContext(
   const result: AgentMessage[] = [];
   for (let i = 0; i <= messages.length; i++) {
     for (const snapshot of at.get(i) ?? []) result.push({
-      role: "custom", customType: SNAPSHOT, content: snapshot.content,
+      role: "custom", customType, content: snapshot.content,
       timestamp: snapshot.timestamp, display: false,
     });
     if (i < messages.length) result.push(messages[i]!);
