@@ -12,6 +12,7 @@ import { openDashboard, registerDashboardEntry } from "../lib/switchboard/dashbo
 import { actOnOffer, OfferDeliveryTracker } from "../lib/switchboard/offers-ui.ts";
 import { openMail } from "../lib/switchboard/mail-ui.ts";
 import { daemonEvents } from "../lib/switchboard/diagnostics.ts";
+import { activeRuns, quiesceRuns, registerBoardHost } from "../lib/subagents/bridge.ts";
 
 const actions = ["peers", "inspect", "status", "send", "inbox", "read", "reply", "ack", "delivery", "retry", "wait"] as const;
 const schema = Type.Object({
@@ -73,6 +74,8 @@ export default function switchboard(pi: ExtensionAPI, options: { paths?: Paths; 
     catch { if (currentCtx?.hasUI) currentCtx.ui.notify("Offer delivery receipt uncertain; inspect the offer and session history. Do not replay it.", "warning"); }
   });
   let unregisterDashboard: (() => void) | undefined;
+  let unregisterHost: (() => void) | undefined;
+  let deferredReload = false;
   const dashboard = async (ctx: ExtensionContext) => {
     if (!runtime) { if (ctx.hasUI) ctx.ui.notify("Switchboard session unavailable.", "warning"); return; }
     const r = runtime;
@@ -81,26 +84,28 @@ export default function switchboard(pi: ExtensionAPI, options: { paths?: Paths; 
   const ui = () => {
     const r = runtime, ctx = currentCtx;
     if (!r || !ctx?.hasUI) return;
-    void r.reloadForUpgrade(() => runtime === r && ctx.isIdle() && !ctx.hasPendingMessages() && !waitingUI);
+    void r.reloadForUpgrade(() => runtime === r && ctx.isIdle() && !ctx.hasPendingMessages() && !waitingUI && activeRuns(pi) === 0);
+    if (deferredReload && activeRuns(pi) === 0 && ctx.isIdle() && !ctx.hasPendingMessages()) { deferredReload = false; pi.sendUserMessage("/switchboard-reload", { deliverAs: "followUp", expandPromptTemplates: true }); }
     const counts = participantCounts(r.snapshot?.peers ?? [], r.card), mail = r.snapshot?.pending ?? 0;
     const offers = r.snapshot?.offers?.filter(o => o.recipient === r.card?.id && ["offered", "accepted", "delivery-claimed"].includes(o.state)).length ?? 0;
     ctx.ui.setStatus("switchboard", r.state === "unavailable" ? "peers: unavailable" : r.state === "online" && (counts.peers || counts.subagents || mail || offers) ? `peers: ${counts.peers} · sub: ${counts.subagents} · mail: ${mail}${offers ? ` · offers: ${offers}` : ""}` : undefined);
   };
   pi.on("session_start", (_event, ctx) => {
-    const old = runtime; void old?.close(); currentCtx = ctx; waitingUI = false;
+    const old = runtime; void old?.close(); currentCtx = ctx; waitingUI = false; deferredReload = false;
     delivery.clear();
     unregisterDashboard?.(); unregisterDashboard = registerDashboardEntry(pi, dashboard);
+    unregisterHost?.(); unregisterHost = registerBoardHost(pi, () => runtime);
     try {
       runtime = new BoardRuntime({ paths: options.paths ?? paths(), cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(),
         sessionFile: ctx.sessionManager.getSessionFile(), name: pi.getSessionName(), mode: ctx.mode,
         workerFile: process.env.PI_SWITCHBOARD_WORKER_FILE, disabled: process.env.PI_SWITCHBOARD === "off",
-        ensure: options.ensure, onChange: ui, onReload: () => {
+        ensure: options.ensure, onChange: ui, canReload: () => activeRuns(pi) === 0, onReload: () => {
           if (!runtime?.closed && currentCtx) pi.sendUserMessage("/switchboard-reload", { deliverAs: "followUp", expandPromptTemplates: true });
         } });
       void runtime.start();
     } catch (error) { runtime = undefined; if (ctx.hasUI) ctx.ui.setStatus("switchboard", "peers: unavailable"); }
   });
-  pi.on("session_shutdown", async () => { delivery.clear(); unregisterDashboard?.(); unregisterDashboard = undefined; const old = runtime; runtime = undefined; currentCtx = undefined; await old?.close(); });
+  pi.on("session_shutdown", async () => { await quiesceRuns(pi); delivery.clear(); unregisterHost?.(); unregisterHost = undefined; unregisterDashboard?.(); unregisterDashboard = undefined; const old = runtime; runtime = undefined; currentCtx = undefined; await old?.close(); });
   pi.on("agent_start", () => runtime?.update({ activity: "working" }));
   pi.on("agent_settled", () => runtime?.update({ activity: "idle" }));
   pi.on("ui_prompt_start", () => { waitingUI = true; runtime?.update({ activity: "waiting-for-user" }); });
@@ -186,6 +191,7 @@ export default function switchboard(pi: ExtensionAPI, options: { paths?: Paths; 
     description: "Internal switchboard reload entrypoint",
     handler: async (args, ctx) => {
       if (args.trim()) throw new Error("This command takes no arguments.");
+      if (activeRuns(pi) > 0) { deferredReload = true; if (ctx.hasUI) ctx.ui.notify("Automatic reload deferred until owned subagents exit. Explicit /reload cancels workers.", "info"); return; }
       await ctx.reload();
     },
   });

@@ -101,6 +101,26 @@ describe("switchboard durable contract", () => {
       expect(() => f.store.heartbeat(f.a, "a")).toThrow("superseded");
     } finally { f.store.close(); }
   });
+  test("worker provisioning recovers lost responses before quotas and retirement stays parent-scoped", () => {
+    const f = fixture(); try {
+      const capability = secret();
+      const worker = f.store.provision(f.a, "a", "recoverable", capability);
+      for (let i = 1; i < 16; i++) f.store.provision(f.a, "a", `run-${i}`);
+      expect(f.store.provision(f.a, "a", "recoverable", capability)).toEqual(worker);
+      expect(() => f.store.provision(f.a, "a", "overflow", secret())).toThrow("quota");
+      expect(() => f.store.provision(f.a, "a", "recoverable", secret())).toThrow("original persisted");
+      expect(() => f.store.provision(f.a, "a", "recoverable")).toThrow("original persisted");
+      f.store.connect(worker.token, { runtime: "child", card: card("worker"), existingOnly: true });
+      expect(f.store.retireWorker(f.b, "b", "recoverable")).toEqual({ retired: false, absent: true });
+      expect(f.store.inspect(f.b, worker.id).online).toBe(true);
+      expect(() => f.store.retireWorker(worker.token, "child", "recoverable")).toThrow("top-level");
+      expect(f.store.retireWorker(f.a, "a", "recoverable").retired).toBe(true);
+      expect(f.store.retireWorker(f.a, "a", "recoverable").retired).toBe(true);
+      expect(() => f.store.provision(f.a, "a", "recoverable", capability)).toThrow("retired");
+      expect(() => f.store.auth(worker.token)).toThrow("revoked");
+      expect(f.store.provision(f.a, "a", "replacement", secret()).id).not.toBe(worker.id);
+    } finally { f.store.close(); }
+  });
   test("heartbeats do not change snapshot versions without material state changes", () => {
     const f = fixture(); try {
       const before = f.store.snapshot(f.a);

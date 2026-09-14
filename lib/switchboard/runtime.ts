@@ -23,6 +23,7 @@ export interface RuntimeOptions {
   paths: Paths; cwd: string; sessionId: string; sessionFile?: string; name?: string;
   mode: string; workerFile?: string; disabled?: boolean;
   onChange?: () => void; onReload?: () => void; ensure?: typeof ensureService; intervalMs?: number;
+  canReload?: () => boolean;
 }
 export class BoardRuntime {
   options: RuntimeOptions;
@@ -126,10 +127,11 @@ export class BoardRuntime {
     const old = new Set(this.snapshot?.inbox.map(m => m.id));
     this.snapshot = snapshot; this.snapshotAt = Date.now();
     if (snapshot.inbox.some(m => !old.has(m.id))) this.wake.emit("mail");
-    if (snapshot.reloadPending && !this.reloadClaiming && !this.reloadQueued) void this.claimReload();
+    if (snapshot.reloadPending && !this.reloadClaiming && !this.reloadQueued && this.options.canReload?.() !== false) void this.claimReload();
     this.changed();
   }
   private async claimReload() {
+    if (this.options.canReload?.() === false) return;
     this.reloadClaiming = true;
     try {
       const result = await this.requireClient().takeReload(this.life.signal);

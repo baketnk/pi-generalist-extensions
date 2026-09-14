@@ -31,8 +31,8 @@ A missing first-class interface does not imply that the underlying capability is
 | Managed background jobs | Implemented Linux-first MVP | Reliable finite local work without ad hoc process management |
 | Trusted Code Mode / nested-tool orchestration | Local Pi-fork MVP; portability and A/B evaluation pending | Fewer model round-trips through bounded nested-tool composition |
 | Pi-native selective memory | Foreground MVP; live review pending | Relevant continuity without foreground compression; portable originals |
-| Bounded subagents | Next candidate | Isolated investigations and independent reviews |
-| Switchboard dashboard and dispatcher | Dashboard + interactive offers implemented; coordinator/runner proposed | Human-approved routing now; managed runs and integration remain future work |
+| Bounded subagents | Inspect runner implemented; live fresh Codex trial passed; fork deployment gated on core hook | Isolated investigations and independent reviews |
+| Switchboard dashboard and dispatcher | Dashboard, interactive offers and inspect runner implemented; broader coordination proposed | Human-approved routing and bounded investigations; integration remains future work |
 | Web search and readable retrieval | Next candidate | Research without repeatedly building fetching and extraction plumbing |
 | Visual inspection loop | Project-driven | Observe and validate interactive applications |
 | Execution receipts | Implemented for new managed jobs | Preserve what actually ran and under which source state |
@@ -101,9 +101,13 @@ The fork's extension and core dispatcher have tests for nested validation/traces
 
 ## 2. Bounded subagents
 
-Detailed next-slice design: [forked/fresh subagents](subagents-proposal.md), including
-agent-chosen parallelism, safe branch snapshots, owned execution, and model-free
-peeking. Design only; no launcher or worker execution is implemented by that plan.
+Implemented slice: [owned inspect subagents](subagents.md), with agent-chosen
+parallelism, async controls, model-free peeking and durable reports. Fresh workers
+have a successful live Codex 5.6-sol smoke test. Fork projections have synthetic
+SDK coverage but require the separate [Pi snapshot hook](pi-context-snapshot.md);
+the installed bundled Pi has not been patched for full live fork validation.
+The broader [forked/fresh proposal](subagents-proposal.md) retains later tree,
+editing/worktree, mailbox and takeover work; it is not the implementation contract.
 
 ### Problem
 

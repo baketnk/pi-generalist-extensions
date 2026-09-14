@@ -132,16 +132,30 @@ export class BoardStore {
     this.run("UPDATE participants SET runtime=NULL,lease=0 WHERE id=? AND runtime=?", row.id, String(runtime));
     return { detached: true };
   }
-  provision(token: string, runtime: unknown, runId: unknown): { id: string; token: string } {
+  provision(token: string, runtime: unknown, runId: unknown, capability?: unknown): { id: string; token: string } {
     const parent = this.owner(token, runtime);
     if (parent.type !== "agent" || parent.parent) throw new BoardError("Only a top-level agent adapter may provision workers.", 403);
     const run = text(runId, "runId", 128);
+    if (capability !== undefined && (typeof capability !== "string" || !/^[a-f0-9]{64}$/.test(capability))) throw new BoardError("Invalid worker capability.");
+    const previous = this.one("SELECT * FROM participants WHERE parent=? AND run=?", parent.id, run);
+    if (previous) {
+      if (previous.archived) throw new BoardError("Worker run retired; cannot resurrect.", 410);
+      if (typeof capability === "string" && previous.token === hash(capability)) return { id: previous.id, token: capability };
+      throw new BoardError("Run already provisioned; recovery requires the original persisted capability.", 409);
+    }
     if (this.one("SELECT count(*) AS n FROM participants WHERE parent=? AND archived=0", parent.id)!.n >= 16) throw new BoardError("Worker quota reached.", 429);
     if (this.one("SELECT count(*) AS n FROM participants")!.n >= 1000) throw new BoardError("Participant quota reached.", 429);
-    if (this.one("SELECT id FROM participants WHERE parent=? AND run=?", parent.id, run)) throw new BoardError("Run already provisioned; don't retry as a new attempt.", 409);
-    const pid = id("p"), key = secret();
+    const pid = id("p"), key = typeof capability === "string" ? capability : secret();
     this.run("INSERT INTO participants(id,token,type,card,updated,created,parent,run) VALUES(?,?,?,?,?,?,?,?)", pid, hash(key), "agent", parent.card, this.now(), this.now(), parent.id, run);
     return { id: pid, token: key };
+  }
+  retireWorker(token: string, runtime: unknown, runId: unknown) {
+    const parent = this.owner(token, runtime);
+    if (parent.type !== "agent" || parent.parent) throw new BoardError("Only a top-level parent can retire its own workers.", 403);
+    const run = text(runId, "runId", 128), child = this.one("SELECT * FROM participants WHERE parent=? AND run=?", parent.id, run);
+    if (!child) return { retired: false, absent: true };
+    this.run("UPDATE participants SET archived=1,lease=0,runtime=NULL WHERE id=? AND parent=?", child.id, parent.id);
+    return { retired: true, id: child.id };
   }
   archive(token: string, runtime: unknown) {
     const row = this.owner(token, runtime);

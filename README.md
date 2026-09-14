@@ -17,6 +17,7 @@ Run `/reload` in an existing pi session, or start a new one. The bundled **Meita
 - `/status-icons [on|off|status]` (or `/generalist icons on|off|toggle`): show every Generalist footer boolean as a labelled check/cross (for example, `meitan: ✓` or `meitan: ✗`) instead of only showing enabled `name: on` labels. This is branch-local and off by default. Pi sends Unicode verbatim; terminals/fonts that lack those glyphs show their own fallback, so this does not require or attempt to detect Nerd Fonts.
 - `/tasks [clear]`: view or clear the branch-local task checklist.
 - `/bg-tasks [list|status ID|output ID|cancel ID]`: inspect finite Linux commands launched with `bg_tasks`. Jobs are session-bound and stop on reload, session replacement, and graceful Pi exit.
+- `/subagents`: model-free live inspection of owned read-only SDK workers; `/subagents stop` cancels them. The agent uses `subagents` for explicit fresh/fork starts, peeking, clarification, joining and report collection. Fork requires a compatible Pi snapshot hook and human history-sharing grant. See [the implemented contract](docs/subagents.md).
 - `/questions [list|clear]`: answer, inspect, or discard asynchronously queued questions; `Ctrl+Shift+Q` opens the oldest batch.
 - `pi --meitan`: enable personality initially. `--memory-config /absolute/config.json` selects native configuration but does not enable memory.
 
@@ -70,8 +71,10 @@ confirmed Start; no automatic session replacement or worker launch. See the
 `/switchboard manual` keeps human observability but suppresses new automatic
 context. Names and explicitly supplied summaries are public to local participants;
 no transcripts or automatic trace summaries are collected. Workers can use scoped
-participant capabilities, but a subagent launcher/general process wait is **not**
-in this MVP. See [commands, privacy, limits and validation](docs/switchboard.md).
+participant capabilities. The separate [inspect-subagent runner](docs/subagents.md)
+now owns launch, join, cancellation and reports; switchboard itself remains identity
+and correspondence, not execution authority. Automatic reloads defer while owned
+workers are active. See [commands, privacy, limits and validation](docs/switchboard.md).
 
 ## Tasks and user questions
 

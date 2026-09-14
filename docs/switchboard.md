@@ -1,9 +1,10 @@
 # Pi switchboard — MVP
 
 A shared project roster and durable mailboxes for parallel Pi sessions. The same
-participant client supports explicitly provisioned headless workers; **this release
-does not launch subagents**. The broader [design](agent-coordination-proposal.md)
-includes future runner work and is not a list of implemented features.
+participant client supports explicitly provisioned headless workers. Switchboard
+itself does not launch them; the separate [inspect-subagent runner](subagents.md)
+owns execution. The broader [design](agent-coordination-proposal.md) still includes
+future work and is not a list of implemented features.
 
 ## Start and opt out
 
@@ -255,10 +256,12 @@ Observers can inspect cards and subscribe to changes, not read agent mail, send,
 or control processes. A parent relationship does not expose inboxes/transcripts.
 There is no admin credential/UI, takeover command, remote API, or generic harness
 RPC proxy in the MVP. The authenticated service has own-mailbox archive and
-parent-scoped worker-provisioning operations for future runner integration; the
-agent-facing tool doesn't expose credentials or provisioning. Provisioning is
-not an idempotent task-start API: on an uncertain response don't blindly create
-a new attempt. Durable run/provision recovery belongs in the runner slice.
+parent-scoped worker-provisioning operations; the agent-facing tool doesn't expose
+credentials or provisioning. Protocol 6 accepts a host-persisted child capability:
+an exact parent/run/capability retry recovers the same participant before quotas.
+Changed credentials conflict; retired runs cannot resurrect. Parent-scoped
+`retire_worker` revokes only that parent's child. This is not a task-start API;
+process idempotency and execution records belong to the separate runner.
 
 ## Storage, transport, and limits
 
@@ -342,7 +345,6 @@ or worker launches are needed for these tests.
 
 Live acceptance still requires loading the extension into two real sessions and
 checking roster/UI ergonomics; this session did not reload itself or enroll live
-agents. Full subagent execution, result collection, process/output wait, richer
-observer run facts, strong isolation and opt-in trace summaries remain the next
-slice. A worker runner should use start/continue/collect or interruptible join,
-not block the only agent that could answer a worker's question.
+agents. The separate [subagent tests and live trial](subagents.md) cover inspect
+execution, reports, join and process cleanup. Worker mail tools, richer dashboard
+run facts, strong isolation and opt-in trace summaries remain later work.

@@ -4,7 +4,7 @@ import { lstat, mkdir, realpath, readFile, open, rename } from "node:fs/promises
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 
-export const VERSION = 5;
+export const VERSION = 6;
 export const LEASE_MS = 60_000;
 export const BODY_BYTES = 16 * 1024;
 export type Activity = "idle" | "working" | "waiting-for-user" | "unknown";

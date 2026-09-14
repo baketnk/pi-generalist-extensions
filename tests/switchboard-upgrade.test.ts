@@ -76,7 +76,7 @@ test("extension upgrade gate respects busy, queued input and prompts; enqueue is
   let idle = false, pending = false, status = "";
   const pi: any = {
     on: (name: string, fn: Function) => hooks.set(name, [...(hooks.get(name) ?? []), fn]),
-    events: { on: () => () => {} }, registerTool() {}, registerCommand() {}, getSessionName: () => "fixture",
+    events: { on: () => () => {}, emit() {} }, registerTool() {}, registerCommand() {}, getSessionName: () => "fixture",
     sendUserMessage: (...args: any[]) => queued.push(args),
     appendEntry: () => { throw new Error("Upgrade must not append model context"); },
   };

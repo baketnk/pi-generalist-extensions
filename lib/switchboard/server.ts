@@ -37,7 +37,8 @@ export async function serve(paths: Paths, options: { staleSocket?: boolean; now?
         case "heartbeat": result = store.heartbeat(token, runtime, args.card); break;
         case "detach": result = store.detach(token, runtime); break;
         case "archive": result = store.archive(token, runtime); break;
-        case "provision": result = store.provision(token, runtime, args.runId); break;
+        case "provision": result = store.provision(token, runtime, args.runId, args.capability); break;
+        case "retire_worker": result = store.retireWorker(token, runtime, args.runId); break;
         case "inspect": result = store.inspect(token, args.id); break;
         case "queue_reload": result = store.queueReload(token, runtime); break;
         case "take_reload": result = store.takeReload(token, runtime); break;
