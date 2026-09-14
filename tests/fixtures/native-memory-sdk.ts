@@ -1,6 +1,7 @@
 // Isolated real Node/Pi agent loop. All data is synthetic; no model or filesystem discovery.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { writeSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -48,7 +49,8 @@ try {
   await session.prompt("Recall the cedar cache fixture and retain a reflection.");
   assert.equal(turns, 2, JSON.stringify({ messages: session.messages, errors })); assert.deepEqual(errors, []);
   assert.ok(outgoing[0].includes("The SDK fixture retains a cedar cache."));
-  assert.ok(!outgoing[1].includes("The SDK fixture retains a cedar cache."), "own write must invalidate automatic packet");
+  assert.deepEqual(JSON.parse(outgoing[1]).messages.slice(0, JSON.parse(outgoing[0]).messages.length), JSON.parse(outgoing[0]).messages,
+    "DO NOT BREAK CACHE PREFIXING: a memory tool write must preserve the already-sent packet");
   const results = session.messages.filter(m => m.role === "toolResult"); assert.equal(results.length, 1);
   assert.equal(results[0].isError, false);
   const captures = store.list([`project:${projectId}`], { status: "accepted" }).items;
@@ -60,5 +62,5 @@ try {
   await session.prompt("Another cedar cache question, now memory is off.");
   assert.equal(turns, 3); assert.ok(!outgoing[2].includes("The SDK fixture retains a cedar cache."));
   assert.ok(!session.agent.state.tools.some(t => t.name === "memory"));
-  console.log(JSON.stringify({ turns, captureBound: true, packetInvalidated: true, errors }));
+  writeSync(1, JSON.stringify({ turns, captureBound: true, packetPrefixPreserved: true, errors }));
 } finally { session.dispose(); }

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { invalidateRecallIndex } from "./derived.ts";
-import { canonical, decodeSnapshot, decodeTransfer, encodeTransfer, id, scope, STORE_BYTES, MAX_REVISIONS, validateNote, validateSnapshot, type Note, type Revision, type Scope, type Snapshot } from "./schema.ts";
+import { canonical, decodeSnapshot, decodeTransfer, encodeTransfer, hash, id, scope, STORE_BYTES, MAX_REVISIONS, validateNote, validateSnapshot, type Note, type Revision, type Scope, type Snapshot } from "./schema.ts";
 
 function directory(path: string) {
   const stat = lstatSync(path);
@@ -128,6 +128,22 @@ export class MemoryStore {
     const row = this.load().revisions.filter(r => r.id === recordId && (revision === undefined || r.revision === revision)).at(-1);
     if (!row || !allowedScopes.includes(row.scope)) throw new Error("Record not found in allowed scopes");
     return row;
+  }
+  /** Validate retained recall without replacing historical bytes with the latest revision.
+   * Ordinary accepted edits are history; purge, retraction and scope changes revoke replay.
+   * Load once for the whole projection, not once per packet/item.
+   */
+  validateRecall(items: Array<Pick<Revision, "id" | "revision" | "scope" | "title" | "body"> & { recordHash: string }>, allowedScopes: Scope[]) {
+    const snapshot = this.load(), latest = new Map<string, Revision>(), retained = new Map<string, Revision>();
+    for (const row of snapshot.revisions) { latest.set(row.id, row); retained.set(`${row.id}:${row.revision}`, row); }
+    for (const item of items) {
+      const current = latest.get(item.id), original = retained.get(`${item.id}:${item.revision}`);
+      if (!current || !original || !allowedScopes.includes(item.scope) || current.scope !== item.scope || original.scope !== item.scope ||
+          current.status !== "accepted" || original.status !== "accepted" || current.kind === "artifact" || original.kind === "artifact" ||
+          hash(canonical(original)) !== item.recordHash || original.title !== item.title || original.body !== item.body) {
+        throw new Error("Retained memory source revoked, unavailable or changed in place");
+      }
+    }
   }
   search(query: string, allowedScopes: Scope[], options: { candidates?: boolean; offset?: number; limit?: number } = {}) {
     allowedScopes.forEach(scope);

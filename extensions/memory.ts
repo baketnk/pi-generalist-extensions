@@ -15,8 +15,11 @@ import { captureOrigin, operationId, retainedSource, sourceCatalog } from "../li
 import { boundedHousekeeping, housekeepingPayload, reviewMemory } from "../lib/memory/housekeeping.ts";
 import { formatOutput } from "../lib/output.ts";
 import type { StatusIconsController } from "../lib/status-icons.ts";
+import { snapshotContext, type Snapshot } from "../lib/workpad/context.ts";
 
 const AUDIT_ENTRY = "generalist:memory:supplied-v1";
+const SNAPSHOT_ENTRY = "generalist:memory:snapshot-v1";
+const RESET_ENTRY = "generalist:memory:reset-v1";
 const parameters = Type.Object({
   action: StringEnum(["recall", "read", "sources", "note", "revise", "threads"] as const),
   query: Type.Optional(Type.String({ maxLength: 512 })), id: Type.Optional(Type.String({ maxLength: 36 })),
@@ -32,7 +35,10 @@ const GUIDANCE = "Use memory for scoped durable context, not workpad/checklist s
 
 interface Access { config: MemoryConfig; digest: string; policy: MemoryPolicy; scopes: Scope[] }
 interface Supplied { sessionId: string; requestId: string; accessHash: string; packet: MemoryPacket }
+interface PacketSnapshot extends Supplied { snapshot: Snapshot }
 const accessHash = (a: Access) => hash(canonical({ digest: a.digest, policy: a.policy, scopes: a.scopes }));
+// UUIDs, timestamps and unrelated store writes do not make a new recall selection.
+const packetKey = (p: MemoryPacket) => hash(canonical({ notice: p.notice, items: p.items, omitted: p.omitted, pinOverflow: p.pinOverflow }));
 function reply(value: unknown, ctx?: ExtensionContext) {
   // Check the canonical payload before presentation; plain text must not bypass the tool bound.
   if (Buffer.byteLength(canonical(value)) > 48 * 1024) throw new Error("Memory result exceeds 48 KiB; narrow the request");
@@ -64,6 +70,7 @@ export default function memory(pi: ExtensionAPI, statusIcons?: StatusIconsContro
   let closed = false, epoch = 0, on = false, problem: string | undefined;
   let pending: { accessHash: string; packet: MemoryPacket; requestId?: string } | undefined;
   let supplied: Supplied | undefined;
+  let validated: string | undefined;
   let housekeepingJob: AbortController | undefined;
   let lastContext: ExtensionContext | undefined;
   const cancelHousekeeping = () => { housekeepingJob?.abort(); };
@@ -107,7 +114,9 @@ export default function memory(pi: ExtensionAPI, statusIcons?: StatusIconsContro
   };
   const restore = (ctx: ExtensionContext) => {
     cancelHousekeeping(); closed = false; epoch++; on = false; pending = undefined; supplied = undefined; problem = undefined;
-    // Audits are historical inspection only. Never replay a packet on reload/tree/fork.
+    validated = undefined;
+    // Legacy audits have no trustworthy projection boundary: inspection only.
+    // New snapshots replay separately, after branch/activation/source validation.
     for (const e of ctx.sessionManager.getBranch()) {
       if (e.type !== "custom" || e.customType !== AUDIT_ENTRY) continue;
       const a = e.data as Supplied | undefined, packet = parsePacket(a?.packet);
@@ -153,23 +162,71 @@ export default function memory(pi: ExtensionAPI, statusIcons?: StatusIconsContro
   });
   pi.on("context", (event, ctx) => {
     const messages = event.messages.filter(m => m.role !== "custom" || m.customType !== PACKET_TYPE);
-    if (!pending || closed) return { messages };
+    if (closed) return { messages };
+    const branch = ctx.sessionManager.getBranch(), sessionId = ctx.sessionManager.getSessionId();
+    const boundary = [...branch].reverse().find(e => e.type === "compaction" ||
+      (e.type === "custom" && (e.customType === POLICY_ENTRY || e.customType === RESET_ENTRY)))?.id ?? "root";
+    const journal: PacketSnapshot[] = [];
+    for (const e of branch) {
+      if (e.type !== "custom" || e.customType !== SNAPSHOT_ENTRY) continue;
+      const s = e.data as PacketSnapshot | undefined, packet = parsePacket(s?.packet);
+      if (s?.sessionId === sessionId && s.snapshot?.epoch === boundary && packet &&
+          typeof s.requestId === "string" && typeof s.accessHash === "string" &&
+          s.snapshot.content === packetText(packet) && s.snapshot.key === packetKey(packet)) journal.push({ ...s, packet });
+    }
+    // DO. NOT. BREAK. CACHE PREFIXING. These packets have already been sent.
+    // Deleting/replacing them on recall refresh, tool writes, retries, reload or
+    // a smaller budget destroys the provider's cached prefix. Keep exact bytes
+    // at durable boundaries; append changed selections. Only explicit lifecycle
+    // resets (compaction/activation/revocation) may retire historical snapshots.
+    // If you "simplify" this to one current packet, you are reintroducing a bug.
+    // Prove changes against actual provider payloads, not just context-hook counts.
+    const namespace = { type: PACKET_TYPE, prefix: "" };
+    let a: Access;
     try {
-      const a = access(ctx), requestId = latestUser(ctx), text = packetText(pending.packet);
-      if (!requestId || (pending.requestId && pending.requestId !== requestId) || accessHash(a) !== pending.accessHash ||
-          storeStamp(a.config.storeRoot) !== pending.packet.generation.stamp || Buffer.byteLength(text) + 256 > budgetFor(ctx)) throw new Error("Packet invalidated");
-      pending.requestId = requestId;
-      if (!pending.packet.items.length) return { messages };
-      if (supplied?.packet.id !== pending.packet.id) {
-        const audit: Supplied = { sessionId: ctx.sessionManager.getSessionId(), requestId, accessHash: pending.accessHash, packet: pending.packet };
-        pi.appendEntry(AUDIT_ENTRY, audit); supplied = audit; // fail closed if exact audit cannot be retained
+      if (!journal.length && !pending) return { messages };
+      a = access(ctx);
+      if (journal.some(s => s.accessHash !== accessHash(a))) throw new Error("Memory access changed");
+      const stamp = storeStamp(a.config.storeRoot);
+      const validationKey = hash(canonical({ sessionId, boundary, access: accessHash(a), stamp, packets: journal.map(s => s.packet.id) }));
+      if (journal.length && validated !== validationKey) {
+        inspectStore(a).validateRecall(journal.flatMap(s => s.packet.items), a.scopes);
+        if (storeStamp(a.config.storeRoot) !== stamp) throw new Error("Store changed during validation");
+        validated = validationKey;
       }
-      // Stable request anchor; preserve tool-call/result adjacency. Projection is not session history.
-      const reversedUser = [...messages].reverse().findIndex(m => m.role === "user");
-      const user = reversedUser < 0 ? -1 : messages.length - 1 - reversedUser;
-      messages.splice(user + 1, 0, { role: "custom", customType: PACKET_TYPE, content: text, display: false, timestamp: pending.packet.timestamp });
-    } catch { pending = undefined; problem = "Current packet invalidated; no stale memory supplied"; }
-    return { messages };
+    } catch {
+      pending = undefined; validated = undefined;
+      problem = "Memory projection reset: access or retained sources unavailable/revoked; earlier provider requests and audits are not erased";
+      // Persist retirement so a later re-accept/reload cannot resurrect this epoch.
+      // If persistence fails, stop the request instead of silently losing the reset.
+      if (journal.length) pi.appendEntry(RESET_ENTRY, { sessionId, boundary, reason: "access-or-source-unavailable" });
+      return { messages };
+    }
+    const snapshots = journal.map(s => s.snapshot);
+    const previous = snapshotContext(messages, snapshots, boundary, undefined, undefined, () => {}, namespace);
+    if (snapshots.length && !previous.some(m => m.role === "custom" && m.customType === PACKET_TYPE)) {
+      pi.appendEntry(RESET_ENTRY, { sessionId, boundary, reason: "context-boundary-changed" });
+      pending = undefined; validated = undefined;
+      problem = "Memory projection reset: conversation boundaries changed";
+      return { messages };
+    }
+    if (!pending) return { messages: previous };
+    try {
+      const requestId = latestUser(ctx), selected = pending, text = packetText(selected.packet);
+      if (!requestId || (selected.requestId && selected.requestId !== requestId) || accessHash(a) !== selected.accessHash ||
+          storeStamp(a.config.storeRoot) !== selected.packet.generation.stamp) throw new Error("New selection invalidated");
+      selected.requestId = requestId;
+      // Budget NEW content only. Never evict already-sent history to fit a model.
+      const key = packetKey(selected.packet), last = snapshots.at(-1);
+      if (last?.key === key || (!last && !selected.packet.items.length) || Buffer.byteLength(text) + 256 > budgetFor(ctx)) return { messages: previous };
+      return { messages: snapshotContext(messages, snapshots, boundary, { key, content: text }, undefined, snapshot => {
+        const audit: Supplied = { sessionId, requestId, accessHash: selected.accessHash, packet: selected.packet };
+        pi.appendEntry(AUDIT_ENTRY, audit);
+        pi.appendEntry(SNAPSHOT_ENTRY, { ...audit, snapshot } satisfies PacketSnapshot);
+        supplied = audit;
+      }, namespace) };
+    } catch { pending = undefined; problem = "New recall unavailable; retained authorized snapshots remain historical"; }
+    return { messages: previous };
   });
 
   pi.registerTool({ name: "memory", label: "Native memory", parameters,

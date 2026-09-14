@@ -1,5 +1,12 @@
 # Generalist extension development
 
+- DO. NOT. BREAK. CACHE PREFIXING. A recall refresh is not permission to delete,
+  replace, or move memory that has already been sent. That burns cached context
+  on every subsequent turn. Keep durable snapshots at their original boundaries;
+  append updates. Retries, tool writes, smaller budgets and reloads are NOT reset
+  boundaries. If you touch context projection, prove this with provider-payload
+  regression tests. Revocation and committed compaction are explicit exceptions,
+  not excuses to silently rebuild the prefix.
 - Preserve session prompt caching. Do not move, replace, or reinject unchanged
   context ahead of an existing conversation prefix on each request. Prefer stable
   tool/system definitions and append-only, fixed-boundary context snapshots.

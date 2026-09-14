@@ -3,7 +3,11 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SessionManager, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { zstdDecompressSync } from "node:zlib";
+import { SessionManager, convertToLlm, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { stream as codexResponses } from "@earendil-works/pi-ai/api/openai-codex-responses";
+import { stream as publicResponses } from "@earendil-works/pi-ai/api/openai-responses";
+import type { Model } from "@earendil-works/pi-ai";
 import memory, { type MemoryToolInput } from "../extensions/memory.ts";
 import { MemoryStore } from "../lib/memory/store.ts";
 import { readMemoryConfig, saveMemoryConfig, type MemoryConfig } from "../lib/memory/config.ts";
@@ -46,7 +50,7 @@ function harness(existing?: ReturnType<typeof fixture>, sm?: SessionManager) {
     return (await tools.memory.execute(callId, args, options.signal, undefined, ctx)).details.result;
   };
   const command = (args: string) => commands.memory.handler(args, ctx);
-  return { ...f, manager, ctx, pi, controller, emit, user, call, command, inputs, notifications, confirms: () => confirms };
+  return { ...f, manager, ctx, pi, tools, controller, emit, user, call, command, inputs, notifications, confirms: () => confirms };
 }
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "native-extension-test-")); roots.push(root);
@@ -58,6 +62,144 @@ function fixture() {
 }
 function note(scope: Scope, body = "Fixture cache decision"): Note { return { scope, kind: "fact", body, title: "Fixture", author: "user", sources: [], status: "accepted" }; }
 function projection(messages: any[] = [{ role: "user", content: "Fixture cache choice", timestamp: 1 }]) { return { messages }; }
+
+const transcript = (h: ReturnType<typeof harness>) => h.manager.buildSessionContext().messages;
+const packets = (messages: any[]) => messages.filter(m => m.role === "custom" && m.customType === PACKET_TYPE);
+const zeroUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
+function answer(h: ReturnType<typeof harness>) {
+  h.manager.appendMessage({ role: "assistant", api: "openai-responses", provider: "openai", model: "fixture-cache",
+    content: [{ type: "text", text: "Synthetic answer" }], stopReason: "stop", timestamp: Date.now(), usage: zeroUsage });
+}
+// Capture the serialized HTTP body AFTER Pi's real provider conversion. No live
+// account, network, journal or memory store: everything here is a synthetic fixture.
+async function providerBody(h: ReturnType<typeof harness>, messages: any[], api: "openai-responses" | "openai-codex-responses", systemPrompt = "Stable synthetic instructions") {
+  const model: Model<typeof api> = { id: "fixture-cache", name: "Fixture", api, provider: api === "openai-responses" ? "openai" : "openai-codex",
+    baseUrl: "https://fixture.invalid/v1", reasoning: false, input: ["text"], contextWindow: 128000, maxTokens: 8192,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+  let body: any;
+  const token = `fixture.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "synthetic" } })).toString("base64url")}.fixture`;
+  const options = { apiKey: token, sessionId: h.manager.getSessionId(), transport: "sse" as const, env: {},
+    fetch: (async (_url: unknown, init: RequestInit) => {
+      body = JSON.parse(typeof init.body === "string" ? init.body : zstdDecompressSync(init.body as Uint8Array).toString("utf8"));
+      return new Response(`data: ${JSON.stringify({ type: "response.completed", response: { id: "resp_fixture", status: "completed", output: [],
+        usage: { input_tokens: 1, output_tokens: 0, total_tokens: 1 } } })}\n\n`, { headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch };
+  const context = { systemPrompt, messages: convertToLlm(messages), tools: h.pi.getActiveTools().filter((name: string) => h.tools[name]).map((name: string) => {
+    const { description, parameters } = h.tools[name]; return { name, description, parameters };
+  }) };
+  const result = await (api === "openai-responses"
+    ? publicResponses(model as Model<"openai-responses">, context, options)
+    : codexResponses(model as Model<"openai-codex-responses">, context, options)).result();
+  expect({ stopReason: result.stopReason, error: result.errorMessage }).toEqual({ stopReason: "stop", error: undefined }); expect(body).toBeDefined(); return body;
+}
+function preservesPrefix(before: any, after: any) {
+  expect(after.input.slice(0, before.input.length)).toEqual(before.input);
+  expect(after.instructions).toEqual(before.instructions);
+  expect(after.tools).toEqual(before.tools);
+  expect(after.prompt_cache_key).toEqual(before.prompt_cache_key);
+}
+
+for (const api of ["openai-responses", "openai-codex-responses"] as const) {
+  test(`${api}: exact packet prefix survives user turns, tool writes/results, retries, budgets and reload`, async () => {
+    const h = harness(); const original = h.store.note(note(h.project), randomUUID());
+    await h.emit("session_start"); await h.command("on"); h.user("cache");
+    const start = await h.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" });
+    const first = (await h.emit("context", projection(transcript(h)))).messages;
+    const firstBody = await providerBody(h, first, api, start.systemPrompt);
+    expect(packets(first)).toHaveLength(1);
+    expect(await providerBody(h, (await h.emit("context", projection(first))).messages, api, start.systemPrompt)).toEqual(firstBody);
+
+    const callId = "call_fixture", result = await h.call({ action: "note", kind: "reflection", scope: h.project,
+      title: "A different fixture", body: "An unrelated synthetic reflection" }, { id: callId });
+    h.manager.appendMessage({ role: "toolResult", toolCallId: callId, toolName: "memory", isError: false,
+      content: [{ type: "text", text: JSON.stringify(result) }], timestamp: Date.now() });
+    const followup = (await h.emit("context", projection(transcript(h)))).messages;
+    const followupBody = await providerBody(h, followup, api, start.systemPrompt);
+    preservesPrefix(firstBody, followupBody);
+    const callIndex = followupBody.input.findIndex((m: any) => m.type === "function_call");
+    expect(followupBody.input[callIndex + 1].type).toBe("function_call_output");
+    expect(await providerBody(h, (await h.emit("context", projection(transcript(h)))).messages, api, start.systemPrompt)).toEqual(followupBody);
+
+    answer(h); h.user("cache again");
+    const nextStart = await h.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" });
+    expect(nextStart.systemPrompt).toBe(start.systemPrompt);
+    const ordinary = (await h.emit("context", projection(transcript(h)))).messages;
+    expect(packets(ordinary)).toEqual(packets(first)); // new UUID/store generation is NOT a new selection
+    const ordinaryBody = await providerBody(h, ordinary, api, nextStart.systemPrompt);
+    preservesPrefix(followupBody, ordinaryBody);
+
+    h.store.revise(original.id, 1, note(h.project, "Corrected fixture cache decision"), "Synthetic correction", randomUUID());
+    await h.command("reindex"); answer(h); h.user("corrected cache");
+    await h.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" });
+    const changed = (await h.emit("context", projection(transcript(h)))).messages;
+    expect(packets(changed)).toHaveLength(2); expect(packets(changed)[0]).toEqual(packets(first)[0]);
+    expect(packets(changed)[1].content).toContain("Corrected fixture cache decision");
+    const changedBody = await providerBody(h, changed, api, start.systemPrompt); preservesPrefix(ordinaryBody, changedBody);
+
+    h.ctx.model.contextWindow = 2048; h.ctx.getContextUsage = () => ({ tokens: 2000 });
+    await h.emit("model_select"); await h.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" });
+    expect(await providerBody(h, (await h.emit("context", projection(transcript(h)))).messages, api, start.systemPrompt)).toEqual(changedBody);
+    await h.emit("session_compact", { willRetry: true }); // no committed compaction: do not reset
+    expect(await providerBody(h, (await h.emit("context", projection(transcript(h)))).messages, api, start.systemPrompt)).toEqual(changedBody);
+
+    await h.emit("session_shutdown"); const restored = harness(h, h.manager); await restored.emit("session_start", { reason: "reload" });
+    const reload = (await restored.emit("context", projection(transcript(h)))).messages;
+    expect(await providerBody(restored, reload, api, start.systemPrompt)).toEqual(changedBody);
+    await restored.emit("session_tree");
+    expect(await providerBody(restored, (await restored.emit("context", projection(transcript(h)))).messages, api, start.systemPrompt)).toEqual(changedBody);
+  });
+}
+
+test("source revocation retires the projection durably; unrelated writes and accepted revisions do not", async () => {
+  for (const action of ["purge", "retract", "replace", "missing"]) {
+    const h = harness(), row = h.store.note(note(h.project), randomUUID());
+    await h.emit("session_start"); await h.command("on"); h.user();
+    await h.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" });
+    const first = (await h.emit("context", projection(transcript(h)))).messages;
+    expect(packets(first)).toHaveLength(1);
+    const originalFile = readFileSync(join(h.root, "store.json"));
+    if (action === "purge") h.store.purge(row.id, 1, `purge:${row.id}`);
+    else if (action === "retract") h.store.revise(row.id, 1, { ...note(h.project), status: "retracted" }, "Revoked", randomUUID());
+    else if (action === "replace") writeFileSync(join(h.root, "store.json"), readFileSync(join(fixture().root, "store.json")));
+    else unlinkSync(join(h.root, "store.json"));
+    expect(packets((await h.emit("context", projection(first))).messages)).toHaveLength(0);
+    expect(h.manager.getBranch().some(e => e.type === "custom" && e.customType === "generalist:memory:reset-v1")).toBe(true);
+    // Even restoring the fixture bytes cannot silently resurrect a retired epoch.
+    writeFileSync(join(h.root, "store.json"), originalFile);
+    const restored = harness(h, h.manager); await restored.emit("session_start");
+    expect(packets((await restored.emit("context", projection(transcript(h)))).messages)).toHaveLength(0);
+  }
+});
+
+test("off/on, committed compaction and rewritten context are explicit non-resurrecting boundaries", async () => {
+  for (const action of ["activation", "compaction", "rewrite"]) {
+    const h = harness(); h.store.note(note(h.project), randomUUID()); await h.emit("session_start"); await h.command("on");
+    const userId = h.user(); await h.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" });
+    const original = transcript(h), first = (await h.emit("context", projection(original))).messages;
+    expect(packets(first)).toHaveLength(1);
+    if (action === "activation") { await h.command("off"); await h.command("on"); }
+    else if (action === "compaction") { h.manager.appendCompaction("Synthetic summary", userId, 1000); await h.emit("session_compact", { willRetry: false }); }
+    else await h.emit("context", projection([{ role: "user", content: "Rewritten fixture context", timestamp: 42 }]));
+    expect(packets((await h.emit("context", projection(original))).messages)).toHaveLength(0);
+    const restored = harness(h, h.manager); await restored.emit("session_start");
+    expect(packets((await restored.emit("context", projection(transcript(h)))).messages)).toHaveLength(0);
+    restored.user("cache"); await restored.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" });
+    const next = (await restored.emit("context", projection(transcript(h)))).messages;
+    expect(packets(next)).toHaveLength(1); expect(packets(next)[0].content).not.toBe(packets(first)[0].content);
+  }
+});
+
+test("failed snapshot persistence does not disclose a new packet; legacy unanchored audits never replay", async () => {
+  const h = harness(); h.store.note(note(h.project), randomUUID()); await h.emit("session_start"); await h.command("on"); h.user();
+  await h.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" });
+  const append = h.pi.appendEntry;
+  h.pi.appendEntry = (type: string, data: unknown) => { if (type === "generalist:memory:snapshot-v1") throw new Error("Synthetic disk failure"); return append(type, data); };
+  expect(packets((await h.emit("context", projection(transcript(h)))).messages)).toHaveLength(0);
+  expect(h.manager.getBranch().some(e => e.type === "custom" && e.customType === "generalist:memory:supplied-v1")).toBe(true);
+  const restored = harness(h, h.manager); await restored.emit("session_start");
+  expect(packets((await restored.emit("context", projection(transcript(h)))).messages)).toHaveLength(0);
+});
 
 test("factory/default-off never accesses config; malformed config cannot break an off session", async () => {
   const f = fixture(); writeFileSync(f.path, "invalid"); const h = harness(f);
@@ -118,13 +260,13 @@ test("native writes are idempotent and revision-safe; manual read respects scope
   await expect(h.call({ action: "revise", id: human.id, expectedRevision: 1, title: "No", body: "No", reason: "No" })).rejects.toThrow("human editing");
 });
 
-test("external writes and config changes invalidate current packets; missing index is never rebuilt on prompt", async () => {
+test("external writes preserve sent packets; config changes revoke them; prompts never rebuild missing indexes", async () => {
   const h = harness(); h.store.note(note(h.project), randomUUID()); await h.emit("session_start"); await h.command("on"); h.user();
-  await h.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" }); expect((await h.emit("context", projection())).messages).toHaveLength(2);
+  await h.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" }); const first = await h.emit("context", projection()); expect(first.messages).toHaveLength(2);
   h.store.note(note(h.project, "New correction"), randomUUID());
-  expect((await h.emit("context", projection())).messages).toHaveLength(1);
+  expect(await h.emit("context", projection())).toEqual(first);
   const before = readFileSync(join(h.root, "store.json"));
-  await h.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" }); expect((await h.emit("context", projection())).messages).toHaveLength(1);
+  await h.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" }); expect(await h.emit("context", projection())).toEqual(first);
   await expect(h.call({ action: "recall", query: "cache" })).rejects.toThrow();
   expect(readFileSync(join(h.root, "store.json"))).toEqual(before);
   await h.command("reindex");
@@ -134,13 +276,13 @@ test("external writes and config changes invalidate current packets; missing ind
   expect(h.controller()).toBe(false); expect(h.pi.getActiveTools()).not.toContain("memory");
 });
 
-test("personal profile is explicit; reload resumes grant but never old packet; tree/fork/new stay bound", async () => {
+test("personal profile is explicit; reload restores authorized snapshots; tree/fork/new stay bound", async () => {
   const h = harness(); const personal = h.store.note(note(h.personal, "Personal cache fixture"), randomUUID());
   await h.emit("session_start"); await h.command(`profile continuity ${h.personal.slice(9)}`); expect(h.controller()).toBe(false);
   await h.command("on"); expect((await h.call({ action: "read", id: personal.id })).body).toContain("Personal");
-  h.user(); await h.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" }); await h.emit("context", projection());
+  h.user(); await h.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" }); const first = await h.emit("context", projection());
   await h.emit("session_shutdown"); const loaded = harness(h, h.manager); await loaded.emit("session_start", { reason: "reload" });
-  expect(loaded.controller()).toBe(true); expect((await loaded.emit("context", projection())).messages).toHaveLength(1);
+  expect(loaded.controller()).toBe(true); expect(await loaded.emit("context", projection())).toEqual(first);
   await loaded.command("profile project"); await expect(loaded.call({ action: "read", id: personal.id })).rejects.toThrow("allowed scopes");
   const forkManager = SessionManager.inMemory(h.root); for (const e of h.manager.getBranch()) if (e.type === "custom") forkManager.appendCustomEntry(e.customType, e.data);
   const fork = harness(h, forkManager); await fork.emit("session_start", { reason: "fork" }); expect(fork.controller()).toBe(false);

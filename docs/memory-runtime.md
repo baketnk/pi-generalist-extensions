@@ -194,21 +194,32 @@ conservatively in **bytes**. Known usage additionally reserves output/context
 headroom. Unknown/small context allowance disables automatic selection. These
 caps are not a tokenizer or a guarantee against overflow from other content.
 
-Each provider-context turn rechecks the config/profile, current request, source
-file generation and remaining allowance. Stale packets are dropped, not silently
-reselected mid-request. The exact packet is frozen (including timestamp) through
-internal compaction retries; manual/threshold compaction and model changes clear
-it. No summary becomes source evidence or activation authority.
+Each provider-context turn rechecks config/profile and retained-source access.
+New selections also require a current source generation and sufficient allowance.
+Already-sent snapshots retain their exact bytes and original message boundaries:
+ordinary user turns, tool writes/results, retries, smaller budgets and model changes
+must not evict them. Changed selections append a new snapshot; unchanged selections
+are not repeated just because the packet UUID, timestamp or store generation changed.
+An empty new selection can supersede the current selection without erasing history.
+No summary becomes source evidence or activation authority.
 
-The packet is projected into the provider-bound message copy at a stable user
-anchor, never persisted as an LLM message. An exact custom-entry audit is appended
-once before projection; if that fails, nothing is injected. `/memory context`
+Packets are projected into the provider-bound message copy from durable custom
+snapshot entries, never persisted as LLM messages. The exact audit and boundary
+snapshot must be saved before a new packet is injected. `/memory context`
 reports what this hook prepared, **not** proof a remote provider received it or
-that a later extension did not change the payload. Previously projected owned
-packets are stripped from each copy before inserting at most one current packet.
+that a later extension did not change the payload. Owned projections are stripped
+from each incoming copy and rematerialized at their saved boundaries, not moved
+to the latest user message. Ordinary accepted revisions remain historical. Purge,
+retraction, revoked configuration/profile access, missing/replaced stores or an
+unrecognizable context prefix retire the projection with a durable reset. This
+deliberately breaks the prefix to stop further disclosure; past requests and audits
+are not erased. Committed compaction and explicit activation changes start new
+epochs. A compaction retry notification without a committed compaction is not a reset.
 
-Reload/resume/tree reconstruct branch policy but do not replay an old packet.
-Fresh prompts select anew. New/forked sessions have no activation grant even if
+Reload/resume/tree reconstruct branch policy and replay authorized, anchored
+snapshots byte-for-byte. Legacy audits have no saved boundary and are never
+guessed back into history. Fresh prompts may append new selections. New/forked
+sessions have no activation grant even if
 they inherit audit entries. Print/JSON can restore a previously approved session
 but cannot create a fresh activation grant. Subagents are instructed not to use
 memory; a fresh/forked session starts off. Passing an already approved session
@@ -225,8 +236,9 @@ through either an opted-in default personal profile or an explicitly selected
 continuity profile.
 
 The [index contract](memory-index.md) covers purge invalidation and stale readers.
-A missing/corrupt/stale index suppresses automatic recall with a UI warning and
-leaves conversation usable. No prompt-triggered rebuild or paid fallback occurs.
+A missing/corrupt/stale index suppresses new automatic recall with a UI warning;
+already-sent snapshots remain if their retained sources are still authorized.
+No prompt-triggered rebuild or paid fallback occurs.
 Synchronous filesystem/SQLite work has no preemptible wall-clock deadline.
 Canonical snapshots are still capped at 16 MiB/8,192 revisions; refusal never
 prunes originals. This is bounded foreground memory, not an unlimited archive.
@@ -234,7 +246,10 @@ prunes originals. This is bounded foreground memory, not an unlimited archive.
 Validation uses synthetic stores and real Pi `SessionManager` branches. A separate
 Node subprocess loads the extension through Pi's real loader and runs a scripted
 agent loop with network disabled: it verifies automatic projection, a host-bound
-capture, invalidation after writing, and off on the next request. No private
+capture, prefix preservation after writing, and off on the next request. Actual
+serialized public-Responses and native-Codex request tests also verify fixed packet
+boundaries, stable instructions/tools and unchanged history through ordinary turns,
+tool results, retries and reloads. No private
 archive or live model is used. Mocked lifecycle tests additionally cover
 compaction retry, reload/tree/fork, scoping, malformed config, queued cancellation,
 CAS, review, pins and budgets. These are not a full manual TUI/RPC cutover test.
