@@ -1,5 +1,5 @@
-import { DynamicBorder, type ExtensionAPI, type ExtensionContext, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
-import { Container, Editor, type EditorTheme, type Focusable, type SelectItem, SelectList, Text, type TUI } from "@earendil-works/pi-tui";
+import { type ExtensionAPI, type ExtensionContext, type KeybindingsManager, type Theme } from "@earendil-works/pi-coding-agent";
+import { Container, Editor, type EditorTheme, type Focusable, type SelectItem, SelectList, Text, truncateToWidth, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 export interface QuestionOption { label: string; description?: string }
@@ -161,7 +161,6 @@ export class QuestionOverlay implements Focusable {
   private rebuild() {
     const question = this.current();
     this.container.clear();
-    this.container.addChild(new DynamicBorder((text: string) => this.theme.fg("borderMuted", text)));
     const batch = this.batchId === undefined ? "Questions" : `Questions · batch ${this.batchId}`;
     this.container.addChild(new Text(
       `${this.theme.fg("accent", this.theme.bold(batch))}${this.theme.fg("dim", `  ${this.index + 1}/${this.questions.length}`)}`,
@@ -174,7 +173,6 @@ export class QuestionOverlay implements Focusable {
       ? "Enter submit · Esc choices"
       : this.textMode ? "Enter submit · Esc keep pending" : "↑↓ choose · Enter select · Esc keep pending";
     this.container.addChild(new Text(this.theme.fg("dim", hint), 1, 0));
-    this.container.addChild(new DynamicBorder((text: string) => this.theme.fg("borderMuted", text)));
   }
 
   handleInput(data: string) {
@@ -202,7 +200,15 @@ export class QuestionOverlay implements Focusable {
     this.tui.requestRender();
   }
 
-  render(width: number) { return this.container.render(Math.max(1, width)); }
+  render(width: number) {
+    if (width < 3) return this.container.render(Math.max(1, width));
+    const innerWidth = width - 2, border = (text: string) => this.theme.fg("borderAccent", text);
+    const content = this.container.render(innerWidth).map(line => {
+      const clipped = truncateToWidth(line, innerWidth);
+      return `${border("│")}${clipped}${" ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)))}${border("│")}`;
+    });
+    return [border(`╭${"─".repeat(innerWidth)}╮`), ...content, border(`╰${"─".repeat(innerWidth)}╯`)];
+  }
   invalidate() { this.container.invalidate(); }
 }
 

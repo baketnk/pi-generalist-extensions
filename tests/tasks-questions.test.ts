@@ -173,6 +173,7 @@ test("question overlay is compact, keyboard-driven, and retains multi-question a
     { id: "store", title: "Name the storage backend" },
   ], finish, 7);
   component.focused = true;
+  expect(component.render(60).join("\n")).toContain("╭──────────────────────────────────────────────────────────╮");
   expect(component.render(60).join("\n")).toContain("Questions · batch 7");
   expect(component.render(60).join("\n")).toContain("Lower risk");
   for (const line of component.render(24)) expect(visibleWidth(line)).toBeLessThanOrEqual(24);
