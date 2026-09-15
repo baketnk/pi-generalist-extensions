@@ -59,6 +59,31 @@ export function scopesFor(config: MemoryConfig, policy: MemoryPolicy, cwd: strin
 function latestUser(ctx: ExtensionContext) {
   return [...ctx.sessionManager.getBranch()].reverse().find(e => e.type === "message" && e.message.role === "user")?.id;
 }
+/** Only the immediately preceding user text on this branch, never tool output,
+ * assistant prose, recalled packets or pre-reset history. No persistent topic state.
+ */
+export function previousRecallPrompt(ctx: ExtensionContext): string | undefined {
+  // Pi emits before_agent_start before appending the new user message. The latest
+  // stored user is the previous prompt, even if its text equals the new prompt.
+  const branch = ctx.sessionManager.getBranch();
+  for (let i = branch.length - 1; i >= Math.max(0, branch.length - 64); i--) {
+    const entry = branch[i];
+    if (entry.type === "compaction" || (entry.type === "custom" &&
+        (entry.customType === POLICY_ENTRY || entry.customType === RESET_ENTRY))) break;
+    if (entry.type !== "message" || entry.message.role !== "user") continue;
+    const content = entry.message.content;
+    let text = "";
+    if (typeof content === "string") text = content.slice(0, 1024);
+    else for (const block of content) {
+      if (block.type === "text") {
+        const separator = text ? "\n" : "";
+        text += separator + block.text.slice(0, 1024 - text.length - separator.length);
+      }
+      if (text.length >= 1024) break;
+    }
+    return text;
+  }
+}
 function budgetFor(ctx: ExtensionContext): number {
   const window = ctx.model?.contextWindow ?? 0, tokens = ctx.getContextUsage()?.tokens;
   return Math.max(0, Math.floor(Math.min(PACKET_BYTES, window / 8,
@@ -151,7 +176,9 @@ export default function memory(pi: ExtensionAPI, statusIcons?: StatusIconsContro
         const index = new RecallIndex(a.config.storeRoot, a.config.storeId);
         try {
           const pins = a.config.pins.filter(p => a.scopes.includes(p.scope)).map(p => p.id);
-          const result = index.search(event.prompt.slice(0, 4096), a.scopes, { pins, automatic: true });
+          const result = index.search(event.prompt.slice(0, 4096), a.scopes, {
+            pins, automatic: true, previousPrompt: previousRecallPrompt(ctx),
+          });
           pending = { accessHash: accessHash(a), packet: makePacket(index.generation, result.items, budget) };
         } finally { index.close(); }
       } else problem = "No safe automatic recall allowance for this model/context";

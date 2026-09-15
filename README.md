@@ -94,7 +94,11 @@ Set `PI_MEITAN_HOME` to another **absolute** directory if needed. This repo cont
 
 The `memory` tool provides scoped indexed recall, accepted-original reads, authored
 notes/revisions, exact host-bound source excerpts and open-thread cues. Automatic
-recall is bounded, request-frozen and inspectable with `/memory context`. Candidates
+recall is bounded, request-frozen and inspectable with `/memory context`. Local
+scope-aware lexical ranking supplies zero to three qualifying notes by default
+(plus eligible human pins), with a small preceding-user topic hint for apparent
+follow-ups. Weak matches are omitted; no embeddings or extra model calls are needed.
+Earlier packets remain at their original conversation boundaries. Candidates
 and unassigned records are never automatically recalled. An opted-in default personal
 profile supplies cross-project context even in unmapped directories; mapped project
 exceptions take precedence without hiding unrelated personal context. `/memory profile

@@ -186,9 +186,14 @@ Tests use mocked completions, not real provider calls or a live quality evaluati
 
 ## Prompt and lifecycle contract
 
-Automatic recall uses only the current prompt's bounded lexical query and approved
-pins, not an archive-wide summarizer or background worker. Selection happens once
-at `before_agent_start`. A complete packet is at most 8 KiB, including framing
+Automatic recall uses the current prompt's bounded lexical query and approved
+pins, not an archive-wide summarizer or background worker. Apparent short follow-ups
+may use a bounded topic hint from one preceding user prompt on the same branch;
+assistant/tool/recall text is excluded and reset boundaries stop topic lookup.
+[Relevance gates and scope-local rarity ranking](memory-index.md) select zero to
+three lexical hits by default, plus eligible human pins. Weak matches need not fill
+a packet. Selection happens once at `before_agent_start`.
+A complete packet is at most 8 KiB, including framing
 headroom, and at most one-eighth of the model context window measured
 conservatively in **bytes**. Known usage additionally reserves output/context
 headroom. Unknown/small context allowance disables automatic selection. These

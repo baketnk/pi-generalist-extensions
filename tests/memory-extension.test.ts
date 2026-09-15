@@ -8,7 +8,7 @@ import { SessionManager, convertToLlm, withFileMutationQueue } from "@earendil-w
 import { stream as codexResponses } from "@earendil-works/pi-ai/api/openai-codex-responses";
 import { stream as publicResponses } from "@earendil-works/pi-ai/api/openai-responses";
 import type { Model } from "@earendil-works/pi-ai";
-import memory, { type MemoryToolInput } from "../extensions/memory.ts";
+import memory, { previousRecallPrompt, type MemoryToolInput } from "../extensions/memory.ts";
 import { MemoryStore } from "../lib/memory/store.ts";
 import { readMemoryConfig, saveMemoryConfig, type MemoryConfig } from "../lib/memory/config.ts";
 import { readMemoryPolicy } from "../lib/memory/policy.ts";
@@ -149,7 +149,71 @@ for (const api of ["openai-responses", "openai-codex-responses"] as const) {
     await restored.emit("session_tree");
     expect(await providerBody(restored, (await restored.emit("context", projection(transcript(h)))).messages, api, start.systemPrompt)).toEqual(changedBody);
   });
+
+  test(`${api}: relevance gating appends empty selections without evicting earlier packets`, async () => {
+    const h = harness();
+    for (let i = 0; i < 6; i++) h.store.note(note(h.project, `Rendering cache fixture ${i}`), randomUUID());
+    const topic = h.store.note(note(h.project, "Native memory search keeps packets anchored"), randomUUID());
+    await h.emit("session_start"); await h.command("on");
+    // Real host ordering: before_agent_start precedes appending the current user.
+    const start = await h.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" }); h.user("cache");
+    const first = (await h.emit("context", projection(transcript(h)))).messages;
+    expect(JSON.parse(packets(first)[0].content).items).toHaveLength(3);
+    let body = await providerBody(h, first, api, start.systemPrompt);
+    for (const query of ["quasar cache radiation", "quasar cache radiation"]) {
+      answer(h);
+      const next = await h.emit("before_agent_start", { prompt: query, systemPrompt: "base" }); h.user(query);
+      const projected = (await h.emit("context", projection(transcript(h)))).messages;
+      expect(packets(projected)).toHaveLength(2);
+      expect(packets(projected)[0]).toEqual(packets(first)[0]);
+      expect(JSON.parse(packets(projected)[1].content).items).toEqual([]);
+      const nextBody = await providerBody(h, projected, api, next.systemPrompt);
+      preservesPrefix(body, nextBody); body = nextBody;
+      expect(await providerBody(h, (await h.emit("context", projection(projected))).messages, api, next.systemPrompt)).toEqual(body);
+    }
+    answer(h); h.user("native memory search"); answer(h);
+    const next = await h.emit("before_agent_start", { prompt: "Do those packets remain?", systemPrompt: "base" });
+    h.user("Do those packets remain?");
+    const contextual = (await h.emit("context", projection(transcript(h)))).messages;
+    expect(packets(contextual)).toHaveLength(3);
+    expect(JSON.parse(packets(contextual)[2].content).items.map((i: { id: string }) => i.id)).toEqual([topic.id]);
+    const contextualBody = await providerBody(h, contextual, api, next.systemPrompt); preservesPrefix(body, contextualBody);
+    await h.emit("session_shutdown");
+    const restored = harness(h, h.manager); await restored.emit("session_start", { reason: "reload" });
+    expect(await providerBody(restored, (await restored.emit("context", projection(transcript(h)))).messages, api, next.systemPrompt)).toEqual(contextualBody);
+  });
 }
+
+test("follow-up topic is user-only, bounded, branch-local and stops at activation/compaction/reset", async () => {
+  const h = harness(); h.user("Pre-activation secret topic");
+  await h.emit("session_start"); await h.command("on");
+  expect(previousRecallPrompt(h.ctx)).toBeUndefined();
+  const fork = h.user("native memory search"); answer(h);
+  h.manager.appendCustomMessageEntry("external", "Untrusted unrelated topic", false);
+  h.manager.appendMessage({ role: "toolResult", toolCallId: "fixture", toolName: "read", isError: false,
+    content: [{ type: "text", text: "Untrusted tool topic" }], timestamp: Date.now() });
+  expect(previousRecallPrompt(h.ctx)).toBe("native memory search");
+  h.user("Do those packets remain?");
+  // Repeating that question must not skip backward to the older native-memory topic.
+  expect(previousRecallPrompt(h.ctx)).toBe("Do those packets remain?");
+  h.user("Recipe ingredients");
+  expect(previousRecallPrompt(h.ctx)).toBe("Recipe ingredients");
+  h.manager.branch(fork);
+  expect(previousRecallPrompt(h.ctx)).toBe("native memory search");
+  h.user("x".repeat(4096)); expect(previousRecallPrompt(h.ctx)).toBe("x".repeat(1024));
+  h.user("x".repeat(1024) + "different suffix"); expect(previousRecallPrompt(h.ctx)).toBe("x".repeat(1024));
+  h.manager.appendMessage({ role: "user", timestamp: Date.now(), content: [
+    { type: "text", text: "x".repeat(1023) }, { type: "text", text: "overflow" },
+  ] });
+  expect(previousRecallPrompt(h.ctx)).toHaveLength(1024);
+  h.manager.appendCompaction("A summary must not become a topic", fork, 1000);
+  expect(previousRecallPrompt(h.ctx)).toBeUndefined();
+  h.user("native memory search"); h.manager.appendCustomEntry("generalist:memory:reset-v1", {});
+  expect(previousRecallPrompt(h.ctx)).toBeUndefined();
+  h.user("native memory search");
+  for (let i = 0; i < 64; i++) h.manager.appendCustomEntry("padding", {});
+  expect(previousRecallPrompt(h.ctx)).toBeUndefined();
+});
 
 test("source revocation retires the projection durably; unrelated writes and accepted revisions do not", async () => {
   for (const action of ["purge", "retract", "replace", "missing"]) {

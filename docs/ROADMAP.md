@@ -327,6 +327,32 @@ Build an original native extension over a portable record store, not another pro
 
 An optional, explicitly configured tool-free worker produces rebuildable search descriptions from bounded originals. It cannot rewrite sources, promote core memories, run tools or trigger conversation turns. No implicit foreground-model fallback, startup compression, forced post-answer review, automatic diary extraction or shutdown notes. Pi conversation compaction remains a separate harness responsibility.
 
+### Small/background model and candidate extraction — requested follow-up
+
+The user wants a reusable Generalist setting for small/background model operations,
+including an optional conversation-to-memory candidate extractor to catch missed
+foreground captures. This is **not implemented by the lexical relevance change**.
+The existing housekeeping setting remains a separate, manual read-only reviewer.
+
+Suggested contract for the follow-up:
+
+- Select an exact provider/model through Pi's registry (a configured local endpoint
+  is welcome). No implicit foreground-model fallback or automatic model download.
+- Model selection is not activation: each consumer, including extraction, needs its
+  own enablement/disclosure policy. Local versus remote destinations must be clear.
+- Extract only from a bounded, explicitly permitted conversation slice at a settled
+  boundary, not from journals, tools, recalled packets or a whole session archive.
+- Produce review candidates with exact retained source references; do not silently
+  accept them as facts, rewrite existing notes, or change memory scopes.
+- Enforce output/time/concurrency budgets, cancellation, duplicate suppression,
+  session/config binding and visible usage/errors. No model wake, retry loop or
+  changes to the foreground prompt/cache prefix.
+- Keep foreground `memory note/revise` available. Extraction supplements deliberate
+  capture rather than replacing it; “nothing worth saving” is a valid result.
+
+Implementation needs a focused lifecycle/settings design and synthetic tests before
+activation on real conversations. No worker is installed or enabled by this note.
+
 ### Integration and portability
 
 - Use Pi hooks/tools/commands and its model registry directly; no child-agent framework required.

@@ -3,9 +3,11 @@ import { randomUUID } from "node:crypto";
 import { closeSync, fsyncSync, lstatSync, openSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import { canonical, decodeSnapshot, hash, id, scope, STORE_BYTES, type Revision, type Scope } from "./schema.ts";
+import { canonical, decodeSnapshot, hash, id, scope, STORE_BYTES, MAX_REVISIONS, type Revision, type Scope } from "./schema.ts";
+import { queryTerms, followupTerms, isTopicTerm } from "./query.ts";
 import { boundedFile, checkRoot, withStoreLock } from "./store.ts";
 import { INDEX_FILE, INDEX_TEMP, invalidateRecallIndex } from "./derived.ts";
+export { queryTerms } from "./query.ts";
 
 const INDEX_BYTES = 64 * 1024 * 1024;
 export interface Generation { storeId: string; stamp: string; hash: string }
@@ -19,11 +21,6 @@ export function storeStamp(root: string): string {
   const s = lstatSync(join(root, "store.json"), { bigint: true });
   if (!s.isFile() || s.isSymbolicLink() || s.size > BigInt(STORE_BYTES)) throw new Error("Unavailable canonical memory store");
   return `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}`;
-}
-const stopwords = new Set("a an and are as at be been but by can could do does for from had has have how i if in into is it its me my of on or our please should so that the their them then there these they this to until us was we were what when where which who will with would you your".split(" "));
-export function queryTerms(query: string): string[] {
-  const terms = query.slice(0, 4096).toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
-  return [...new Set(terms.filter(t => t.length <= 64 && !stopwords.has(t)))].slice(0, 16);
 }
 /** Explicit maintenance only. Atomic immutable cache; no WAL, timers, or provider calls. */
 export function rebuildRecallIndex(root: string, expectedStoreId: string, signal?: AbortSignal) {
@@ -99,10 +96,75 @@ export class RecallIndex {
   }
   close() { this.db.close(); }
   assertFresh() { if (storeStamp(this.root) !== this.generation.stamp) throw new Error("Recall generation changed; no stale memory supplied"); }
-  search(query: string, scopes: Scope[], options: { pins?: string[]; automatic?: boolean; limit?: number; threads?: boolean } = {}) {
-    const start = performance.now(), limit = options.limit ?? 10, pins = options.pins ?? [];
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20 || scopes.length > 3 || pins.length > 16 || Buffer.byteLength(query) > (options.automatic ? 16384 : 512)) throw new Error("Invalid recall bounds");
-    scopes.forEach(scope); pins.forEach(id);
+  /** Read scoped FTS postings, not all note bodies. Rarity never depends on an
+   * unapproved corpus. All token evidence (including title boosts) comes from FTS,
+   * not JS substring matching. No schema migration or prompt-time index rebuild.
+   */
+  private ranked(query: string, selectedScope: Scope, automatic: boolean, limit: number, previousPrompt?: string) {
+    const primary = queryTerms(query, automatic), topic = automatic ? followupTerms(query, previousPrompt) : [];
+    if (!primary.length || (automatic && !primary.some(isTopicTerm))) return [];
+    const count = (this.db.prepare("SELECT count(*) AS n FROM records WHERE scope=?").get(selectedScope) as { n: number }).n;
+    if (count > MAX_REVISIONS) throw new Error("Recall index record quota exceeded");
+    if (!count) return [];
+    const postings = this.db.prepare(`SELECT records.rowid FROM records JOIN search ON records.rowid=search.rowid
+      WHERE records.scope=? AND search MATCH ? LIMIT ?`);
+    type Evidence = { rowid: number; hits: number; anchors: number; weight: number; title: number; topicHits: number; topicWeight: number };
+    const candidates = new Map<number, Evidence>();
+    let totalWeight = 0;
+    for (const [i, term] of [...primary, ...topic].entries()) {
+      const match = `"${term}"`, isTopic = i >= primary.length;
+      const rows = postings.all(selectedScope, match, MAX_REVISIONS + 1) as { rowid: number }[];
+      if (rows.length > MAX_REVISIONS) throw new Error("Recall postings quota exceeded");
+      // Missing terms still contribute to coverage: one accidental known word in
+      // an otherwise unsupported query must not become a perfect match.
+      const weight = rows.length ? 1 + Math.log(1 + (count - rows.length + 0.5) / (rows.length + 0.5)) : 1;
+      if (!isTopic) totalWeight += weight;
+      const titles = new Set(isTopic ? [] : (postings.all(selectedScope, `title : ${match}`, MAX_REVISIONS + 1) as { rowid: number }[]).map(r => r.rowid));
+      for (const { rowid } of rows) {
+        const evidence = candidates.get(rowid) ?? { rowid, hits: 0, anchors: 0, weight: 0, title: 0, topicHits: 0, topicWeight: 0 };
+        if (isTopic) { evidence.topicHits++; evidence.topicWeight += weight; }
+        else {
+          evidence.hits++; evidence.weight += weight;
+          if (isTopicTerm(term)) evidence.anchors++;
+          if (titles.has(rowid)) evidence.title += weight * 0.2;
+        }
+        candidates.set(rowid, evidence);
+      }
+    }
+    const ranked = [...candidates.values()].map(e => {
+      const coverage = e.weight / totalWeight;
+      const direct = e.anchors > 0 && e.hits >= Math.min(2, primary.length) && coverage >= 0.35;
+      const supported = e.hits >= 1 && e.topicHits >= 2 && coverage >= 0.2;
+      return { ...e, direct, eligible: automatic ? direct || supported : e.hits === primary.length,
+        score: (e.weight + e.title) * coverage + Math.min(e.weight * 0.25, e.topicWeight * 0.15) };
+    }).filter(e => e.eligible);
+    // Fetch whole bodies only for the bounded finalists. Equal scores retain the
+    // established date/ID tie-break, without a globally capped candidate shortlist.
+    ranked.sort((a, b) => Number(b.direct) - Number(a.direct) || b.score - a.score);
+    const cutoff = ranked[Math.min(limit, ranked.length) - 1]?.score;
+    const finalists = ranked.filter((e, i) => i < limit || e.score === cutoff);
+    if (!finalists.length) return [];
+    // A tied corpus may contain thousands of rows. Let SQLite apply the final
+    // date/ID tie-break and return at most limit JSON bodies.
+    const groups = new Map<string, number[]>();
+    for (const e of finalists) {
+      const key = `${Number(e.direct)}:${e.score}`, group = groups.get(key) ?? [];
+      group.push(e.rowid); groups.set(key, group);
+    }
+    const result: { json: string }[] = [];
+    for (const group of groups.values()) {
+      if (result.length >= limit) break;
+      // json_each avoids SQLite's variable-count limit for large tied groups.
+      result.push(...this.db.prepare(`SELECT json FROM records WHERE scope=? AND rowid IN (SELECT value FROM json_each(?))
+        ORDER BY date DESC,id LIMIT ?`).all(selectedScope, JSON.stringify(group), limit - result.length) as { json: string }[]);
+    }
+    return result;
+  }
+  search(query: string, scopes: Scope[], options: { pins?: string[]; automatic?: boolean; limit?: number; threads?: boolean; previousPrompt?: string } = {}) {
+    const start = performance.now(), limit = options.limit ?? (options.automatic ? 3 : 10), pins = options.pins ?? [];
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20 || scopes.length > 3 || pins.length > 16 || Buffer.byteLength(query) > (options.automatic ? 16384 : 512) ||
+        (options.previousPrompt !== undefined && Buffer.byteLength(options.previousPrompt) > 4096)) throw new Error("Invalid recall bounds");
+    scopes.forEach(scope); pins.forEach(id); scopes = [...new Set(scopes)];
     if (scopes.includes("unassigned")) throw new Error("Unassigned memory is never recalled");
     this.assertFresh();
     if (!scopes.length) return { items: [] as RecallItem[], milliseconds: performance.now() - start };
@@ -118,19 +180,13 @@ export class RecallIndex {
       const rows = this.db.prepare(`SELECT json FROM records WHERE scope IN (${scopeSql}) AND id IN (${pins.map(() => "?").join(",")}) ORDER BY id LIMIT 16`).all(...scopes, ...pins) as { json: string }[];
       rows.forEach(r => decode(r, "human pin"));
     }
-    const terms = queryTerms(query);
     const matched: { json: string }[] = [];
     if (options.threads) {
       for (const selectedScope of scopes) {
         matched.push(...this.db.prepare(`SELECT json FROM records WHERE scope=? AND json_extract(json,'$.kind')='thread' AND json_extract(json,'$.threadStatus')='open' ORDER BY date DESC,id LIMIT ?`).all(selectedScope, limit) as { json: string }[]);
       }
-    } else if (terms.length) {
-      const match = terms.map(t => `"${t}"`).join(options.automatic ? " OR " : " AND ");
-      // Score only matching rows inside the approved scopes; no global-corpus BM25.
-      const score = terms.map(() => "(instr(lower(records.title),?)>0)+(instr(lower(records.body),?)>0)").join("+");
-      for (const selectedScope of scopes) {
-        matched.push(...this.db.prepare(`SELECT records.json FROM records JOIN search ON records.rowid=search.rowid WHERE records.scope=? AND search MATCH ? ORDER BY (${score}) DESC, records.date DESC, records.id LIMIT ?`).all(selectedScope, match, ...terms.flatMap(t => [t, t]), limit) as { json: string }[]);
-      }
+    } else {
+      for (const selectedScope of scopes) matched.push(...this.ranked(query, selectedScope, options.automatic ?? false, limit, options.previousPrompt));
     }
     // Rank project matches first, reserving one candidate for personal continuity
     // when both match (unless the caller explicitly requests just one result).
