@@ -214,3 +214,35 @@ test("model-free peek renders bounded Unicode, updates, closes without collectin
   expect(closed).toBe(true); expect(runtime.status(run.id).taskState).toBe("needs-input"); expect(runtime.status(run.id).collectedAt).toBeUndefined();
   closed = false; const next = openRuns(ctx, runtime); await runtime.close(); await next; expect(closed).toBe(true);
 });
+
+test("actual SDK worker uses resolved smaller/explicit provider models without expanding tools or mutating fork data", async () => {
+  const { runtime, request } = await setup("subagent-sdk-worker.ts");
+  const manager = SessionManager.inMemory("/tmp");
+  const user = { role: "user" as const, content: "SYNTHETIC_MODEL_ROUTING_FORK", timestamp: 1 };
+  const anchor = manager.appendMessage(user);
+  const snapshot = freezeSnapshot({ type: "context_snapshot", messages: [user], leafId: anchor, contextErrors: 0, providerRequestHooks: false }, manager.getSessionId(), manager.getBranch());
+  const frozen = JSON.stringify(snapshot);
+  for (const model of [{ provider: "synthetic", id: "small" }, { provider: "other-synthetic", id: "small" }]) {
+    const run = await runtime.start({ ...request("inspect", `${model.provider}/${model.id}`), model, mode: "fork", snapshot });
+    await until(() => runtime.status(run.id).process === "exited");
+    expect(runtime.status(run.id).taskState).toBe("reported"); expect(runtime.status(run.id).model).toEqual(model);
+    const payloads = (await readFile(join(dirname(runtime.store.path(run.id, "launch.json")), "payloads.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(payloads.every(p => JSON.stringify(p.model) === JSON.stringify(model))).toBe(true);
+    expect(JSON.stringify(payloads[0].context)).toContain("SYNTHETIC_MODEL_ROUTING_FORK");
+    expect(payloads[0].context.tools.map((t: { name: string }) => t.name).sort()).toEqual(["grep", "ls", "needs_input", "progress", "read", "report"]);
+    expect(JSON.stringify(snapshot)).toBe(frozen);
+  }
+}, 10000);
+
+test("worker-side unknown model and missing auth fail before inference; smaller context never falls back", async () => {
+  const { runtime, request } = await setup("subagent-sdk-worker.ts");
+  for (const model of [{ provider: "synthetic", id: "missing" }, { provider: "no-auth", id: "small" }]) {
+    const run = await runtime.start({ ...request("inspect", `${model.provider}/${model.id}`), model });
+    await until(() => runtime.status(run.id).process === "exited");
+    expect(runtime.status(run.id).taskState).toBe("failed"); expect(runtime.status(run.id).usage.input).toBe(0);
+    await expect(readFile(join(dirname(runtime.store.path(run.id, "launch.json")), "payloads.jsonl"))).rejects.toThrow("ENOENT");
+  }
+  const small = await runtime.start({ ...request("context-overflow"), model: { provider: "synthetic", id: "small" } });
+  await until(() => runtime.status(small.id).process === "exited");
+  expect(runtime.status(small.id).taskState).toBe("budget-exceeded"); expect(runtime.status(small.id).usage.input).toBe(0);
+}, 10000);

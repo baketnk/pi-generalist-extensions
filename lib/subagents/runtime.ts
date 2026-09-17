@@ -62,7 +62,8 @@ export class SubagentRuntime {
   private serial<T>(fn: () => Promise<T>): Promise<T> {
     const next = this.control.then(fn); this.control = next.catch(() => {}); return next;
   }
-  start(request: Omit<Launch, "id" | "version" | "owner">): Promise<RunRecord> {
+  /** Trusted synchronous preflight runs only for a new intent, never when reconciling an existing operation. */
+  start(request: Omit<Launch, "id" | "version" | "owner">, beforeNewLaunch?: () => void): Promise<RunRecord> {
     const generation = this.generation;
     return this.serial(async () => {
       await this.initialize();
@@ -84,6 +85,7 @@ export class SubagentRuntime {
       if (this.live.size >= this.maxActive) throw new Error(`Active-worker ceiling ${this.maxActive} reached; choose when/if another task warrants a worker.`);
       if (this.records.size >= LIMITS.runs) throw new Error("Run history quota reached.");
       if (this.stopping || generation !== this.generation) throw new Error("Subagent launch invalidated by stop/session change.");
+      beforeNewLaunch?.();
       const now = Date.now();
       const record: RunRecord = { version: 1, id: launch.id, operation: launch.operation, owner: launch.owner, label: plain(launch.label), cwd: launch.cwd,
         mode: launch.mode, source: launch.snapshot && { session: launch.snapshot.session, anchor: launch.snapshot.anchor, digest: launch.snapshot.digest },

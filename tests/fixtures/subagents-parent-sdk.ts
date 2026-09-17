@@ -5,14 +5,17 @@ import { mkdir } from "node:fs/promises";
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, InMemoryCredentialStore, type AssistantMessage } from "@earendil-works/pi-ai";
 import subagents from "../../extensions/subagents.ts";
+import { saveModelConfig } from "../../lib/subagents/models.ts";
 
 const root = process.argv[2]!;
 const agentDir = join(root, "config"); await mkdir(agentDir, { mode: 0o700 });
 process.env.PI_CODING_AGENT_DIR = agentDir;
+process.env.PI_SUBAGENTS_CONFIG = join(agentDir, "subagent-models.json");
+saveModelConfig(agentDir, { version: 1, ladder: ["synthetic/inspect", "synthetic/small"] });
 globalThis.fetch = (() => { throw new Error("Parent SDK fixture forbids provider network."); }) as unknown as typeof fetch;
 const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
 const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(root, "models-store.json"), refreshOnCreate: false, allowModelNetwork: false });
-modelRuntime.registerProvider("synthetic", { api: "anthropic-messages", baseUrl: "https://network-forbidden.invalid", apiKey: "synthetic", models: [{ id: "inspect", name: "Inspect", reasoning: false, input: ["text"], contextWindow: 100000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] });
+modelRuntime.registerProvider("synthetic", { api: "anthropic-messages", baseUrl: "https://network-forbidden.invalid", apiKey: "synthetic", models: ["inspect", "small"].map(id => ({ id, name: id, reasoning: false, input: ["text"], contextWindow: 100000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })) });
 const model = modelRuntime.getModel("synthetic", "inspect")!;
 const loader = new DefaultResourceLoader({ cwd: root, agentDir, settingsManager,
   noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true,
@@ -27,7 +30,7 @@ const payloads: any[] = [];
 const stream: typeof session.agent.streamFunction = (_model, context) => {
   payloads.push(JSON.parse(JSON.stringify(context))); turn++;
   const args = turn === 1 ? { action: "start", mode: "fork", task: "inspect", label: "missing hook" }
-    : turn === 3 ? { action: "start", mode: "fresh", task: "inspect", label: "independent review" }
+    : turn === 3 ? { action: "start", mode: "fresh", model: "next-smaller", task: "inspect", label: "independent review" }
     : turn === 5 ? { action: "join", ids: [run], seconds: 5 }
     : turn === 7 ? { action: "collect", id: run }
     : turn === 9 ? { action: "list" } : undefined;
@@ -44,7 +47,9 @@ try {
   assert.equal(lastResult().isError, true); assert.match(JSON.stringify(lastResult()), /context_snapshot/);
   await session.prompt("Start an independent fresh review; parent can work meanwhile.");
   assert.equal(lastResult().isError, false, JSON.stringify(lastResult()));
-  run = JSON.parse((lastResult().content[0] as { text: string }).text).id;
+  const started = JSON.parse((lastResult().content[0] as { text: string }).text);
+  assert.deepEqual(started.model, { provider: "synthetic", id: "small" });
+  run = started.id;
   assert.ok(run); await new Promise(r => setTimeout(r, 50)); assert.equal(turn, 4, "no idle-parent model wake");
   await session.prompt("Now join the review."); assert.equal(lastResult().isError, false, JSON.stringify(lastResult()));
   await session.prompt("Collect its report as an unverified claim."); assert.equal(lastResult().isError, false);
@@ -59,5 +64,5 @@ try {
     assert.deepEqual(payloads[i].messages.slice(0, payloads[i - 1].messages.length), payloads[i - 1].messages, `prefix changed at request ${i}`);
   }
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ requests: turn, cachePrefixes: true, reload: true, noIdleWake: true, missingHookFails: true, noNetwork: true }));
+  console.log(JSON.stringify({ requests: turn, cachePrefixes: true, reload: true, noIdleWake: true, missingHookFails: true, nextSmaller: true, noNetwork: true }));
 } finally { session.dispose(); }

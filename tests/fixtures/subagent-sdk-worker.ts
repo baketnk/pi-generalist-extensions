@@ -8,12 +8,12 @@ const launch = JSON.parse(await readFile(process.argv[2]!, "utf8"));
 if (launch.task === "keepalive") setInterval(() => {}, 1000); // Emulate a provider socket surviving session.dispose().
 const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(dirname(process.argv[2]!), "models.json"), allowModelNetwork: false, refreshOnCreate: false });
 let turns = 0;
-runtime.registerProvider("synthetic", { api: "anthropic-messages", baseUrl: "https://network-forbidden.invalid", apiKey: "synthetic-key",
-  models: [{ id: "inspect", name: "Inspect fixture", reasoning: false, input: ["text"], contextWindow: launch.task === "context-overflow" ? 2048 : 100000, maxTokens: launch.task === "context-overflow" ? 512 : 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+const providerConfig: Parameters<ModelRuntime["registerProvider"]>[1] = { api: "anthropic-messages", baseUrl: "https://network-forbidden.invalid", apiKey: "synthetic-key",
+  models: ["inspect", "small"].map(id => ({ id, name: `Inspect fixture ${id}`, reasoning: false, input: ["text"], contextWindow: launch.task === "context-overflow" ? 2048 : 100000, maxTokens: launch.task === "context-overflow" ? 512 : 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })),
   streamSimple(model, context, options) {
     turns++;
     // Capture precisely the provider-bound context, after SDK conversion.
-    const saved = appendFile(join(dirname(process.argv[2]!), "payloads.jsonl"), JSON.stringify({ context, options }) + "\n", { mode: 0o600 });
+    const saved = appendFile(join(dirname(process.argv[2]!), "payloads.jsonl"), JSON.stringify({ model: { provider: model.provider, id: model.id }, context, options }) + "\n", { mode: 0o600 });
     const tool = (name: string, args: Record<string, unknown>, suffix = "") => ({ type: "toolCall" as const, id: `call-${turns}${suffix}`, name, arguments: args });
     const first = turns === 1;
     const content = launch.task === "silent" ? [{ type: "text" as const, text: "No structured report." }]
@@ -28,6 +28,9 @@ runtime.registerProvider("synthetic", { api: "anthropic-messages", baseUrl: "htt
     void saved.then(() => { stream.push({ type: "done", reason: message.stopReason as "stop" | "toolUse", message }); stream.end(); });
     return stream;
   },
-});
+};
+runtime.registerProvider("synthetic", providerConfig);
+runtime.registerProvider("other-synthetic", providerConfig);
+runtime.registerProvider("no-auth", { ...providerConfig, apiKey: undefined });
 ModelRuntime.create = async () => runtime;
 await import("../../tools/subagent-worker.ts");

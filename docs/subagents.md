@@ -15,7 +15,9 @@ continuity, Code Mode, and the task checklist. Nothing launches at registration.
 
 ```json
 {"action":"start","mode":"fresh","task":"Independently inspect the cache expiration boundary; cite lines. Do not claim tests ran.","label":"boundary-review","seconds":120}
-{"action":"start","mode":"fork","task":"Trace the lifecycle assumption discussed above.","label":"lifecycle-review"}
+{"action":"start","mode":"fork","task":"Trace the lifecycle assumption discussed above.","label":"lifecycle-review","model":"next-smaller"}
+{"action":"start","mode":"fresh","task":"Inspect input validation.","label":"validation","model":"openai-codex/gpt-5.6-luna"}
+{"action":"models"}
 {"action":"checkpoints"}
 {"action":"list"}
 {"action":"status","id":"FULL_RUN_UUID"}
@@ -31,12 +33,19 @@ continuity, Code Mode, and the task checklist. Nothing launches at registration.
   `mode`, `task`, and `label` are required. Optional `operation` is an idempotency key;
   otherwise Pi's tool-call ID is used. Same key/same intent returns the existing run,
   including failures; changed intent refuses. It never silently starts a replacement.
-- **Model/provider and thinking** use the parent's exact launch-time selection.
-  Workers do not choose a cheaper/different model, silently fall back, or inherit
-  custom provider extensions. A model unavailable from the configured worker
-  ModelRuntime fails explicitly. Actual provider-reported usage is recorded separately
-  from inherited history. Cost is an SDK-reported estimate, not a billing receipt or
-  hard spending guarantee.
+- **Model/provider** defaults to the parent's launch-time model. `model:"self"`
+  (alias `"same"`) makes that explicit. `model:"next-smaller"` selects exactly the
+  next rung of a human-configured ladder; `model:"provider/id"` selects an exact Pi
+  model. No fuzzy matching, skipped unavailable rung, or fallback. The concrete model
+  is frozen before consent/launch and included in persisted intent/idempotency checks.
+  The parent's thinking preference is inherited; the SDK may clamp unsupported levels
+  for the selected model. Worker tools/permissions are unchanged.
+  Parent-side catalog/auth availability is checked for new launches after idempotency
+  reconciliation (an existing matching operation remains readable if auth disappears),
+  then the worker independently checks its own ModelRuntime. Parent-only custom provider extensions
+  are not inherited. Unavailable worker models/auth fail explicitly before inference.
+  Actual provider-reported usage is recorded separately from inherited history. Cost
+  is an SDK-reported estimate, not a billing receipt or hard spending guarantee.
 - **Join** defaults to wait-any; `all:true` still yields for blockers/failure/user
   input. It does not collect reports or acknowledge mail. Default selection is the
   latest 16 uncollected runs; specify IDs when older work matters. Answer a blocker
@@ -50,6 +59,49 @@ continuity, Code Mode, and the task checklist. Nothing launches at registration.
   collection preserves the same receipt. Reports can be completed, partial, blocked,
   or inconclusive. A model stopping without a report is `incomplete`, not an invitation
   for hidden formatting retries.
+
+## Model ladder
+
+`self` and exact model choices need no ladder. Configure relative selection once using
+human `/subagents ladder` with exact Pi provider/model IDs in largest-to-smallest order:
+
+```text
+/subagents ladder openai-codex/gpt-6-astra openai-codex/gpt-5.6-sol openai-codex/gpt-5.6-terra openai-codex/gpt-5.6-luna
+```
+
+This is an example of the requested Astra → Sol → Terra → Luna order, not a claim that
+every installed Pi/provider exposes those IDs. Use your catalog's actual identities.
+`/subagents ladder` without arguments displays the saved order. Tool action `models`
+reports the current parent, configured ladder and parent-side availability without
+inference; worker-side availability is checked separately at launch.
+
+The configuration is `<Pi agent directory>/subagent-models.json`, overridable with
+`PI_SUBAGENTS_CONFIG`. It stores no credentials, prompts or grants:
+
+```json
+{
+  "version": 1,
+  "ladder": [
+    "openai-codex/gpt-6-astra",
+    "openai-codex/gpt-5.6-sol",
+    "openai-codex/gpt-5.6-terra",
+    "openai-codex/gpt-5.6-luna"
+  ]
+}
+```
+
+No file is created until a human saves a ladder. Missing/malformed configuration,
+parent absent from the ladder, bottom rung, unavailable successor or missing auth
+is an error—not permission to pick another model. A ladder has 2–32 unique entries.
+It expresses your preferred order, not measured capabilities, prices or context sizes.
+Explicit selection may choose any configured model; the ladder is **not** a delegation
+allowlist or the future graph policy. It is independent of autocomplete/background-model
+settings and never dynamically changes the tool schema/cache prefix.
+
+The selected model may have less context capacity. It must fit the existing worker
+request budget; no inherited messages are silently removed/summarized and no model
+is substituted. Cross-provider forks use normal SDK message conversion: frozen source
+text is preserved as data, but identical provider bytes/cache sharing are not promised.
 
 ## Fresh versus fork
 
@@ -73,12 +125,16 @@ clears this observation shelf; it does not automatically reconstruct historical 
 Failed transformations prevent default forking; later provider-payload hooks cause
 rejection because fidelity past that boundary is not established.
 
-History sharing is a **human grant**: `pi --subagent-forks`, or a blocking confirmation
-when the first fork is requested. It covers all selected historical text, potentially
-including private memory/continuity outputs and summaries even when those features
-are now off. There is no perfect scrubber. The confirmation lasts for this parent
-runtime; branch change/reload resets it unless explicitly supplied by the CLI flag.
-This does not activate those features in the worker.
+History sharing is a **human, provider-scoped grant**. `pi --subagent-forks` grants
+sharing at the parent's provider when the runtime/branch starts. A different provider
+requires a blocking confirmation naming the selected destination model—even with the
+CLI grant. Without interactive confirmation that cross-provider fork is refused;
+explicit fresh delegation remains available. Consent covers all selected historical
+text, potentially including private memory/continuity outputs and summaries even when
+those features are now off. There is no perfect scrubber. Confirmations last for this
+parent runtime/provider; branch change/reload resets them (reapplying only the CLI
+parent-provider grant). Changing branch/session during consent invalidates the launch.
+This does not activate those features in the worker or expand its tools.
 
 Each run has a fresh session ID, process, usage baseline, and origin digest/anchor.
 The child session stores the frozen projection as a data entry; new child turns have
@@ -197,7 +253,7 @@ run `460468f0-f1b1-4d4f-9b53-4e40b069fc88`. The earlier failed trial remains sep
 under `/tmp/pi-subagents-codex-smoke-FNE9ns`; it was not relabelled as passing.
 
 Not implemented: editing/worktrees, arbitrary worker shell tests, child resume/takeover,
-survival across reload, configurable worker model overrides, a full cross-session tree,
+survival across reload, a model-delegation allowlist/graph, a full cross-session tree,
 sibling mail, automatic merges/commits, or autonomous continuation. The core fork hook
 is shipped as a separate source patch; installing this package does not patch a bundled
 Pi binary. Full live parent-to-worker fork validation on the user's installed build
