@@ -15,7 +15,7 @@ Unaccepted ghosts never enter the draft, conversation, or main model context. Th
 /autocomplete model
 ```
 
-`model` opens a picker of Pi's available models. Or supply an **exact** `provider/model-id`, including any slashes inside the model ID:
+`model` opens a searchable picker of Pi's configured, available models (including only the currently known installed models from dynamic providers such as Ollama). Or supply an **exact** `provider/model-id`, including any slashes inside the model ID:
 
 ```text
 /autocomplete model local/llama3.2:3b

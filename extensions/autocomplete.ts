@@ -5,6 +5,7 @@ import { defaults, loadAutocompleteConfig, saveAutocompleteConfig, validateConfi
 import { GhostEditor } from "../lib/autocomplete/editor.ts";
 import { completeWithPi, selectedModel } from "../lib/autocomplete/provider.ts";
 import { cleanText, Predictor } from "../lib/autocomplete/predictor.ts";
+import { pickModel } from "../lib/model-picker.ts";
 
 type EditorFactory = NonNullable<Parameters<ExtensionContext["ui"]["setEditorComponent"]>[0]>;
 type Stats = { requests: number; completed: number; errors: number; cancelled: number; totalMs: number };
@@ -91,10 +92,15 @@ export default function autocomplete(pi: ExtensionAPI) {
         }
         if (action === "cpu") throw new Error("Device control now belongs to the selected Pi provider/local server; /autocomplete cpu is retired.");
         if (action === "model" && !value) {
-          // Catalog/auth-presence only: no provider request or implicit refresh on opening the picker.
-          const models = ctx.modelRegistry.getAvailable().map(m => `${m.provider}/${m.id}`).filter(id => cleanText(id) === id).sort();
-          value = await ctx.ui.select("Autocomplete model (draft + enabled context go to this provider; remote requests may cost money)", ["none", ...models]);
-          if (!value) return;
+          // Same configured, provider-filtered catalogue as the scoped picker: no refresh or request on open.
+          const models = ctx.modelRegistry.getAvailable()
+            .filter(model => ctx.modelRegistry.hasConfiguredAuth(model))
+            .filter(model => cleanText(`${model.provider}/${model.id}`) === `${model.provider}/${model.id}`)
+            .sort((a, b) => `${a.provider}/${a.id}`.localeCompare(`${b.provider}/${b.id}`));
+          const choices = [{ value: "none", label: "none", description: "Disable model completions" },
+            ...models.map(model => ({ value: `${model.provider}/${model.id}`, label: `${model.provider}/${model.id}`, description: model.name }))];
+          value = await pickModel(ctx, choices);
+          if (value === undefined) return;
         }
         let next = { ...config };
         if (["on", "off"].includes(action) && !value) next.enabled = action === "on";

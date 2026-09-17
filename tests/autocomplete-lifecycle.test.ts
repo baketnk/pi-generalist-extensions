@@ -15,22 +15,29 @@ function harness() {
   process.env.PI_AUTOCOMPLETE_CONFIG = join(dir, "autocomplete.json");
   process.env.PI_HISTORY_CONFIG = join(dir, "history.json");
   writeFileSync(process.env.PI_HISTORY_CONFIG, JSON.stringify({ version: 1, indexDir: join(dir, "index"), sources: [] }));
-  const handlers = new Map<string, Function>(), commands = new Map<string, any>(), notices: string[] = [];
+  const handlers = new Map<string, Function>(), commands = new Map<string, any>(), notices: string[] = [], pickerRenders: string[] = [];
   let factory: any, editor: any;
   const keys = new KeybindingsManager(TUI_KEYBINDINGS); setKeybindings(keys);
   const tui = { terminal: { rows: 30 }, requestRender() {} };
-  const theme = { borderColor: (s: string) => s, selectList: {} };
+  const theme = { borderColor: (s: string) => s, selectList: {}, fg: (_style: string, text: string) => text, bold: (text: string) => text };
   const ctx: any = { mode: "tui", hasUI: true, cwd: "/here", isProjectTrusted: () => true,
     modelRegistry: { find: (provider: string, id: string) => provider === "fixture" && id === "luna" ? { provider, id } : undefined,
       hasConfiguredAuth: () => true, getAvailable: () => [{ provider: "fixture", id: "luna" }] },
     ui: {
     select: async () => "fixture/luna",
+    custom: (create: Function) => new Promise(resolve => {
+      const picker = create(tui, theme, { matches: (data: string, key: string) =>
+        (data === "\r" && key === "tui.select.confirm") || (data === "\x1b" && key === "tui.select.cancel") ||
+        (data === "\x1b[B" && key === "tui.select.down") }, resolve);
+      picker.focused = true; pickerRenders.push(picker.render(100).join("\n"));
+      picker.handleInput("luna"); pickerRenders.push(picker.render(100).join("\n")); picker.handleInput("\r");
+    }),
     notify: (text: string) => notices.push(text), getEditorComponent: () => factory,
     setEditorComponent: (next: any) => { factory = next; editor = next?.(tui, theme, keys); if (editor) editor.focused = true; },
   } };
   // Any attempt to register tools, inject messages or touch provider context is a test failure.
   autocomplete({ on: (event: string, fn: Function) => handlers.set(event, fn), registerCommand: (name: string, cmd: any) => commands.set(name, cmd) } as any);
-  return { dir, ctx, notices, handlers, get editor() { return editor; }, get factory() { return factory; },
+  return { dir, ctx, notices, pickerRenders, handlers, get editor() { return editor; }, get factory() { return factory; },
     command: (s: string) => commands.get("autocomplete").handler(s, ctx),
     clean() {
       handlers.get("session_shutdown")!({}, ctx);
@@ -105,10 +112,21 @@ test("reload clears old learned samples and reports malformed history configurat
   } finally { h.clean(); }
 });
 
-test("model picker/explicit choice persist exact Pi model; unknown model never replaces it", async () => {
+test("searchable model picker includes only configured available models; explicit choice remains guarded", async () => {
   const h = harness();
   try {
+    h.ctx.modelRegistry.getAvailable = () => [
+      { provider: "fixture", id: "luna", name: "Luna" },
+      { provider: "ollama", id: "installed", name: "Installed local model" },
+      { provider: "openrouter", id: "unconfigured", name: "Missing key" },
+    ];
+    h.ctx.modelRegistry.hasConfiguredAuth = (model: any) => model.provider !== "openrouter";
     await h.command("model"); expect(loadAutocompleteConfig().model).toBe("fixture/luna");
+    expect(h.pickerRenders[0]).toContain("ollama/installed");
+    expect(h.pickerRenders[0]).not.toContain("openrouter/unconfigured");
+    expect(h.pickerRenders.at(-1)).toContain("fixture/luna");
+    expect(h.pickerRenders.at(-1)).not.toContain("openrouter/unconfigured");
+    expect(h.pickerRenders.at(-1)).not.toContain("ollama/installed");
     await h.command("model other/missing"); expect(loadAutocompleteConfig().model).toBe("fixture/luna");
     await h.command("cpu on"); expect(h.notices.at(-1)).toContain("retired");
     await h.command("repo on"); expect(loadAutocompleteConfig().repository).toBe(true);
