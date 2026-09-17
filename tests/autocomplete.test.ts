@@ -8,7 +8,6 @@ import { Predictor, cleanText, usablePrompt, MAX_SAMPLES } from "../lib/autocomp
 import { CompletionController } from "../lib/autocomplete/controller.ts";
 import { readCorpus } from "../lib/autocomplete/corpus.ts";
 import { defaults, loadAutocompleteConfig, saveAutocompleteConfig, validateConfig } from "../lib/autocomplete/config.ts";
-import { completeOllama } from "../lib/autocomplete/ollama.ts";
 import { drawGhost, GhostEditor } from "../lib/autocomplete/editor.ts";
 import autocomplete from "../extensions/autocomplete.ts";
 import { HistoryIndex } from "../lib/history/index.ts";
@@ -113,42 +112,16 @@ test("read-only corpus rejects future schema and symlink database", () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("config persists only decisions, validates local origin, and defaults off", () => {
+test("config persists decisions, requires exact Pi model IDs, and migrates without guessing a provider", () => {
   const dir = mkdtempSync(join(tmpdir(), "autocomplete-config-")), path = join(dir, "config.json");
   try {
     expect(loadAutocompleteConfig(path)).toEqual(defaults);
-    saveAutocompleteConfig({ ...defaults, enabled: true, cpuOnly: true }, path);
-    expect(loadAutocompleteConfig(path).cpuOnly).toBe(true); expect(statSync(path).mode & 0o777).toBe(0o600);
-    for (const endpoint of ["https://example.com", "http://localhost:11434/api", "http://user:pass@localhost", "http://localhost/?secret=x"])
-      expect(() => validateConfig({ ...defaults, endpoint })).toThrow();
+    saveAutocompleteConfig({ ...defaults, enabled: true, model: "local/llama3.2:3b" }, path);
+    expect(loadAutocompleteConfig(path).model).toBe("local/llama3.2:3b"); expect(statSync(path).mode & 0o777).toBe(0o600);
+    expect(() => validateConfig({ ...defaults, model: "llama3.2:3b" })).toThrow();
+    expect(validateConfig({ version: 1, enabled: true, model: "llama3.2:3b", endpoint: "http://localhost:11434", cpuOnly: true })).toEqual({ ...defaults, enabled: true });
     expect(() => validateConfig({ ...defaults, model: "bad\nmodel" })).toThrow();
   } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
-test("Ollama request is bounded, local, CPU-switchable and draft-only", async () => {
-  let captured: any;
-  const request = (async (url: string, options: any) => {
-    captured = { url, ...options, body: JSON.parse(options.body) };
-    return new Response(JSON.stringify({ message: { content: JSON.stringify({ completion: " the tests" }) } }));
-  }) as any;
-  expect(await completeOllama("please run ", { ...defaults, cpuOnly: true }, new AbortController().signal, request)).toBe("the tests");
-  expect(captured.url).toBe("http://127.0.0.1:11434/api/chat"); expect(captured.redirect).toBe("error");
-  expect(captured.body.options.num_gpu).toBe(0); expect(captured.body.think).toBe(false);
-  expect(captured.body.messages).toHaveLength(2);
-  expect(JSON.parse(captured.body.messages[1].content)).toEqual({ unfinished_draft: "please run " });
-  await completeOllama("x".repeat(3000), defaults, new AbortController().signal, request);
-  expect(JSON.parse(captured.body.messages[1].content).unfinished_draft.length).toBe(2048);
-  expect(captured.body.options.num_gpu).toBeUndefined();
-});
-
-test("Ollama failures do not fall back; output and terminal controls are bounded", async () => {
-  const signal = new AbortController().signal;
-  await expect(completeOllama("test ", defaults, signal, (async () => new Response("no", { status: 404 })) as any)).rejects.toThrow("404");
-  await expect(completeOllama("test ", defaults, signal, (async () => new Response("x".repeat(40_000))) as any)).rejects.toThrow("32 KiB");
-  await expect(completeOllama("test ", { ...defaults, model: "thing:cloud" }, signal)).rejects.toThrow("Cloud");
-  await expect(completeOllama("test ", { ...defaults, modelEnabled: false }, signal)).rejects.toThrow("disabled");
-  const request = (async () => new Response(JSON.stringify({ message: { content: JSON.stringify({ completion: "test \x1b[31mhello\u202e" }) } }))) as any;
-  expect(await completeOllama("test ", defaults, signal, request)).toBe("hello");
 });
 
 test("controller never calls model automatically and fences stale completion after edit ABA", async () => {
@@ -200,13 +173,14 @@ test("editor renders ghost without changing buffer or firing onChange; accepts w
   e.dispose();
 });
 
-test("Tab after space manually requests a model; second Tab accepts; Enter never accepts ghost", async () => {
+test("Ctrl+Tab explicitly requests model; Tab accepts a word plus space; Enter never accepts ghost", async () => {
   let calls = 0;
   const { e } = editor(undefined, async () => { calls++; return "some local text"; });
   e.setText("please "); e.render(80); expect(calls).toBe(0);
-  e.handleInput("\t"); expect(calls).toBe(1); expect(e.getText()).toBe("please ");
-  await tick(); expect(e.completion.suggestion(e.getText())?.source).toBe("ollama");
-  e.handleInput("\t"); expect(e.getText()).toBe("please some local text"); expect(calls).toBe(1);
+  e.handleInput("\x1b[9;5u"); expect(calls).toBe(1); expect(e.getText()).toBe("please ");
+  await tick(); expect(e.completion.suggestion(e.getText())?.source).toBe("model");
+  e.handleInput("\t"); expect(e.getText()).toBe("please some "); expect(calls).toBe(1);
+  e.handleInput("\x1b[C"); expect(e.getText()).toBe("please some local text");
   let submitted = ""; e.onSubmit = text => submitted = text;
   e.setText("please "); e.handleInput("\r"); expect(submitted).toBe("please");
   e.dispose();
@@ -215,7 +189,7 @@ test("Tab after space manually requests a model; second Tab accepts; Enter never
 test("cursor move, Escape, programmatic replacement and disposal cancel pending requests", async () => {
   for (const action of ["left", "escape", "set", "dispose"]) {
     const wait = deferred<string>(); const { e } = editor(undefined, async () => wait.promise);
-    e.setText("please "); e.handleInput("\t");
+    e.setText("please "); e.handleInput("\x1b[9;5u");
     if (action === "left") e.handleInput("\x1b[D");
     if (action === "escape") e.handleInput("\x1b");
     if (action === "set") { e.setText("other"); e.setText("please "); }
@@ -260,10 +234,21 @@ test("ownership/focus loss suppresses model results and stale failure notices", 
 test("extension has no prompt/context/tool hooks and is inert outside TUI", async () => {
   const handlers = new Map<string, Function>(), commands = new Map<string, any>();
   autocomplete({ on: (name: string, fn: Function) => handlers.set(name, fn), registerCommand: (name: string, cmd: any) => commands.set(name, cmd) } as any);
-  expect([...handlers.keys()].sort()).toEqual(["input", "session_shutdown", "session_start", "session_tree"]);
+  expect([...handlers.keys()].sort()).toEqual(["input", "message_end", "session_shutdown", "session_start", "session_tree"]);
   for (const mode of ["rpc", "json", "print"]) {
     const ctx = { mode, hasUI: false, ui: new Proxy({}, { get() { throw new Error("unexpected UI access"); } }) };
     await handlers.get("session_start")!({}, ctx); await handlers.get("session_shutdown")!({}, ctx);
     await commands.get("autocomplete").handler("on", ctx);
   }
+});
+
+test("Tab completes ngram word with a space, inserts space when unmatched/empty, and never invokes model", async () => {
+  let calls = 0;
+  const { e } = editor(new Predictor([sample("please inspect files")]), async () => { calls++; return "model suffix"; });
+  e.setText("new insp"); e.handleInput("\t"); expect(e.getText()).toBe("new inspect ");
+  e.setText("unmatched zzqx"); e.handleInput("\t"); expect(e.getText()).toBe("unmatched zzqx ");
+  e.handleInput("\t"); expect(e.getText()).toBe("unmatched zzqx  ");
+  e.setText(""); e.handleInput("\t"); expect(e.getText()).toBe(" "); expect(calls).toBe(0);
+  e.setText("a draft "); e.handleInput("\x00"); await tick(); expect(calls).toBe(1);
+  e.dispose();
 });

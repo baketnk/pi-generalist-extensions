@@ -4,27 +4,34 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 
 export interface AutocompleteConfig {
-  version: 1; enabled: boolean; modelEnabled: boolean; model: string; endpoint: string;
-  cpuOnly: boolean; scope: "all" | "project";
+  version: 2; enabled: boolean; modelEnabled: boolean; model: string | null;
+  scope: "all" | "project"; conversation: boolean; repository: boolean;
 }
 export const defaults: AutocompleteConfig = {
-  version: 1, enabled: false, modelEnabled: true, model: "llama3.2:3b",
-  endpoint: "http://127.0.0.1:11434", cpuOnly: false, scope: "all",
+  version: 2, enabled: false, modelEnabled: true, model: null,
+  scope: "all", conversation: true, repository: false,
 };
+export function modelParts(value: string): { provider: string; id: string } {
+  const slash = value.indexOf("/");
+  if (value.length > 256 || slash < 1 || slash === value.length - 1 || /[\s\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/.test(value))
+    throw new Error("Use an exact Pi provider/model ID, e.g. local/llama3.2:3b");
+  return { provider: value.slice(0, slash), id: value.slice(slash + 1) };
+}
 export function configPath() {
   return process.env.PI_AUTOCOMPLETE_CONFIG || join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi/agent"), "autocomplete.json");
 }
 export function validateConfig(value: unknown): AutocompleteConfig {
-  const c = { ...defaults, ...(value as object) };
-  if (c.version !== 1 || [c.enabled, c.modelEnabled, c.cpuOnly].some(v => typeof v !== "boolean") ||
-      !["all", "project"].includes(c.scope) || typeof c.model !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.:/-]{0,127}$/.test(c.model))
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid autocomplete configuration");
+  const original = value as Record<string, unknown>;
+  // Preserve history activation, but never guess a provider from a legacy Ollama model name.
+  const legacy = original.version === 1;
+  const c = { ...defaults, ...original, ...(legacy ? { version: 2, model: null } : {}) };
+  if (c.version !== 2 || [c.enabled, c.modelEnabled, c.conversation, c.repository].some(v => typeof v !== "boolean") ||
+      !["all", "project"].includes(c.scope) || (c.model !== null && typeof c.model !== "string"))
     throw new Error("Invalid autocomplete configuration");
-  const url = new URL(c.endpoint);
-  if (!["http:", "https:"].includes(url.protocol) || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
-      url.username || url.password || url.search || url.hash || url.pathname !== "/")
-    throw new Error("Autocomplete requires a loopback Ollama origin (no credentials, path, or redirects)");
-  return { version: 1, enabled: c.enabled, modelEnabled: c.modelEnabled, model: c.model,
-    endpoint: url.origin, cpuOnly: c.cpuOnly, scope: c.scope };
+  if (c.model !== null) modelParts(c.model);
+  return { version: 2, enabled: c.enabled, modelEnabled: c.modelEnabled, model: c.model,
+    scope: c.scope, conversation: c.conversation, repository: c.repository };
 }
 export function loadAutocompleteConfig(path = configPath()): AutocompleteConfig {
   if (!existsSync(path)) return { ...defaults };

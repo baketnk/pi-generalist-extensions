@@ -1,7 +1,7 @@
 import { stripVTControlCharacters } from "node:util";
 
 export interface PromptSample { text: string; cwd: string }
-export interface Suggestion { suffix: string; source: "history" | "ngram" | "ollama" }
+export interface Suggestion { suffix: string; source: "history" | "ngram" | "model" }
 export const MAX_SAMPLES = 3000;
 export const MAX_CORPUS_CHARS = 1_000_000;
 export const MAX_SUFFIX = 320;
@@ -30,7 +30,8 @@ export class Predictor {
   private samples: PromptSample[] = [];
   private grams = new Map<string, Map<string, number>>();
   private vocabulary = new Map<string, number>();
-  constructor(samples: PromptSample[] = [], private cwd = "") { this.replace(samples); }
+  private cwd: string;
+  constructor(samples: PromptSample[] = [], cwd = "") { this.cwd = cwd; this.replace(samples); }
   get size() { return this.samples.length; }
   replace(samples: PromptSample[]) {
     const seen = new Set<string>(); let chars = 0;

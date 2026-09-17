@@ -2,7 +2,7 @@ import { CustomEditor, type KeybindingsManager } from "@earendil-works/pi-coding
 import { CURSOR_MARKER, matchesKey, truncateToWidth, visibleWidth, type EditorTheme, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { CompletionController } from "./controller.ts";
 import { isProseDraft, type Predictor } from "./predictor.ts";
-import type { Complete } from "./ollama.ts";
+import type { Complete } from "./provider.ts";
 
 /** Overlay only: never put unaccepted text in the buffer, onChange, or model context. */
 export function drawGhost(lines: string[], suffix: string, width: number, padding: number): string[] {
@@ -44,29 +44,32 @@ export class GhostEditor extends CustomEditor {
       this.completion.dismiss(text); return;
     }
     const tab = matchesKey(data, "tab");
-    // A space + Tab explicitly asks the local model, even if history has an offer.
-    // A second Tab accepts an already-returned model suggestion.
-    if (eligible && tab && / $/.test(text) && this.modelEnabled() && suggestion?.source !== "ollama") {
+    // Model requests have a separate chord; plain Tab never spends tokens.
+    const invoke = matchesKey(data, "ctrl+tab") || matchesKey(data, "ctrl+space");
+    if (eligible && invoke && this.modelEnabled()) {
       void this.completion.request(text, this.complete, () => this.eligible() && this.getText() === text);
       return;
     }
     const word = matchesKey(data, "alt+right") || matchesKey(data, "ctrl+right") || tab;
-    const all = matchesKey(data, "right") || (tab && suggestion?.source === "ollama");
+    const all = matchesKey(data, "right");
     if (suggestion && (all || word)) {
       const accepted = all ? suggestion.suffix : (suggestion.suffix.match(/^\s*\S+\s*/u)?.[0] ?? suggestion.suffix);
-      this.insertTextAtCursor(accepted);
+      this.insertTextAtCursor(tab && !/\s$/.test(accepted) ? accepted + " " : accepted);
       this.completion.retain(this.getText(), { ...suggestion, suffix: suggestion.suffix.slice(accepted.length) });
       return;
     }
     this.completion.edited();
-    // Plain-prose Tab is reserved for our completion, not Pi's filesystem picker.
-    if (eligible && tab) return;
+    // No suggestion: Tab inserts a space, including an empty draft. Native path/command menus win.
+    if (tab && (eligible || (this.active && this.focused && this.owned() && !text.trim() && !this.isShowingAutocomplete()))) {
+      this.insertTextAtCursor(" "); return;
+    }
+    if (eligible && invoke) return;
     super.handleInput(data);
   }
   protected override renderBottomBorder(width: number, hiddenLines: number): string {
     const border = super.renderBottomBorder(width, hiddenLines);
     if (!this.completion?.pending || width < 24) return border;
-    const label = " local completion… Esc cancels ";
+    const label = " model completion… Esc cancels ";
     return truncateToWidth(label, width, "") + truncateToWidth(border, Math.max(0, width - visibleWidth(label)), "");
   }
   override render(width: number): string[] {

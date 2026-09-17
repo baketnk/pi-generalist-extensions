@@ -20,7 +20,11 @@ function harness() {
   const keys = new KeybindingsManager(TUI_KEYBINDINGS); setKeybindings(keys);
   const tui = { terminal: { rows: 30 }, requestRender() {} };
   const theme = { borderColor: (s: string) => s, selectList: {} };
-  const ctx: any = { mode: "tui", hasUI: true, cwd: "/here", ui: {
+  const ctx: any = { mode: "tui", hasUI: true, cwd: "/here", isProjectTrusted: () => true,
+    modelRegistry: { find: (provider: string, id: string) => provider === "fixture" && id === "luna" ? { provider, id } : undefined,
+      hasConfiguredAuth: () => true, getAvailable: () => [{ provider: "fixture", id: "luna" }] },
+    ui: {
+    select: async () => "fixture/luna",
     notify: (text: string) => notices.push(text), getEditorComponent: () => factory,
     setEditorComponent: (next: any) => { factory = next; editor = next?.(tui, theme, keys); if (editor) editor.focused = true; },
   } };
@@ -46,7 +50,7 @@ test("TUI activation is opt-in; captures only interactive inputs; off clears sta
     expect(h.editor.completion.suggestion("injected-only")).toBeUndefined();
     await h.handlers.get("input")!({ source: "interactive", text: "please inspect tests" }, h.ctx);
     expect(h.editor.completion.suggestion("please ")?.suffix).toBe("inspect tests");
-    await h.command("cpu on"); expect(loadAutocompleteConfig().cpuOnly).toBe(true);
+    await h.command("conversation off"); expect(loadAutocompleteConfig().conversation).toBe(false);
     await h.command("llm off"); expect(loadAutocompleteConfig().modelEnabled).toBe(false);
     expect(readFileSync(join(h.dir, "autocomplete.json"), "utf8")).not.toContain("please inspect");
     const old = h.editor; await h.command("off"); expect(h.factory).toBeUndefined();
@@ -98,5 +102,19 @@ test("reload clears old learned samples and reports malformed history configurat
     await h.command("on"); await h.handlers.get("input")!({ source: "interactive", text: "please inspect tests" }, h.ctx);
     writeFileSync(join(h.dir, "history.json"), "malformed"); await h.command("reload");
     expect(h.editor.completion.suggestion("please ")).toBeUndefined();
+  } finally { h.clean(); }
+});
+
+test("model picker/explicit choice persist exact Pi model; unknown model never replaces it", async () => {
+  const h = harness();
+  try {
+    await h.command("model"); expect(loadAutocompleteConfig().model).toBe("fixture/luna");
+    await h.command("model other/missing"); expect(loadAutocompleteConfig().model).toBe("fixture/luna");
+    await h.command("cpu on"); expect(h.notices.at(-1)).toContain("retired");
+    await h.command("repo on"); expect(loadAutocompleteConfig().repository).toBe(true);
+    h.ctx.isProjectTrusted = () => false;
+    await h.command("repo off"); expect(loadAutocompleteConfig().repository).toBe(false);
+    await h.command("repo on"); expect(loadAutocompleteConfig().repository).toBe(false);
+    await h.command("model none"); expect(loadAutocompleteConfig().model).toBeNull();
   } finally { h.clean(); }
 });

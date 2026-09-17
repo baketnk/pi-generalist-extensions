@@ -1,5 +1,5 @@
 import { cleanText, MAX_SUFFIX, type Predictor, type Suggestion } from "./predictor.ts";
-import type { Complete } from "./ollama.ts";
+import type { Complete } from "./provider.ts";
 
 /** Owns cancellation/ABA fencing independently of the editor and provider. */
 export class CompletionController {
@@ -33,7 +33,7 @@ export class CompletionController {
     try {
       const suffix = cleanText(await complete(draft, abort.signal)).slice(0, MAX_SUFFIX);
       if (this.closed || abort.signal.aborted || epoch !== this.epoch || !stillCurrent()) return;
-      if (suffix.trim()) this.model = { draft, suggestion: { suffix, source: "ollama" } };
+      if (suffix.trim()) this.model = { draft, suggestion: { suffix, source: "model" } };
       else this.dismissed = draft;
     } catch (error) {
       if (!abort.signal.aborted && epoch === this.epoch && !this.closed && stillCurrent()) {
