@@ -169,13 +169,44 @@ Add a human-facing dashboard with an optional separately configured small coordi
 - Runner-owned worker launch, cancellation, output, result collection, and terminal run states. Ordinary switchboard mail remains correspondence rather than task control.
 - Barrier-triggered integration work for requests such as “after all workers finish, inspect and commit,” with exact diff review, attribution checks, validation, and refusal to sweep unexplained changes.
 
+### Participant capability cards — proposed follow-up
+
+Add the active model and effective agent tool names to switchboard participant
+cards, roster descriptions, `inspect`, and the human dashboard. This would let a
+human or coordinating peer distinguish, for example, an Astra session from another
+idle unnamed session and route a task that needs a particular tool without sending
+identity-probe mail to every peer.
+
+Treat both fields as bounded, adapter-observed capability metadata rather than
+self-authored status or authorization:
+
+- Publish a stable provider/model identifier (and thinking level when available),
+  never credentials, endpoint secrets, pricing assumptions, or inferred quality.
+- Publish the effective registered tool-name set after extension/tool filtering,
+  not prompt text or every underlying executable. Preserve an explicit unavailable
+  state when the adapter cannot observe it.
+- Refresh on actual model/tool-registry changes with the existing card generation
+  and heartbeat fencing; stale/offline cards remain visibly stale.
+- Bound and sort the tool list for deterministic cards and context. The dashboard
+  may show the full bounded list while automatic model context uses a compact count
+  or allowlisted summary to avoid cache/context churn.
+- Model/tool presence is routing evidence only: it does not prove availability,
+  competence, task acceptance, permission to use a tool, or completion.
+- Cover opt-out/manual mode, mixed protocol versions, reload/resume, model changes,
+  dynamically enabled tools, worker capabilities, privacy, and older-daemon fallback
+  in adapter/service/UI regression tests.
+
+This is a switchboard metadata/UI item, not permission to wake peers, dispatch work,
+call a model, or broaden a participant's tool authority.
+
 ### Small slices
 
-1. Model-free dashboard over current roster/mail facts, clearly marking partial, stale, and unavailable coverage.
-2. Read-only coordinator model that can answer status questions and propose assignments without dispatch authority.
-3. Opt-in assignment queue for live interactive sessions, defaulting to human acceptance rather than automatic conversation replacement.
-4. Durable runner attempts for managed workers using start/continue/collect or interruptible join semantics.
-5. Repository integration barriers only after explicit completion/result facts and shared-checkout safety rules exist.
+1. Add bounded model/tool capability metadata to participant cards and surface it in roster, inspect, and dashboard views.
+2. Model-free dashboard over current roster/mail facts, clearly marking partial, stale, and unavailable coverage.
+3. Read-only coordinator model that can answer status questions and propose assignments without dispatch authority.
+4. Opt-in assignment queue for live interactive sessions, defaulting to human acceptance rather than automatic conversation replacement.
+5. Durable runner attempts for managed workers using start/continue/collect or interruptible join semantics.
+6. Repository integration barriers only after explicit completion/result facts and shared-checkout safety rules exist.
 
 Keep provider credentials and inference out of the switchboard daemon. Preserve the foreground session's model and prompt cache by running the coordinator as a separate SDK/RPC session. A true standalone dashboard launch mode may be an SDK application; an extension command/overlay is sufficient for an initial TUI slice.
 

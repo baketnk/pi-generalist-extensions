@@ -281,6 +281,7 @@ Minimal card, with limits fixed before implementation:
 participantId, name                       # Pi session name; bounded plain text
 project, worktree, cwd                    # local metadata, not portable identity
 summary?, focus?                          # short explicit declarations
+model?, tools?                            # proposed adapter-observed capabilities
 parentParticipantId?, delegationRunId?    # runner-established, when applicable
 presence, activity, observedAt, source
 availability, deliveryPolicy
@@ -314,6 +315,15 @@ live leases; stale cards remain visibly stale until renewed.
 Declared focus is an advisory collision warning, **not a lock**. Neither an expired
 lease nor a peer's acknowledgement grants permission to edit. Shared-checkout
 safety still requires scoped work and fresh source inspection.
+
+A proposed capability-card follow-up would publish the adapter-observed active
+provider/model identifier and bounded effective tool-name set. These fields should
+be deterministic, generation-fenced, visibly unavailable or stale when appropriate,
+and exposed through roster/inspect/dashboard views without credentials or prompt
+contents. They are routing hints, not permission to call a tool, proof that a model
+is currently reachable, or evidence that a participant accepted the task. The
+maintained [roadmap](ROADMAP.md#participant-capability-cards--proposed-follow-up)
+owns the implementation item and acceptance concerns.
 
 ## Default model and human exposure
 
