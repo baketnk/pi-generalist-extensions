@@ -43,7 +43,7 @@ export async function actOnOffer(pi: ExtensionAPI, ctx: ExtensionContext, r: Boa
   const client = r.requireClient();
   if (request.action === "create") {
     const snapshot = await r.refresh(); guard();
-    const choices = snapshot.peers.map(c => `${plain(c.handle)} · ${plain(c.name)} · ${plain(c.worktree)}`);
+    const choices = snapshot.peers.map(c => `${plain(c.handle)} · ${plain(c.name)} · ${plain(c.model || "model not reported")} · ${plain(c.worktree)}`);
     choices.push("Enter exact ID/handle (including offline queue recipients)");
     const selected = await ctx.ui.select("Offer a task — recipient must explicitly accept", choices); guard();
     if (!selected) return;

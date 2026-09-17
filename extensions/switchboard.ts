@@ -14,6 +14,8 @@ import { openMail } from "../lib/switchboard/mail-ui.ts";
 import { daemonEvents } from "../lib/switchboard/diagnostics.ts";
 import { activeRuns, quiesceRuns, registerBoardHost } from "../lib/subagents/bridge.ts";
 
+const modelLabel = (ctx: ExtensionContext) => ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+
 const actions = ["peers", "inspect", "status", "send", "inbox", "read", "reply", "ack", "delivery", "retry", "wait"] as const;
 const schema = Type.Object({
   action: StringEnum(actions), id: Type.Optional(Type.String({ maxLength: 64 })),
@@ -97,7 +99,7 @@ export default function switchboard(pi: ExtensionAPI, options: { paths?: Paths; 
     unregisterHost?.(); unregisterHost = registerBoardHost(pi, () => runtime);
     try {
       runtime = new BoardRuntime({ paths: options.paths ?? paths(), cwd: ctx.cwd, sessionId: ctx.sessionManager.getSessionId(),
-        sessionFile: ctx.sessionManager.getSessionFile(), name: pi.getSessionName(), mode: ctx.mode,
+        sessionFile: ctx.sessionManager.getSessionFile(), name: pi.getSessionName(), mode: ctx.mode, model: modelLabel(ctx),
         workerFile: process.env.PI_SWITCHBOARD_WORKER_FILE, disabled: process.env.PI_SWITCHBOARD === "off",
         ensure: options.ensure, onChange: ui, canReload: () => activeRuns(pi) === 0, onReload: () => {
           if (!runtime?.closed && currentCtx) pi.sendUserMessage("/switchboard-reload", { deliverAs: "followUp", expandPromptTemplates: true });
@@ -111,6 +113,7 @@ export default function switchboard(pi: ExtensionAPI, options: { paths?: Paths; 
   pi.on("ui_prompt_start", () => { waitingUI = true; runtime?.update({ activity: "waiting-for-user" }); });
   pi.on("ui_prompt_end", (_event, ctx) => { waitingUI = false; runtime?.update({ activity: ctx.isIdle() ? "idle" : "working" }); });
   pi.on("session_info_changed", event => runtime?.update({ name: event.name ?? "" }));
+  pi.on("model_select", event => runtime?.update({ model: `${event.model.provider}/${event.model.id}` }));
   pi.on("session_tree", () => { runtime?.update({ summary: "Task focus needs confirmation after tree navigation." }); runtime?.wake.emit("user_input"); });
   pi.on("input", event => { if (event.source !== "extension") runtime?.wake.emit("user_input"); });
   pi.on("context", async (event, ctx) => {

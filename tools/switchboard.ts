@@ -29,7 +29,7 @@ if (!argv.length || argv.includes("--help")) {
     else if (data && typeof data === "object" && "peers" in data) {
       const s = data as Snapshot;
       console.log(`Registered agents: ${s.total} (showing ${s.peers.length})`);
-      for (const c of s.peers) console.log(`${c.handle}  ${c.id}${c.name !== c.handle ? `  ${plain(c.name)}` : ""}  ${c.activity}  ${c.worktree === project.worktree ? "same checkout" : plain(c.worktree)}${c.parentId ? `  child of ${c.parentId}` : ""}${c.summary ? `  ${plain(c.summary)}` : ""}`);
+      for (const c of s.peers) console.log(`${c.handle}  ${c.id}${c.name !== c.handle ? `  ${plain(c.name)}` : ""}  ${c.model ? plain(c.model) : "model not reported"}  ${c.activity}  ${c.worktree === project.worktree ? "same checkout" : plain(c.worktree)}${c.parentId ? `  child of ${c.parentId}` : ""}${c.summary ? `  ${plain(c.summary)}` : ""}`);
     } else console.log(JSON.stringify(data, (_key, value) => typeof value === "string" ? plain(value) : value, 2));
   };
   try {

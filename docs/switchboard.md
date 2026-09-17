@@ -109,7 +109,9 @@ text. Actions:
 
 `peers` defaults to the canonical repository group, preserving worktree boundaries;
 `all:true` explicitly broadens discovery. Tool listings show at most 16 peers; the
-service/CLI show up to 64, with totals. `inspect` and `send` accept an exact `p_ID`
+service/CLI show up to 64, with totals. Cards include the adapter's currently selected
+provider/model when reported; a model change updates presence metadata without invoking
+either model. `inspect` and `send` accept an exact `p_ID`
 or a full generated handle. The examples use an illustrative handle; use one from
 your actual roster. Summary is an explicit declaration, clipped to 480 UTF-8 bytes.
 Pi session names remain optional task labels (160 bytes), followed automatically;

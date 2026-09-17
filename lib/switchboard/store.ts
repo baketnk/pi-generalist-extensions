@@ -14,8 +14,9 @@ function only(obj: Row, keys: string[]) { for (const key of Object.keys(obj)) if
 function cardInput(value: unknown): Row {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new BoardError("card is required.");
   const c = value as Row;
-  only(c, ["name", "summary", "project", "worktree", "cwd", "activity"]);
+  only(c, ["name", "summary", "project", "worktree", "cwd", "activity", "model"]);
   const result: Row = { name: c.name === "" ? "" : plain(text(c.name, "name", 160)), summary: c.summary === "" ? "" : plain(text(c.summary, "summary", 480, true)) };
+  if (c.model !== undefined) result.model = plain(text(c.model, "model", 512));
   for (const key of ["project", "worktree", "cwd"]) {
     result[key] = text(c[key], key, 4096);
     if (!isAbsolute(result[key]) || /[\x00-\x1f]/.test(result[key])) throw new BoardError(`Invalid ${key}.`);

@@ -21,7 +21,7 @@ export class WakeHub {
 }
 export interface RuntimeOptions {
   paths: Paths; cwd: string; sessionId: string; sessionFile?: string; name?: string;
-  mode: string; workerFile?: string; disabled?: boolean;
+  mode: string; model?: string; workerFile?: string; disabled?: boolean;
   onChange?: () => void; onReload?: () => void; ensure?: typeof ensureService; intervalMs?: number;
   canReload?: () => boolean;
 }
@@ -39,7 +39,7 @@ export class BoardRuntime {
     return () => { this.observers.delete(listener); };
   }
   binding?: Binding; bindingFile?: string; policyFile?: string;
-  inputCard?: { name: string; summary: string; activity: Activity; project: string; worktree: string; cwd: string };
+  inputCard?: { name: string; summary: string; activity: Activity; project: string; worktree: string; cwd: string; model?: string };
   wake = new WakeHub();
   private life = new AbortController();
   private watching?: AbortController;
@@ -71,7 +71,8 @@ export class BoardRuntime {
       }
       this.client = new BoardClient(this.options.paths, binding.token);
       this.policyFile = join(this.options.paths.root, `project-${hash(project.project)}.json`);
-      this.inputCard = { ...project, name: clipped(plain(this.options.name || ""), 160), summary: "", activity: this.earlyActivity };
+      this.inputCard = { ...project, name: clipped(plain(this.options.name || ""), 160), summary: "", activity: this.earlyActivity,
+        ...(this.options.model ? { model: clipped(plain(this.options.model), 512) } : {}) };
       this.life.signal.throwIfAborted();
       await this.sync();
       if (!this.closed) { this.timer = setInterval(() => void this.sync(), this.options.intervalMs ?? 15_000); this.timer.unref(); }
@@ -148,12 +149,14 @@ export class BoardRuntime {
     if (this.closed || this.state !== "online" || !this.client) throw new Error(`Switchboard ${this.state}${this.error ? `: ${this.error}` : ""}.`);
     return this.client;
   }
-  update(input: { name?: string; summary?: string; activity?: Activity }) {
+  update(input: { name?: string; summary?: string; activity?: Activity; model?: string }) {
     if (input.activity) this.earlyActivity = input.activity;
     if (input.name !== undefined) this.options.name = input.name;
+    if (input.model !== undefined) this.options.model = input.model;
     if (!this.inputCard) return;
     if (input.name !== undefined) this.inputCard.name = clipped(plain(input.name), 160);
     if (input.summary !== undefined) this.inputCard.summary = clipped(plain(input.summary), 480);
+    if (input.model !== undefined) this.inputCard.model = clipped(plain(input.model), 512);
     if (input.activity) this.inputCard.activity = input.activity;
     // Serialize publication with reconnect/disable so old callbacks cannot reattach.
     void this.sync();

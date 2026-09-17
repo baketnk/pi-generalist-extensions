@@ -9,7 +9,7 @@ import { BoardClient, bindingAt, rpc } from "../lib/switchboard/client.ts";
 import { secret, projectAt, VERSION, type Snapshot } from "../lib/switchboard/shared.ts";
 import { formatSwitchboard } from "../lib/switchboard/presentation.ts";
 
-const card = (name: string, project = "/repo/.git") => ({ name, project, cwd: "/repo", worktree: "/repo", summary: "", activity: "idle" as const });
+const card = (name: string, project = "/repo/.git") => ({ name, project, cwd: "/repo", worktree: "/repo", summary: "", activity: "idle" as const, model: "fixture/alpha" });
 function fixture() {
   let now = 100_000;
   const store = new BoardStore(":memory:", () => now);
@@ -22,7 +22,7 @@ function fixture() {
 describe("switchboard durable contract", () => {
   test("human presentation uses tables and explicit empty states instead of JSON", () => {
     const peers = formatSwitchboard("peers", { total: 1, omitted: 0, peers: [{ ...card("reviewer"), id: "p_1", type: "agent", online: true, updatedAt: 1, location: "same checkout", activity: "working" }] });
-    expect(peers).toContain("Name"); expect(peers).toContain("Activity"); expect(peers).toContain("reviewer");
+    expect(peers).toContain("Name"); expect(peers).toContain("Model"); expect(peers).toContain("fixture/alpha"); expect(peers).toContain("Activity"); expect(peers).toContain("reviewer");
     expect(peers).not.toContain('"peers"'); expect(peers).not.toContain("{");
     expect(formatSwitchboard("inbox", { pending: 0, messages: [] })).toBe("No messages");
   });

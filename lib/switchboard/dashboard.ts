@@ -207,7 +207,7 @@ export class Dashboard implements Component, Focusable {
     } else {
       const items = this.tab === "roster" ? [s.card, ...(snap?.peers ?? [])].filter((c): c is Card => !!c).map(c => ({
         value: c.id, label: plain(`${c.handle} · ${c.activity}${!c.online ? " (offline)" : now - c.updatedAt > LEASE_MS ? " (stale heartbeat)" : ""}`),
-        description: plain(`${relationship(c, s.card)} · ${c.worktree === s.card?.worktree ? "same checkout" : c.worktree} · heartbeat ${age(c.updatedAt, now)} · ${c.name !== c.handle ? c.name + " · " : ""}${c.summary}`),
+        description: plain(`${relationship(c, s.card)} · ${c.model || "model not reported"} · ${c.worktree === s.card?.worktree ? "same checkout" : c.worktree} · heartbeat ${age(c.updatedAt, now)} · ${c.name !== c.handle ? c.name + " · " : ""}${c.summary}`),
       })) : this.tab === "offers" ? (snap?.offers ?? []).map(o => ({ value: o.id,
         label: plain(`${o.id} · ${o.state} · ${o.recipient === s.card?.id ? "incoming" : "outgoing"}`),
         description: plain(`creator ${o.creator} → ${o.recipient} · generation ${o.generation} · expires ${stamp(o.expiresAt)}`),

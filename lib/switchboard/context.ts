@@ -11,7 +11,7 @@ export interface Observation {
 export interface Exposure { key: string; roster: unknown; hints: { id: string; sender: string; kind: string }[]; relevant: boolean }
 export function shortCard(card: Card, own?: Card) {
   return { id: card.id, handle: card.handle, name: card.name === card.handle ? undefined : clipped(plain(card.name), 100), summary: clipped(plain(card.summary), 160), activity: card.activity,
-    location: card.worktree === own?.worktree ? "same checkout" : clipped(plain(card.worktree), 160), parentId: card.parentId, runId: card.runId };
+    model: card.model, location: card.worktree === own?.worktree ? "same checkout" : clipped(plain(card.worktree), 160), parentId: card.parentId, runId: card.runId };
 }
 /** Other registered participants, split so direct children never inflate the peer count. */
 export function participantCounts(cards: Card[], own?: Card) {

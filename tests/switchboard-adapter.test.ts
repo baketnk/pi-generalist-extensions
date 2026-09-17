@@ -21,11 +21,13 @@ test("opt-out runtime: default registration, metadata-only hints, reload binding
   const board = await serve(paths);
   const live: BoardRuntime[] = [];
   const make = (sessionId: string, mode = "tui", disabled = false) => {
-    const r = new BoardRuntime({ paths, sessionId, cwd: root, name: sessionId, mode, disabled, ensure: async () => {}, intervalMs: 100 }); live.push(r); return r;
+    const r = new BoardRuntime({ paths, sessionId, cwd: root, name: sessionId, mode, model: `fixture/${sessionId}`, disabled, ensure: async () => {}, intervalMs: 100 }); live.push(r); return r;
   };
   try {
     const a = make("a"), b = make("b");
     await a.start(); await b.start(); await until(() => a.snapshot?.total === 1 && b.snapshot?.total === 1);
+    expect(a.snapshot?.peers[0]?.model).toBe("fixture/b");
+    expect(exposure(a)?.roster).toMatchObject({ cards: [{ model: "fixture/b" }] });
     expect(exposure(a)!.relevant).toBe(true);
     const m = await b.requireClient().send("test-mail", { recipient: a.card!.id, body: "DO NOT AUTO-INJECT THIS BODY" }) as { id: string };
     await until(() => a.snapshot?.pending === 1);
@@ -52,6 +54,8 @@ test("opt-out runtime: default registration, metadata-only hints, reload binding
     b.update({ name: "renamed", summary: "declared task" }); await b.sync();
     expect(b.card!.handle).toBe(bHandle);
     await until(() => resumed.snapshot?.peers.some(p => p.name === "renamed") === true);
+    b.update({ model: "fixture/beta" }); await b.sync();
+    await until(() => resumed.snapshot?.peers.some(p => p.model === "fixture/beta") === true);
   } finally { await Promise.all(live.map(r => r.close())); await board.close(); await rm(root, { recursive: true, force: true }); }
 });
 

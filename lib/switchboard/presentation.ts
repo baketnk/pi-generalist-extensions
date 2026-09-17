@@ -17,7 +17,7 @@ function table(headers: string[], rows: unknown[][], caps: number[]): string {
 
 function cards(items: Card[]): string {
   if (!items.length) return "No registered peers";
-  return table(["Handle", "Name", "Activity", "Location"], items.map(card => [card.handle ?? card.id, card.name === card.handle ? "" : card.name, card.activity, (card as Card & { location?: string }).location ?? card.worktree]), [35, 24, 18, 30]);
+  return table(["Handle", "Name", "Model", "Activity", "Location"], items.map(card => [card.handle ?? card.id, card.name === card.handle ? "" : card.name, card.model, card.activity, (card as Card & { location?: string }).location ?? card.worktree]), [35, 24, 36, 18, 30]);
 }
 
 function messages(items: Mail[]): string {
@@ -29,6 +29,7 @@ function card(value: Card): string {
   return [
     `${value.handle ?? value.id}${value.name && value.name !== value.handle ? ` · ${value.name}` : ""}  (${value.id})`,
     `${value.activity} · ${value.type}${value.parentId ? ` · parent ${value.parentId}` : ""}`,
+    `Model: ${value.model || "not reported"}`,
     value.summary || "No status summary",
     `Project: ${value.project}`,
     `Working directory: ${value.cwd}`,
