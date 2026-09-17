@@ -1,5 +1,6 @@
 import { getSettingsListTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
+import { BACKGROUND_MODEL_ENTRY, backgroundModel, backgroundModelLabel, configureBackgroundModel } from "../lib/background-model.ts";
 import type { ToggleController } from "../lib/toggle.ts";
 import { requestDashboard } from "../lib/switchboard/dashboard.ts";
 import { OUTPUT_CONFIG_ENTRY, rawJsonOutput } from "../lib/output.ts";
@@ -63,37 +64,52 @@ export function isGeneralistSaveKey(keys: { matches?(data: string, action: strin
   return keys.matches?.(data, "app.models.save") === true || keys.matches?.(data, "app.thinking.save") === true || data === "\x13";
 }
 
-function saveDefaults(features: Features, ctx: ExtensionContext): void {
-  const defaults: GeneralistDefaults = {
+export function generalistDefaults(features: Features, ctx: ExtensionContext): GeneralistDefaults {
+  return {
     version: 1,
     meitan: features.meitan(),
+    memory: features.memory(),
     output: rawJsonOutput(ctx),
+    backgroundModel: backgroundModel(ctx),
     ...(features.patch ? { patch: features.patch() } : {}),
     ...(features.icons ? { icons: features.icons() } : {}),
   };
-  saveGeneralistDefaults(defaults);
 }
 
 /** Unified bundle controls; feature state remains branch-local until Ctrl+S saves global defaults. */
 export function registerGeneralistSettings(pi: ExtensionAPI, features: Features, defaults?: GeneralistDefaults) {
   const persist = (ctx: ExtensionContext) => {
     try {
-      saveDefaults(features, ctx);
+      saveGeneralistDefaults(generalistDefaults(features, ctx));
       ctx.ui.notify("Generalist defaults saved for new sessions.", "info");
     } catch (error) { ctx.ui.notify(`Could not save Generalist defaults: ${String(error)}`, "error"); }
   };
   pi.on("session_start", (_event, ctx) => {
+    if (defaults?.backgroundModel !== undefined && !hasBranchSetting(ctx, BACKGROUND_MODEL_ENTRY)) {
+      pi.appendEntry(BACKGROUND_MODEL_ENTRY, defaults.backgroundModel);
+    }
     // Output has no controller; saved defaults seed only a branch with no explicit choice.
     if (defaults && !hasBranchSetting(ctx, OUTPUT_CONFIG_ENTRY)) pi.appendEntry(OUTPUT_CONFIG_ENTRY, { rawJson: defaults.output });
   });
   pi.registerCommand("generalist", {
-    description: "Configure Generalist features and output: /generalist [status|meitan|memory|output|patch|icons] [on|off|toggle]; personal|pairing|companion|housekeeping|dashboard",
-    getArgumentCompletions: prefix => ["status", ...featureIds(features), "personal", "pairing", "companion", "housekeeping", "dashboard", "on", "off", "toggle"]
+    description: "Configure Generalist features and output: /generalist [status|meitan|memory|output|patch|icons] [on|off|toggle]; personal|pairing|companion|housekeeping|background|dashboard",
+    getArgumentCompletions: prefix => ["status", ...featureIds(features), "personal", "pairing", "companion", "housekeeping", "background", "dashboard", "on", "off", "toggle"]
       .filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
     handler: async (args, ctx) => {
       const [target, action, ...extra] = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
       if (extra.length) { ctx.ui.notify("Too many /generalist arguments", "warning"); return; }
+      if (target === "background" && action === "status") {
+        ctx.ui.notify(`Small/background model: ${backgroundModelLabel(ctx)} (configuration only; no consumers)`, "info");
+        return;
+      }
+      if (target === "background" && action === "clear") {
+        await ctx.waitForIdle();
+        pi.appendEntry(BACKGROUND_MODEL_ENTRY, null);
+        ctx.ui.notify("Small/background model cleared for this branch; Ctrl+S in /generalist saves defaults.", "info");
+        return;
+      }
       const settings = {
+        background: (context: ExtensionContext) => configureBackgroundModel(pi, context),
         dashboard: (context: ExtensionContext) => requestDashboard(pi, context),
         housekeeping: features.memory.configureHousekeeping,
         personal: features.memory.configurePersonal,
@@ -136,6 +152,8 @@ export function registerGeneralistSettings(pi: ExtensionAPI, features: Features,
             id: "pairing", label: "Prefer Meitan + memory", currentValue: "configure…", values: ["configure…", "open"],
             description: "Startup picker preference.",
           });
+          items.push({ id: "background", label: "Small/background model", currentValue: backgroundModelLabel(ctx),
+            values: [backgroundModelLabel(ctx), "configure…"], description: "Configuration only; no consumers enabled." });
           items.push({ id: "dashboard", label: "Switchboard dashboard", currentValue: "open…", values: ["open…", "open"],
             description: "Model-free registered roster/inbox." });
           const container = new Container();

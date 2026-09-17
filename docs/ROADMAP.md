@@ -365,6 +365,12 @@ including an optional conversation-to-memory candidate extractor to catch missed
 foreground captures. This is **not implemented by the lexical relevance change**.
 The existing housekeeping setting remains a separate, manual read-only reviewer.
 
+The configuration-only affordance is now implemented: `/generalist background`
+selects an exact provider/model from the existing catalogue, with branch-local
+persistence, explicit clear/status, and Ctrl+S global defaults in `/generalist`.
+It performs no calls or activation and has no consumers. Candidate extraction,
+consumer budgets, thinking policy and disclosure/enablement remain future work.
+
 Suggested contract for the follow-up:
 
 - Select an exact provider/model through Pi's registry (a configured local endpoint

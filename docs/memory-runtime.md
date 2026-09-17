@@ -223,12 +223,15 @@ epochs. A compaction retry notification without a committed compaction is not a 
 
 Reload/resume/tree reconstruct branch policy and replay authorized, anchored
 snapshots byte-for-byte. Legacy audits have no saved boundary and are never
-guessed back into history. Fresh prompts may append new selections. New/forked
-sessions have no activation grant even if
-they inherit audit entries. Print/JSON can restore a previously approved session
-but cannot create a fresh activation grant. Subagents are instructed not to use
-memory; a fresh/forked session starts off. Passing an already approved session
-verbatim to an untrusted subprocess is not a supported isolation boundary.
+guessed back into history. Fresh prompts may append new selections. A new interactive
+session may create a fresh, config/cwd-bound policy from the memory preference the
+human explicitly saved with `Ctrl+S` in `/generalist`; current config and scopes are
+revalidated, and failure leaves memory off. An inherited fork policy has the wrong
+session ID and stays off rather than falling back to that global default. Print/JSON
+can restore a previously approved session but cannot create a fresh activation grant.
+Subagents are instructed not to use memory and forks start off. Passing an already
+approved session verbatim to an untrusted subprocess is not a supported isolation
+boundary.
 
 ## Privacy, failures and review gate
 

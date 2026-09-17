@@ -91,7 +91,8 @@ function budgetFor(ctx: ExtensionContext): number {
 }
 
 /** Default off. No config/store access, resources or provider calls during factory load. */
-export default function memory(pi: ExtensionAPI, statusIcons?: StatusIconsController) {
+export default function memory(pi: ExtensionAPI, statusIcons?: StatusIconsController,
+  defaultEnabled: () => boolean | undefined = () => undefined) {
   let closed = false, epoch = 0, on = false, problem: string | undefined;
   let pending: { accessHash: string; packet: MemoryPacket; requestId?: string } | undefined;
   let supplied: Supplied | undefined;
@@ -140,6 +141,18 @@ export default function memory(pi: ExtensionAPI, statusIcons?: StatusIconsContro
   const restore = (ctx: ExtensionContext) => {
     cancelHousekeeping(); closed = false; epoch++; on = false; pending = undefined; supplied = undefined; problem = undefined;
     validated = undefined;
+    const hasPolicy = ctx.sessionManager.getBranch().some(e => e.type === "custom" && e.customType === POLICY_ENTRY);
+    if (!hasPolicy) {
+      const saved = defaultEnabled();
+      if (saved !== undefined) {
+        try { set(saved, ctx); }
+        catch (error) {
+          // A saved preference never bypasses current config/scope validation.
+          set(false, ctx);
+          problem = `Saved memory preference could not be restored: ${String(error)}`;
+        }
+      }
+    }
     // Legacy audits have no trustworthy projection boundary: inspection only.
     // New snapshots replay separately, after branch/activation/source validation.
     for (const e of ctx.sessionManager.getBranch()) {

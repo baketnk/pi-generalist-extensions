@@ -19,7 +19,7 @@ export default function generalist(pi: ExtensionAPI) {
   const icons = registerStatusIcons(pi, () => defaults?.icons);
   const toggles = {
     meitan: meitan(pi, icons, () => defaults?.meitan),
-    memory: memory(pi, icons), // Memory activation remains session-scoped and requires its configured policy review.
+    memory: memory(pi, icons, () => defaults?.memory),
     patch: applyPatch(pi, icons, () => defaults?.patch),
     icons,
   };

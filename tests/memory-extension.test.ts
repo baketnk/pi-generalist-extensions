@@ -18,7 +18,8 @@ import { PACKET_TYPE } from "../lib/memory/select.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const path of roots.splice(0)) rmSync(path, { recursive: true, force: true }); });
-function harness(existing?: ReturnType<typeof fixture>, sm?: SessionManager) {
+function harness(existing?: ReturnType<typeof fixture>, sm?: SessionManager,
+  defaultEnabled: () => boolean | undefined = () => undefined) {
   const f = existing ?? fixture(), manager = sm ?? SessionManager.inMemory(f.root);
   const events: Record<string, Function[]> = {}, tools: Record<string, any> = {}, commands: Record<string, any> = {};
   let active = ["read", "bash", "unrelated"], confirms = 0;
@@ -35,7 +36,7 @@ function harness(existing?: ReturnType<typeof fixture>, sm?: SessionManager) {
     getActiveTools: () => active, setActiveTools: (names: string[]) => active = names,
     exec: () => { throw new Error("No external process permitted"); }, sendMessage: () => { throw new Error("No follow-up permitted"); },
   };
-  const controller = memory(pi);
+  const controller = memory(pi, undefined, defaultEnabled);
   const emit = async (name: string, event: any = {}) => {
     let result: any;
     for (const handler of events[name] ?? []) { const next = await handler(event, ctx); if (next !== undefined) result = next; }
@@ -272,6 +273,42 @@ test("factory/default-off never accesses config; malformed config cannot break a
   await expect(h.call({ action: "recall", query: "cache" })).rejects.toThrow("off");
   expect(await h.emit("context", projection())).toEqual(projection());
   await expect(h.command("on")).rejects.toThrow(); expect(h.controller()).toBe(false);
+});
+
+test("saved Generalist memory preference restores on new sessions, while branch policy wins and invalid config fails closed", async () => {
+  const enabled = harness(undefined, undefined, () => true);
+  await enabled.emit("session_start", { reason: "new" });
+  expect(enabled.controller()).toBe(true);
+  expect(enabled.pi.getActiveTools()).toContain("memory");
+  expect(readMemoryPolicy(enabled.ctx)).toMatchObject({ enabled: true, profile: "default" });
+  expect(enabled.confirms()).toBe(0); // Ctrl+S was the explicit global preference boundary.
+
+  const forkManager = SessionManager.inMemory(enabled.root);
+  for (const entry of enabled.manager.getBranch()) {
+    if (entry.type === "custom") forkManager.appendCustomEntry(entry.customType, entry.data);
+  }
+  const fork = harness(enabled, forkManager, () => true);
+  await fork.emit("session_start", { reason: "fork" });
+  expect(fork.controller()).toBe(false);
+  expect(fork.pi.getActiveTools()).not.toContain("memory");
+
+  const headless = harness(undefined, undefined, () => true);
+  headless.ctx.hasUI = false; headless.ctx.mode = "print";
+  await headless.emit("session_start", { reason: "new" });
+  expect(headless.controller()).toBe(false);
+  expect(headless.pi.getActiveTools()).not.toContain("memory");
+
+  await enabled.command("off");
+  const restored = harness(enabled, enabled.manager, () => true);
+  await restored.emit("session_start", { reason: "reload" });
+  expect(restored.controller()).toBe(false); // Explicit branch-local off overrides the saved default.
+
+  const invalid = harness(undefined, undefined, () => true);
+  writeFileSync(invalid.path, "invalid");
+  await invalid.emit("session_start", { reason: "new" });
+  expect(invalid.controller()).toBe(false);
+  expect(readMemoryPolicy(invalid.ctx).enabled).toBe(false);
+  expect(invalid.notifications.join("\n")).toContain("Saved memory preference could not be restored");
 });
 
 test("scoped packet is frozen and audited once, omitted from session messages, removed on off", async () => {
