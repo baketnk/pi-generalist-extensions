@@ -10,6 +10,7 @@ export type JobExecution = "starting" | "running" | "exited" | "launch_failed" |
 export type StopReason = "user_cancel" | "timeout" | "output_limit" | "session_shutdown";
 export type Cleanup = "not_requested" | "pending" | "confirmed" | "incomplete" | "unknown";
 export type JobNotify = "always" | "errors" | "off";
+export type WaitFor = "next" | "all";
 
 export interface JobLimits { timeoutSeconds: number; maxOutputBytes: number }
 export interface JobRecord {
@@ -21,6 +22,7 @@ export interface JobRecord {
 }
 export interface OutputPage { text: string; nextCursor?: string; start: number; end: number; retainedBytes: number; gap?: string }
 export interface StartOptions { command: string; cwd: string; label?: string; timeoutSeconds?: number; notify?: JobNotify }
+export interface WaitResult { waitFor: WaitFor; reason: "completed" | "timeout"; completed: JobRecord[]; running: JobRecord[] }
 
 /** Whether settlement should enqueue a model-visible completion message. */
 export function shouldNotifyCompletion(job: Pick<JobRecord, "notify" | "execution" | "exitCode" | "signal" | "stopReason" | "cleanup" | "persistenceError" | "outputError">): boolean {
@@ -54,6 +56,7 @@ function parseCursor(id: string, value: string | undefined): number {
 function rendered(text: string): string {
   return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
+function active(record: Pick<JobRecord, "execution">): boolean { return record.execution === "starting" || record.execution === "running"; }
 
 /** Linux-only, session-bound finite commands. The caller owns lifecycle teardown. */
 export class BackgroundJobRuntime {
@@ -66,7 +69,7 @@ export class BackgroundJobRuntime {
     if (process.platform !== "linux") throw new Error("bg_tasks start is currently supported only on Linux.");
     if (this.closed) throw new Error("Background-job runtime is shutting down.");
     if (!options.command.trim() || options.command.length > 16_384 || /\0/.test(options.command)) throw new Error("command must be non-empty text up to 16 KiB.");
-    if ([...this.jobs.values()].filter(job => job.record.execution === "starting" || job.record.execution === "running").length >= 4) throw new Error("At most four background jobs may run in this session runtime.");
+    if ([...this.jobs.values()].filter(job => active(job.record)).length >= 4) throw new Error("At most four background jobs may run in this session runtime.");
     signal?.throwIfAborted();
     const cwd = await realpath(options.cwd);
     if (!(await stat(cwd)).isDirectory()) throw new Error("cwd must resolve to an existing directory.");
@@ -143,6 +146,51 @@ export class BackgroundJobRuntime {
 
   list(): JobRecord[] { return [...this.jobs.values()].map(job => copy(job.record)).sort((a, b) => b.createdAt - a.createdAt); }
   status(id: string): JobRecord { const job = this.jobs.get(id); if (!job) throw new Error("Unknown or no-longer-live background job ID."); return copy(job.record); }
+
+  /** Permanently suppress completion delivery for selected active jobs without stopping them. */
+  async ignore(ids: readonly string[]): Promise<JobRecord[]> {
+    const selected = ids.map(id => {
+      const job = this.jobs.get(id); if (!job) throw new Error("Unknown or no-longer-live background job ID."); return job;
+    });
+    await Promise.all(selected.map(async job => {
+      if (!active(job.record)) return;
+      job.record.notify = "off";
+      await this.writeState(job.record, join(this.root, this.owner, job.record.id));
+    }));
+    return selected.map(job => copy(job.record));
+  }
+
+  /** Wait for the next or every job that is active at call time. */
+  async wait(waitFor: WaitFor, seconds = 60, signal?: AbortSignal): Promise<WaitResult> {
+    if (waitFor !== "next" && waitFor !== "all") throw new Error("waitFor must be next or all.");
+    if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) throw new Error("seconds must be an integer from 1 to 300.");
+    signal?.throwIfAborted();
+    const selected = [...this.jobs.values()].filter(job => active(job.record));
+    if (!selected.length) return { waitFor, reason: "completed", completed: [], running: [] };
+    const completion = waitFor === "all"
+      ? Promise.all(selected.map(job => job.done)).then(() => "completed" as const)
+      : Promise.race(selected.map(job => job.done)).then(() => "completed" as const);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    const interrupted = new Promise<"timeout">((resolve, reject) => {
+      timer = setTimeout(() => resolve("timeout"), seconds * 1000);
+      if (signal) {
+        onAbort = () => reject(signal.reason instanceof Error ? signal.reason : new Error("Background-job wait aborted."));
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+    });
+    let reason: "completed" | "timeout";
+    try { reason = await Promise.race([completion, interrupted]); }
+    finally {
+      if (timer) clearTimeout(timer);
+      if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+    }
+    return {
+      waitFor, reason,
+      completed: selected.filter(job => !active(job.record)).map(job => copy(job.record)),
+      running: selected.filter(job => active(job.record)).map(job => copy(job.record)),
+    };
+  }
 
   async output(id: string, value?: string, limit = 8 * 1024, tail = false): Promise<OutputPage> {
     const job = this.jobs.get(id); if (!job) throw new Error("Unknown or no-longer-live background job ID.");

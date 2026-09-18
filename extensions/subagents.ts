@@ -15,6 +15,7 @@ const schema = Type.Object({
   action: StringEnum(["start", "list", "status", "peek", "join", "input", "collect", "cancel", "checkpoints", "models"] as const),
   id: Type.Optional(Type.String({ maxLength: 64 })), ids: Type.Optional(Type.Array(Type.String({ maxLength: 64 }), { maxItems: 16 })),
   mode: Type.Optional(StringEnum(["fresh", "fork"] as const)), task: Type.Optional(Type.String({ maxLength: LIMITS.taskBytes })),
+  permissions: Type.Optional(StringEnum(["read-only", "implement"] as const, { description: "read-only (default): scoped inspection, no shell or edits. implement: normal coding tools including shell, edits and writes in the shared checkout; not sandboxed. Independent of fresh/fork origin; task text alone cannot grant tools." })),
   label: Type.Optional(Type.String({ maxLength: 160 })), from: Type.Optional(Type.String({ maxLength: 64 })),
   operation: Type.Optional(Type.String({ maxLength: 128 })),
   model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "self (default; same is an alias), next-smaller (immediate configured ladder successor), or exact provider/model ID. No fallback." })),
@@ -23,13 +24,13 @@ const schema = Type.Object({
   question: Type.Optional(Type.String({ maxLength: 64 })), text: Type.Optional(Type.String({ maxLength: LIMITS.taskBytes })),
 }, { additionalProperties: false });
 const allowed: Record<string, string[]> = {
-  start: ["mode", "task", "label", "from", "operation", "seconds", "model"], models: [], list: [], status: ["id"], peek: ["id", "after", "limit"],
+  start: ["mode", "permissions", "task", "label", "from", "operation", "seconds", "model"], models: [], list: [], status: ["id"], peek: ["id", "after", "limit"],
   join: ["ids", "seconds", "all"], input: ["id", "question", "text"], collect: ["id"], cancel: ["id", "all"], checkpoints: [],
 };
 
 export default function subagents(pi: ExtensionAPI, options: { workerEntry?: string; home?: string } = {}) {
-  pi.registerFlag("subagent-forks", { description: "Human grant: share entire selected projected history with inspect workers at the parent's startup provider. Other providers require confirmation. Includes potentially private text; no inherited activation or tools.", type: "boolean", default: false });
-  pi.registerFlag("subagent-limit", { description: "Maximum concurrent inspect workers (0–16); not a staffing target.", type: "string", default: "4" });
+  pi.registerFlag("subagent-forks", { description: "Human grant: share entire selected projected history with workers at the parent's startup provider. Other providers require confirmation. Includes potentially private text; no inherited activation or tools.", type: "boolean", default: false });
+  pi.registerFlag("subagent-limit", { description: "Maximum concurrent workers (0–16); not a staffing target.", type: "string", default: "4" });
   let runtime: SubagentRuntime | undefined, context: ExtensionContext | undefined, shelf = new SnapshotShelf();
   let sharing = new Set<string>(), waitingUI = false, removeInput: (() => void) | undefined;
   let branchEpoch = 0;
@@ -81,7 +82,7 @@ export default function subagents(pi: ExtensionAPI, options: { workerEntry?: str
     return { message: { customType: "subagents:observation:v1", content, display: false } };
   });
   pi.registerTool({ name: "subagents", label: "Subagents", parameters: schema, executionMode: "sequential",
-    description: "Owned inspect-only SDK workers. Choose zero/one/several based on independent work; ceilings are not team-size targets. start(mode fresh|fork,task,label,model?,operation?,from?,seconds<=1800) returns immediately. model is self (default), next-smaller (immediate configured ladder successor), or exact provider/model; no fallback or skipped rungs. models inspects the configured ladder. Thinking inherits the parent; model choice adds no permissions. Fork needs a captured checkpoint plus human history-sharing grant, excludes the entire delegating tool batch, and never inherits permissions. No shell/edits/recursive spawning. Prefer doing useful parent work before join. list/status(id)/peek(id,after=0,limit<=100) inspect without inference or acknowledgement; checkpoints lists captured fork origins. join(ids?,seconds<=300=60,all=false) waits for any result/blocker/failure/user input, not collection. input(id,question,text) answers only a pending clarification. collect(id) returns a report claim, not proof or transcript merge. cancel(id) or cancel(all=true) stops owned processes; cleanup is observed separately. Parent turn-end/closing peek leaves workers running; global stop/reload/session change/quit cancels. No idle-parent model wake. Linux/Node24+; max24 turns/80 tools/4096 output tokens per request/8MiB public log. Private host artifacts persist.",
+    description: "Owned SDK workers; permissions read-only (default) or implement (explicit opt-in). Choose zero/one/several based on independent work; ceilings are not team-size targets. start(mode fresh|fork,task,label,permissions?,model?,operation?,from?,seconds<=1800) returns immediately. model is self (default), next-smaller (immediate configured ladder successor), or exact provider/model; no fallback or skipped rungs. models inspects the configured ladder. Thinking inherits the parent; model choice adds no permissions. Fork needs a captured checkpoint plus human history-sharing grant, excludes the entire delegating tool batch, and never inherits permissions. Read-only has scoped read/ls/grep, no shell/edits. Implement has normal coding tools including bash/edit/write: shared live checkout, unsandboxed host access, no rollback. Assign disjoint file ownership; review changes and checks. No recursive delegation or personal memory/history tools in either profile. Prefer doing useful parent work before join. list/status(id)/peek(id,after=0,limit<=100) inspect without inference or acknowledgement; checkpoints lists captured fork origins. join(ids?,seconds<=300=60,all=false) waits for any result/blocker/failure/user input, not collection. input(id,question,text) answers only a pending clarification. collect(id) returns a report claim, not proof or transcript merge. cancel(id) or cancel(all=true) stops owned processes; cleanup is observed separately. Parent turn-end/closing peek leaves workers running; global stop/reload/session change/quit cancels. No idle-parent model wake. Linux/Node24+; max24 turns/80 tools/4096 output tokens per request/8MiB public log. Private host artifacts persist.",
     async execute(callId, params, signal, _update, ctx) {
       signal?.throwIfAborted();
       for (const [key, value] of Object.entries(params)) if (key !== "action" && value !== undefined && !allowed[params.action]!.includes(key)) throw new Error(`${key} is not valid for ${params.action}.`);
@@ -98,7 +99,7 @@ export default function subagents(pi: ExtensionAPI, options: { workerEntry?: str
           const snapshot = params.mode === "fork" ? shelf.select(ctx.sessionManager.getSessionId(), ctx.sessionManager.getBranch(), params.from) : undefined;
           if (snapshot?.providerRequestHooks) throw new Error("This parent has provider-payload hooks after the snapshot boundary. Faithful fork sharing is not established; use fresh explicitly.");
           if (snapshot && !sharing.has(model.provider)) {
-            if (!ctx.hasUI || !await ctx.ui.confirm(`Share fork history with ${modelKey(model)}?`, `This sends the entire selected projected history to provider ${model.provider}, potentially including private memory, continuity, journals or summaries—even when now off. There is no perfect scrubber. Worker tools remain inspect-only. Allow sharing with this provider for this parent runtime?`)) throw new Error("Fork history sharing not authorized for the selected provider. Confirm interactively, use the parent's provider with a human --subagent-forks grant, or choose fresh explicitly.");
+            if (!ctx.hasUI || !await ctx.ui.confirm(`Share fork history with ${modelKey(model)}?`, `This sends the entire selected projected history to provider ${model.provider}, potentially including private memory, continuity, journals or summaries—even when now off. There is no perfect scrubber. History consent does not grant tools; this launch requests ${params.permissions ?? "read-only"} permissions. Allow sharing with this provider for this parent runtime?`)) throw new Error("Fork history sharing not authorized for the selected provider. Confirm interactively, use the parent's provider with a human --subagent-forks grant, or choose fresh explicitly.");
             signal?.throwIfAborted(); if (runtime !== r || branchEpoch !== launchEpoch) throw new Error("Parent session/branch changed during consent.");
             sharing.add(model.provider);
           }
@@ -110,7 +111,7 @@ export default function subagents(pi: ExtensionAPI, options: { workerEntry?: str
           });
           signal?.throwIfAborted(); if (runtime !== r || branchEpoch !== launchEpoch) throw new Error("Parent session/branch changed during launch.");
           result = await r.start({ mode: params.mode, task: params.task, label: params.label, operation: params.operation ?? callId,
-            cwd, agentDir, model, thinking, instructions, snapshot,
+            cwd, agentDir, model, thinking, instructions, snapshot, permissions: params.permissions ?? "read-only",
             privatePaths: [r.options.home, ...(ctx.sessionManager.getSessionFile() ? [dirname(ctx.sessionManager.getSessionFile()!)] : [])],
             seconds: params.seconds ?? LIMITS.seconds, maxTurns: LIMITS.turns, maxTools: LIMITS.tools, maxOutputTokens: LIMITS.outputTokens }, () => {
               const available = ctx.modelRegistry.find(model.provider, model.id);

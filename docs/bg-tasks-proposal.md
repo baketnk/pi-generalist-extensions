@@ -62,9 +62,11 @@ Use one model tool, `bg_tasks`, with action-specific validation. This keeps the 
 | `list` | Optional state filter and pagination cursor | Bounded current-session records; running jobs first |
 | `status` | `id` | Execution and cleanup state, timestamps, exit facts, stop reason, output counts |
 | `output` | `id`, optional cursor and byte limit; explicit tail mode | Bounded text, consumed byte range, next cursor, truncation/gap metadata |
-| `cancel` | `id`, optional short reason | Stop requested or confirmed, escalation/cleanup outcome, final facts when known |
+| `cancel` | Exactly one of `id` or `all: true`, optional short reason | Stop requested or confirmed, escalation/cleanup outcome, final facts when known |
+| `ignore` | Exactly one of `id` or `all: true` | Leave active work running, persist `notify: off`, and suppress its eventual completion wake regardless of outcome |
+| `wait` | `waitFor: next` or `waitFor: all`, optional `seconds` (default 60, maximum 300) | Wait for the next completion or all jobs active at call time; return completed and still-running records |
 
-Reject extraneous action fields rather than silently ignoring them. Accept only IDs resolved through the owned registry, never arbitrary metadata/log paths supplied by the model. Labels are display text, not selectors or shell fragments. Do not offer `cancel all` as a model convenience in v1.
+Reject extraneous action fields rather than silently ignoring them. Accept only IDs resolved through the owned registry, never arbitrary metadata/log paths supplied by the model. Labels are display text, not selectors or shell fragments. Bulk cancel/ignore requires explicit `all: true`; an omitted selector is rejected rather than silently targeting every job.
 
 Use a single human command, `/bg-tasks`, with list/status/output/cancel subcommands. A compact viewer may follow the plain-text command interface. Do not claim `/tasks`, override the footer/editor, or bind Ctrl+B. No default shortcut is necessary.
 
@@ -194,6 +196,8 @@ Implemented per-job `notify` values:
 - `off`: never send a completion message or wake the model; retain the durable result, status, and output for explicit inspection.
 
 This lets an agent launch a broad confidence suite with `notify: "errors"` after its targeted checks: success stays quiet, while a failure still returns attention to the session. Use `notify: "off"` when the result is purely informational and should never continue the conversation automatically.
+
+When an assistant response with stop reason `stop` would end while an active job still has `notify: always` or `errors`, the extension queues a bounded follow-up instruction. The assistant must explicitly cancel the job, ignore it (persisting `notify: off`), or wait for the next/all active jobs. Explicitly waited and cancelled settlements are returned by the tool and do not also enqueue redundant completion wakes. A bounded wait that times out leaves remaining attended jobs subject to the same turn-end check.
 
 Use `pi.sendMessage` with an identifiable custom type, not `sendUserMessage`. Completion content is untrusted execution data, not a new user request. Default content contains ID, label, exit facts, stop/cleanup state, and log reference; omit raw command-output instructions and large tails.
 

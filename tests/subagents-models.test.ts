@@ -115,3 +115,19 @@ test("branch change during destination consent neither launches nor carries the 
     await expect(h.execute(start)).rejects.toThrow("not authorized for the selected provider");
   } finally { await h.clean(); }
 });
+
+test("start tool exposes permissions independent of origin/model and rejects them on other actions", async () => {
+  const h = await harness();
+  try {
+    expect(h.tool.parameters.properties.permissions.enum).toEqual(["read-only", "implement"]);
+    const start = { action: "start", mode: "fresh", task: "hold", label: "fixture", operation: "permissions" };
+    const run = await h.execute(start);
+    expect(run.permissions).toBe("read-only");
+    expect((await h.execute({ ...start, permissions: "read-only" })).id).toBe(run.id);
+    await expect(h.execute({ ...start, permissions: "implement" })).rejects.toThrow("different intent");
+    const implementation = await h.execute({ ...start, operation: "implementation", permissions: "implement" });
+    expect(implementation.permissions).toBe("implement");
+    expect((await h.execute({ action: "status", id: implementation.id })).permissions).toBe("implement");
+    await expect(h.execute({ action: "list", permissions: "implement" })).rejects.toThrow("not valid");
+  } finally { await h.clean(); }
+});

@@ -50,6 +50,70 @@ test("completion policy can ignore clean success or every result without losing 
   expect(JSON.parse(await readFile(join(successRecord.logPath, "..", "result.json"), "utf8")).notify).toBe("errors");
 });
 
+test("ignore permanently silences active jobs without stopping them", async () => {
+  const jobs = await runtime();
+  const started = await jobs.start({ command: "sleep 0.05; exit 9", cwd: process.cwd() });
+  const [ignored] = await jobs.ignore([started.id]);
+  expect(ignored!.notify).toBe("off");
+  expect(["starting", "running"]).toContain(ignored!.execution);
+  const finished = await settle(jobs, started.id);
+  expect(finished.exitCode).toBe(9);
+  expect(shouldNotifyCompletion(finished)).toBe(false);
+});
+
+test("wait distinguishes the next completion from all jobs active at call time", async () => {
+  const jobs = await runtime();
+  const first = await jobs.start({ command: "sleep 0.03", cwd: process.cwd(), notify: "off" });
+  const second = await jobs.start({ command: "sleep 1", cwd: process.cwd(), notify: "off" });
+  const next = await jobs.wait("next", 2);
+  expect(next).toMatchObject({ waitFor: "next", reason: "completed" });
+  expect(next.completed.map(job => job.id)).toContain(first.id);
+  expect(next.running.map(job => job.id)).toContain(second.id);
+  await jobs.cancel(second.id);
+
+  const third = await jobs.start({ command: "sleep 0.02", cwd: process.cwd(), notify: "off" });
+  const fourth = await jobs.start({ command: "sleep 0.04", cwd: process.cwd(), notify: "off" });
+  const all = await jobs.wait("all", 2);
+  expect(all).toMatchObject({ waitFor: "all", reason: "completed", running: [] });
+  expect(all.completed.map(job => job.id).sort()).toEqual([third.id, fourth.id].sort());
+});
+
+test("wait is bounded and reports jobs that remain active", async () => {
+  const jobs = await runtime();
+  const started = await jobs.start({ command: "sleep 10", cwd: process.cwd(), notify: "off" });
+  const result = await jobs.wait("all", 1);
+  expect(result).toMatchObject({ waitFor: "all", reason: "timeout", completed: [] });
+  expect(result.running.map(job => job.id)).toEqual([started.id]);
+  await jobs.cancel(started.id);
+});
+
+test("turn end prompts for a disposition, and ignore all clears the gate", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bg-tasks-extension-test-")); roots.push(root);
+  const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+  const events: Record<string, Function> = {}, sent: Array<{ message: any; options: any }> = [];
+  let tool: any;
+  const pi: any = {
+    on: (name: string, fn: Function) => events[name] = fn, registerTool: (value: any) => tool = value,
+    registerCommand() {}, appendEntry() {}, sendMessage: (message: any, options: any) => sent.push({ message, options }),
+  };
+  const ctx: any = { cwd: root, mode: "tui", hasUI: false, sessionManager: { getSessionId: () => "fixture" } };
+  try {
+    bgTasks(pi); await events.session_start({}, ctx);
+    await tool.execute("start", { action: "start", command: "sleep 10" }, undefined, undefined, ctx);
+    await events.turn_end({ message: { role: "assistant", stopReason: "stop" } }, ctx);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.message.content).toContain("cancel them");
+    expect(sent[0]!.message.content).toContain("waitFor=next/all");
+    expect(sent[0]!.options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+    await tool.execute("ignore", { action: "ignore", all: true }, undefined, undefined, ctx);
+    await events.turn_end({ message: { role: "assistant", stopReason: "stop" } }, ctx);
+    expect(sent).toHaveLength(1);
+  } finally {
+    await events.session_shutdown?.({}, ctx);
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+  }
+});
+
 test("background jobs return promptly, retain bounded output, and preserve nonzero exits", async () => {
   const jobs = await runtime();
   const started = await jobs.start({ command: "printf 'alpha\\nbeta\\n'; exit 7", cwd: process.cwd(), label: "fixture" });

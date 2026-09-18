@@ -1,7 +1,7 @@
-# Owned inspect subagents
+# Owned subagents
 
 This is the implemented contract. [The proposal](subagents-proposal.md) remains the
-broader design, not a claim that every planned UI, editing, or lifecycle feature ships.
+broader design, not a claim that every planned UI, worktree, or lifecycle feature ships.
 
 ## For the main agent
 
@@ -17,6 +17,7 @@ continuity, Code Mode, and the task checklist. Nothing launches at registration.
 {"action":"start","mode":"fresh","task":"Independently inspect the cache expiration boundary; cite lines. Do not claim tests ran.","label":"boundary-review","seconds":120}
 {"action":"start","mode":"fork","task":"Trace the lifecycle assumption discussed above.","label":"lifecycle-review","model":"next-smaller"}
 {"action":"start","mode":"fresh","task":"Inspect input validation.","label":"validation","model":"openai-codex/gpt-5.6-luna"}
+{"action":"start","mode":"fresh","permissions":"implement","task":"Implement the input-validation fix in src/validation.ts and its tests. Preserve unrelated changes; run the focused tests and report changed files/results.","label":"validation-fix"}
 {"action":"models"}
 {"action":"checkpoints"}
 {"action":"list"}
@@ -33,6 +34,12 @@ continuity, Code Mode, and the task checklist. Nothing launches at registration.
   `mode`, `task`, and `label` are required. Optional `operation` is an idempotency key;
   otherwise Pi's tool-call ID is used. Same key/same intent returns the existing run,
   including failures; changed intent refuses. It never silently starts a replacement.
+- **Permissions** default to `"read-only"`. Explicit `permissions:"implement"` grants
+  normal coding tools including shell, edits and writes. This is independent of
+  fresh/fork origin and model choice. Task text alone never enables tools. Permissions
+  are fixed for the run, persisted in intent/status, and included in retry identity;
+  changing permissions with the same operation key refuses rather than escalating.
+  Old records/intents with no permissions mean read-only.
 - **Model/provider** defaults to the parent's launch-time model. `model:"self"`
   (alias `"same"`) makes that explicit. `model:"next-smaller"` selects exactly the
   next rung of a human-configured ladder; `model:"provider/id"` selects an exact Pi
@@ -142,9 +149,11 @@ one writer. Do not resume that session expecting its historical data entry to be
 activation grant or an automatically reconstructed fork. Child takeover/resume is not
 implemented.
 
-## Inspect capabilities and limits
+## Permissions and limits
 
-Workers have only `read`, `ls`, literal `grep`, `progress`, `needs_input`, and `report`.
+### Read-only (default)
+
+Read-only workers have only `read`, `ls`, literal `grep`, `progress`, `needs_input`, and `report`.
 No shell, execution tests, edits, recursive spawn, arbitrary extensions, memory,
 continuity, or cross-harness history. Sequential execution plus a separate post-report
 sibling guard prevents extra tools after reporting. The SDK turn-stop hook ends
@@ -160,6 +169,32 @@ filesystem checks. This is a narrow model tool profile and an owned process boun
 **not an OS filesystem/network sandbox**. Trusted SDK/provider code can access its
 configured authentication; those credentials are never worker tool results.
 
+### Implementation (explicit opt-in)
+
+`permissions:"implement"` enables Pi's normal `read`, `ls`, `grep`, `find`, `bash`,
+`edit`, and `write`, plus `progress`, `needs_input`, and `report`. Shell commands can
+run focused tests. The SDK's normal tool limits apply, not the narrow inspect file
+filters below. Parent extensions and memory/continuity/history tools are still absent.
+Fork history-sharing consent remains separate from tool permissions.
+
+**This grants unsandboxed host tool access.** Cwd is a starting directory, not an
+access-control boundary; shell and standard file tools can access outside it. Private
+path restrictions in the worker prompt are behavioral instructions, not enforced
+filesystem isolation for this profile. Only delegate implementation when that access
+is appropriate. There is no additional per-launch human confirmation for this argument.
+
+Workers edit the **shared live checkout immediately**, not an isolated worktree or a
+patch waiting for collection. Assign disjoint file ownership and preserve unrelated
+changes; there is no cross-process edit lock or automatic merge/conflict resolution.
+The prompt requires scope discipline, honest changed-path/check reporting and no
+commits/destructive git operations without explicit assignment authorization. It
+forbids recursive delegation and private-data access. Cancellation/failure does not
+roll back completed or partial changes. Review the actual diff and test results.
+Workers must not launch services or detached background commands; observed worker
+exit is not proof that arbitrary shell-created descendants have exited.
+
+### Common resource bounds
+
 | Resource | Bound |
 |---|---|
 | Concurrent processes | default 4; human `--subagent-limit 0..16` |
@@ -168,8 +203,8 @@ configured authentication; those credentials are never worker tool results.
 | Output per response | 4096 tokens, additionally capped by model maximum |
 | Context | conservative serialized-byte estimate plus output reserve before each request; provider tokenizer can differ |
 | Assignment / repository instructions | 32 KiB each; overflow refused |
-| Read | regular UTF-8 file <=1 MiB; line paging, <=16 KiB output |
-| Search | literal query; <=2000 entries/8 MiB scanned/80 matches; large directories refuse |
+| Read (read-only profile) | regular UTF-8 file <=1 MiB; line paging, <=16 KiB output |
+| Search (read-only profile) | literal query; <=2000 entries/8 MiB scanned/80 matches; large directories refuse |
 | Public event journal | <=8 MiB per run; 16 KiB pages; oversized events explicitly clipped |
 | Structured report | <=8 KiB |
 | Run history | <=128 records per owning session; no automatic pruning |
@@ -235,7 +270,10 @@ rejection, deadlines, escalation, idempotency, owner locking, mailbox provisioni
 retirement, and model-free bounded UI. A real parent SDK fixture checks provider-bound
 message-prefix preservation across ordinary turns, tools and reload, missing-hook
 refusal, and no idle wake. These are not measurements of provider cache hits or a
-physical-terminal ergonomics trial.
+physical-terminal ergonomics trial. Permissions regressions exercise fresh and fork
+workers with omitted/explicit read-only and implementation grants, actual write/edit
+and shell checks, post-report write blocking, persisted permissions, retry escalation
+refusal, and stable worker system/tool/message prefixes across tool follow-ups.
 
 The first live `openai-codex/gpt-5.6-sol` fresh-worker smoke test found the synthetic
 boundary bug and correctly reported inspection rather than test execution. It also
@@ -252,7 +290,7 @@ not a billing receipt). Retained local artifacts: `/tmp/pi-subagents-codex-retes
 run `460468f0-f1b1-4d4f-9b53-4e40b069fc88`. The earlier failed trial remains separately
 under `/tmp/pi-subagents-codex-smoke-FNE9ns`; it was not relabelled as passing.
 
-Not implemented: editing/worktrees, arbitrary worker shell tests, child resume/takeover,
+Not implemented: isolated worktrees, OS sandboxing, child resume/takeover,
 survival across reload, a model-delegation allowlist/graph, a full cross-session tree,
 sibling mail, automatic merges/commits, or autonomous continuation. The core fork hook
 is shipped as a separate source patch; installing this package does not patch a bundled

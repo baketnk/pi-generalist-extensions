@@ -17,11 +17,14 @@ const providerConfig: Parameters<ModelRuntime["registerProvider"]>[1] = { api: "
     const tool = (name: string, args: Record<string, unknown>, suffix = "") => ({ type: "toolCall" as const, id: `call-${turns}${suffix}`, name, arguments: args });
     const first = turns === 1;
     const content = launch.task === "silent" ? [{ type: "text" as const, text: "No structured report." }]
+      : launch.task === "implement" && turns === 1 ? [tool("write", { path: "implemented.txt", content: "before\n" })]
+      : launch.task === "implement" && turns === 2 ? [tool("edit", { path: "implemented.txt", edits: [{ oldText: "before", newText: "after" }] })]
+      : launch.task === "implement" && turns === 3 ? [tool("bash", { command: "test \"$(cat implemented.txt)\" = after && printf 'CHECK_PASSED'" })]
       : launch.task === "budget" ? [tool("progress", { text: "more inspection" })]
       : first && launch.task === "block" ? [tool("needs_input", { question: "Which scope?" })]
       : first && launch.task === "forbidden" ? [tool("bash", { command: "touch SHOULD_NOT_EXIST" })]
       : first ? [tool("read", { path: "README.md" })]
-      : [tool("report", { outcome: "completed", summary: "Synthetic SDK report", verification: "Read a fixture file, did not run its tests." }), tool("read", { path: "SHOULD_NOT_EXIST" }, "-sibling")];
+      : [tool("report", { outcome: "completed", summary: "Synthetic SDK report", verification: "Read a fixture file, did not run its tests." }), tool(launch.task === "implement" ? "write" : "read", { path: "SHOULD_NOT_EXIST", ...(launch.task === "implement" ? { content: "unauthorized post-report edit" } : {}) }, "-sibling")];
     const message: AssistantMessage = { role: "assistant", provider: model.provider, api: model.api, model: model.id, timestamp: Date.now(), content,
       stopReason: launch.task === "silent" ? "stop" : "toolUse", usage: { input: 12, output: 3, cacheRead: 1, cacheWrite: 0, totalTokens: 16, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
     const stream = createAssistantMessageEventStream();

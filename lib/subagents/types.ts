@@ -1,6 +1,13 @@
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 
 export const PROTOCOL = 1;
+export type WorkerPermissions = "read-only" | "implement";
+/** Missing permissions on old intents/records always means read-only. */
+export function workerPermissions(value: unknown): WorkerPermissions {
+  if (value === undefined) return "read-only";
+  if (value === "read-only" || value === "implement") return value;
+  throw new Error("Invalid worker permissions; choose read-only or implement.");
+}
 export const LIMITS = { active: 4, activeMax: 16, seconds: 600, secondsMax: 1800, turns: 24, tools: 80,
   outputTokens: 4096, taskBytes: 32768, snapshotBytes: 2 * 1024 * 1024, logBytes: 8 * 1024 * 1024,
   reportBytes: 8192, pageBytes: 16384, runs: 128 } as const;
@@ -17,6 +24,7 @@ export interface WorkerReport {
   summary: string; findings?: string; verification?: string; uncertainties?: string;
 }
 export interface Launch {
+  permissions?: WorkerPermissions;
   version: 1; id: string; operation: string; owner: string; cwd: string; label: string; task: string;
   mode: "fresh" | "fork"; model: { provider: string; id: string }; thinking: ThinkingLevel;
   seconds: number; maxTurns: number; maxTools: number; maxOutputTokens: number;
@@ -26,7 +34,8 @@ export interface Launch {
 }
 export type TaskState = "starting" | "running" | "needs-input" | "reported" | "incomplete" | "failed" | "cancelled" | "timed-out" | "budget-exceeded" | "interrupted";
 export interface RunRecord {
-  version: 1; id: string; operation: string; owner: string; label: string; cwd: string;
+  permissions?: WorkerPermissions;
+  version: 1; id: string; operation: string; owner: string; label: string; taskSummary?: string; cwd: string;
   mode: "fresh" | "fork"; source?: { session: string; anchor: string; digest: string };
   model: Launch["model"]; thinking: ThinkingLevel; createdAt: number; updatedAt: number;
   taskState: TaskState; process: "starting" | "live" | "exited" | "unknown"; cleanup: "pending" | "observed" | "unknown";

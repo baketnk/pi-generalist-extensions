@@ -8,7 +8,7 @@ import bgTasks from "../extensions/bg-tasks.ts";
 
 // Captured before the receipt implementation: deliberately guards the entire
 // existing model-facing tool contract, not merely equality between two new runs.
-const PRE_RECEIPT_TOOL_SHA256 = "485b243a2ae28b2e582404da91043f0d46b437f91323979f21ba1b13ef4dd43c";
+const PRE_RECEIPT_TOOL_SHA256 = "115ab61b2cdd331b6f68372547631542756e459fa503487b740c1008ffe8ef48";
 function harness(manager: SessionManager, cwd: string) {
   const events: Record<string, Function> = {}, messages: unknown[] = [];
   let tool: any, complete!: () => void;
@@ -39,7 +39,7 @@ test("receipts preserve tool-schema bytes and LLM context across completion and 
     const projection = () => JSON.stringify(convertToLlm(manager.buildSessionContext().messages));
     const before = projection();
     expect(h.contract()).toBe(PRE_RECEIPT_TOOL_SHA256);
-    expect(Object.keys(h.events).sort()).toEqual(["session_shutdown", "session_start"]);
+    expect(Object.keys(h.events).sort()).toEqual(["session_shutdown", "session_start", "turn_end"]);
     await h.events.session_start({}, h.ctx);
     const started = await h.call({ action: "start", command: "printf cache-fixture", notify: "off" });
     await h.done;

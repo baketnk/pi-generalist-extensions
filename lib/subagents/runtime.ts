@@ -6,7 +6,7 @@ import { isAbsolute } from "node:path";
 import { atomicJson, plain } from "../switchboard/shared.ts";
 import { RunStore } from "./store.ts";
 import { hash } from "./snapshot.ts";
-import { LIMITS, type Launch, type RunRecord, type TaskState, type WorkerPacket } from "./types.ts";
+import { LIMITS, workerPermissions, type Launch, type RunRecord, type TaskState, type WorkerPacket } from "./types.ts";
 
 export interface RuntimeOptions {
   home: string; owner: string; maxActive?: number; node?: string;
@@ -22,9 +22,10 @@ interface Live {
   logBytes: number; seq: number; terminal: boolean;
 }
 const finished = (record: RunRecord) => !["starting", "running", "needs-input"].includes(record.taskState);
-const intentHash = ({ id: _id, workerFile: _worker, ...launch }: Launch) => hash(launch);
-const safeRecord = (record: RunRecord) => structuredClone(record);
-export const runCard = ({ report, question, ...record }: RunRecord) => ({ ...record, reportAvailable: !!report, questionId: question?.id });
+const intentHash = ({ id: _id, workerFile: _worker, permissions, ...launch }: Launch) => hash({ ...launch, permissions: workerPermissions(permissions) });
+const safeRecord = (record: RunRecord) => structuredClone({ ...record, permissions: workerPermissions(record.permissions) });
+export const runCard = ({ report, question, ...record }: RunRecord) => ({ ...record, permissions: workerPermissions(record.permissions), reportAvailable: !!report, questionId: question?.id });
+const taskSummary = (task: string) => plain(task).replace(/\s+/g, " ").trim().slice(0, 240);
 
 export class SubagentRuntime {
   readonly store: RunStore;
@@ -68,8 +69,8 @@ export class SubagentRuntime {
     return this.serial(async () => {
       await this.initialize();
       if (this.stopping || generation !== this.generation) throw new Error("Subagent launch invalidated by stop/session change.");
-      if (process.platform !== "linux") throw new Error("Inspect subagents currently require Linux and Node 24+.");
-      const launch: Launch = { ...structuredClone(request), version: 1, owner: this.options.owner, id: randomUUID() };
+      if (process.platform !== "linux") throw new Error("Subagents currently require Linux and Node 24+.");
+      const launch: Launch = { ...structuredClone(request), permissions: workerPermissions(request.permissions), version: 1, owner: this.options.owner, id: randomUUID() };
       for (const [key, value, max] of [["task", launch.task, LIMITS.taskBytes], ["label", launch.label, 160], ["operation", launch.operation, 128]] as const)
         if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value) > max) throw new Error(`Invalid ${key}.`);
       if (launch.cwd !== await realpath(launch.cwd) || !isAbsolute(launch.agentDir)) throw new Error("Canonical root and absolute agent config directory required.");
@@ -87,8 +88,8 @@ export class SubagentRuntime {
       if (this.stopping || generation !== this.generation) throw new Error("Subagent launch invalidated by stop/session change.");
       beforeNewLaunch?.();
       const now = Date.now();
-      const record: RunRecord = { version: 1, id: launch.id, operation: launch.operation, owner: launch.owner, label: plain(launch.label), cwd: launch.cwd,
-        mode: launch.mode, source: launch.snapshot && { session: launch.snapshot.session, anchor: launch.snapshot.anchor, digest: launch.snapshot.digest },
+      const record: RunRecord = { version: 1, id: launch.id, operation: launch.operation, owner: launch.owner, label: plain(launch.label), taskSummary: taskSummary(launch.task), cwd: launch.cwd,
+        mode: launch.mode, permissions: launch.permissions, source: launch.snapshot && { session: launch.snapshot.session, anchor: launch.snapshot.anchor, digest: launch.snapshot.digest },
         model: launch.model, thinking: launch.thinking, createdAt: now, updatedAt: now, taskState: "starting", process: "starting", cleanup: "pending",
         turns: 0, tools: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } };
       // Intent and visible starting record precede all external effects.

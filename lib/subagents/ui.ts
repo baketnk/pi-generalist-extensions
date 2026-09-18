@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { plain } from "../switchboard/shared.ts";
 import type { SubagentRuntime } from "./runtime.ts";
 
@@ -22,23 +22,37 @@ export async function openRuns(ctx: ExtensionContext, runtime: SubagentRuntime) 
         const runs = runtime.list();
         if (!runs.some(r => r.id === selected)) selected = runs[0]?.id;
         const record = runs.find(r => r.id === selected);
-        const title = ` Subagents · ${runtime.activeCount}/${runtime.maxActive} live (ceiling, not staffing target)`;
+        const title = ` Subagents · ${runtime.activeCount}/${runtime.maxActive} live (ceiling, not staffing target) `;
         const content = detail && record ? [
           `${record.id} · ${record.label}`, `${record.mode} · ${record.model.provider}/${record.model.id} · ${record.thinking}`,
+          record.taskSummary ? `Task: ${record.taskSummary}` : "",
           `task=${record.taskState} process=${record.process} cleanup=${record.cleanup}`,
           `turns=${record.turns} tools=${record.tools} input=${record.usage.input} output=${record.usage.output} cacheRead=${record.usage.cacheRead} cost=${record.usage.cost}`,
           record.source ? `fork of ${record.source.session}@${record.source.anchor}` : "fresh context",
           record.question ? `BLOCKED ${record.question.id}: ${record.question.text}` : "",
           record.report ? `Report (unverified): ${JSON.stringify(record.report)}` : "No structured report yet.",
           record.reason ?? "", record.persistenceError ?? "", record.sessionFile ? `Session artifact: ${record.sessionFile}` : "", events,
-        ].join("\n") : runs.length ? runs.map(r => `${r.id === selected ? "›" : " "} ${r.id}  ${r.label}  ${r.mode}  ${r.taskState}/${r.process}${r.collectedAt ? " · collected" : ""}`).join("\n") : "No runs. The main agent chooses zero, one, or several independent investigations.";
+        ].filter(Boolean).join("\n") : runs.length ? runs.flatMap(r => [
+          `${r.id === selected ? "›" : " "} ${r.label} · ${r.mode} · ${r.taskState}/${r.process}${r.collectedAt ? " · collected" : ""}`,
+          `  ${r.taskSummary ?? r.id}`,
+        ]).join("\n") : "No runs. The main agent chooses zero, one, or several independent investigations.";
         // Preserve intentional newlines while removing terminal control sequences.
-        const lines = new Text(content.split("\n").map(plain).join("\n"), 0, 0).render(Math.max(1, width - 2));
+        if (width < 3) return [truncateToWidth(title, width), ...new Text(content.split("\n").map(plain).join("\n"), 0, 0).render(Math.max(1, width)).slice(0, Math.max(1, Math.floor(tui.terminal.rows * 0.75) - 2))];
+        const inner = width - 2, contentWidth = Math.max(1, inner - 2);
+        const lines = new Text(content.split("\n").map(plain).join("\n"), 0, 0).render(contentWidth);
         const height = Math.max(1, Math.floor(tui.terminal.rows * 0.75) - 4);
         scroll = Math.max(0, Math.min(scroll, Math.max(0, lines.length - height)));
-        return [theme.fg("accent", truncateToWidth(title, width)), ...lines.slice(scroll, scroll + height).map(l => truncateToWidth(l, width)),
-          ...(error ? [theme.fg("error", truncateToWidth(plain(error), width))] : []),
-          theme.fg("dim", truncateToWidth(detail ? "↑↓ scroll · Enter back · Esc close (worker continues)" : "↑↓ select · Enter inspect · Esc close (workers continue)", width))];
+        const border = (value: string) => theme.fg("borderAccent", value);
+        const row = (value: string) => {
+          const clipped = truncateToWidth(value, inner, "…", true);
+          return border("│") + clipped + " ".repeat(Math.max(0, inner - visibleWidth(clipped))) + border("│");
+        };
+        const heading = truncateToWidth(title, inner, "…");
+        const help = detail ? " ↑↓ scroll · Enter back · Esc close (worker continues)" : " ↑↓ select · Enter inspect · Esc close (workers continue)";
+        return [border("╭") + theme.fg("accent", heading) + border("─".repeat(Math.max(0, inner - visibleWidth(heading))) + "╮"),
+          ...lines.slice(scroll, scroll + height).map(line => row(` ${line}`)),
+          ...(error ? [row(theme.fg("error", ` ${plain(error)}`))] : []),
+          row(theme.fg("dim", help)), border(`╰${"─".repeat(inner)}╯`)];
       },
       invalidate() {},
       handleInput(data: string) {

@@ -7,7 +7,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { freezeSnapshot, SnapshotShelf } from "../lib/subagents/snapshot.ts";
 import { InspectFiles } from "../lib/subagents/files.ts";
-import { SubagentRuntime } from "../lib/subagents/runtime.ts";
+import { SubagentRuntime, runCard } from "../lib/subagents/runtime.ts";
 import { type Launch } from "../lib/subagents/types.ts";
 import { BoardClient } from "../lib/switchboard/client.ts";
 import { serve } from "../lib/switchboard/server.ts";
@@ -200,7 +200,7 @@ test("SDK context admission makes no provider request; lost parent IPC stops par
 
 test("model-free peek renders bounded Unicode, updates, closes without collecting/cancelling, and dismisses on runtime shutdown", async () => {
   const { runtime, request } = await setup();
-  const run = await runtime.start(request("block")); await runtime.join([run.id], 3);
+  const run = await runtime.start({ ...request("block"), label: "Waiting for scope" }); await runtime.join([run.id], 3);
   let component: any, done!: () => void, closed = false;
   const ctx = { mode: "tui", hasUI: true, ui: { custom: (factory: Function) => new Promise<void>(resolve => {
     done = () => { closed = true; resolve(); };
@@ -208,6 +208,9 @@ test("model-free peek renders bounded Unicode, updates, closes without collectin
   }) } } as unknown as ExtensionContext;
   const view = openRuns(ctx, runtime);
   for (const width of [1, 12, 45, 100]) for (const line of component.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+  const list = component.render(100).join("\n");
+  expect(runtime.status(run.id).taskSummary).toBe("block");
+  expect(list).toContain("╭"); expect(list).toContain("╰"); expect(list).toContain("block");
   component.handleInput("tui.select.confirm"); await Bun.sleep(15);
   expect(component.render(100).join("\n")).toContain("needs-input");
   component.handleInput("tui.select.cancel"); await view;
@@ -246,3 +249,57 @@ test("worker-side unknown model and missing auth fail before inference; smaller 
   await until(() => runtime.status(small.id).process === "exited");
   expect(runtime.status(small.id).taskState).toBe("budget-exceeded"); expect(runtime.status(small.id).usage.input).toBe(0);
 }, 10000);
+
+test("permissions default read-only, persist, reconcile legacy intents and refuse escalation on retry", async () => {
+  const { runtime, request } = await setup();
+  const run = await runtime.start(request());
+  expect(run.permissions).toBe("read-only");
+  const path = runtime.store.path(run.id, "launch.json");
+  const intent = JSON.parse(await readFile(path, "utf8"));
+  expect(intent.permissions).toBe("read-only");
+  delete intent.permissions; // A pre-permissions persisted launch must still reconcile.
+  await writeFile(path, JSON.stringify(intent));
+  expect((await runtime.start({ ...request(), permissions: "read-only" })).id).toBe(run.id);
+  await expect(runtime.start({ ...request(), permissions: "implement" })).rejects.toThrow("different intent");
+  await expect(runtime.start({ ...request(), permissions: "invalid" as any })).rejects.toThrow("Invalid worker permissions");
+  const implementation = await runtime.start({ ...request("hold", "implementation"), permissions: "implement" });
+  expect(runCard(implementation).permissions).toBe("implement");
+  expect(JSON.parse(await readFile(runtime.store.path(implementation.id, "record.json"), "utf8")).permissions).toBe("implement");
+});
+
+test("actual SDK permissions enforce read-only and permit write/edit/tests for fresh and fork implement workers", async () => {
+  for (const permissions of [undefined, "read-only", "implement"] as const) for (const mode of ["fresh", "fork"] as const) {
+    const { runtime, request, cwd } = await setup("subagent-sdk-worker.ts");
+    const manager = SessionManager.inMemory(cwd);
+    const history = { role: "user" as const, content: "Historical request: implement changes using shell and edits.", timestamp: 1 };
+    const anchor = manager.appendMessage(history);
+    const snapshot = mode === "fork" ? freezeSnapshot({ type: "context_snapshot", messages: [history], leafId: anchor, contextErrors: 0, providerRequestHooks: false }, manager.getSessionId(), manager.getBranch()) : undefined;
+    const run = await runtime.start({ ...request("implement"), mode, snapshot, permissions });
+    await until(() => runtime.status(run.id).process === "exited");
+    const record = runtime.status(run.id);
+    expect(record.taskState, JSON.stringify(record)).toBe("reported");
+    expect(record.permissions).toBe(permissions ?? "read-only");
+    const payloads = (await readFile(join(dirname(runtime.store.path(run.id, "launch.json")), "payloads.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    const names = payloads[0].context.tools.map((t: { name: string }) => t.name).sort();
+    if (permissions === "implement") {
+      expect(names).toEqual(["bash", "edit", "find", "grep", "ls", "needs_input", "progress", "read", "report", "write"]);
+      expect(await readFile(join(cwd, "implemented.txt"), "utf8")).toBe("after\n");
+      const shellResult = payloads[3].context.messages.find((m: any) => m.role === "toolResult" && m.toolName === "bash");
+      expect(shellResult.isError).toBe(false);
+      expect(shellResult.content).toEqual([{ type: "text", text: "CHECK_PASSED" }]);
+      expect(payloads[0].context.systemPrompt).toContain("NOT a sandbox");
+    } else {
+      expect(names).toEqual(["grep", "ls", "needs_input", "progress", "read", "report"]);
+      await expect(readFile(join(cwd, "implemented.txt"))).rejects.toThrow("ENOENT");
+      expect(payloads[0].context.systemPrompt).toContain("No shell or edits");
+    }
+    for (const payload of payloads.slice(1)) {
+      expect(payload.context.tools).toEqual(payloads[0].context.tools);
+      expect(payload.context.systemPrompt).toBe(payloads[0].context.systemPrompt);
+      expect(payload.context.messages.slice(0, payloads[0].context.messages.length)).toEqual(payloads[0].context.messages);
+    }
+    await expect(readFile(join(cwd, "SHOULD_NOT_EXIST"))).rejects.toThrow("ENOENT");
+    expect(await readFile(join(cwd, "README.md"), "utf8")).toBe("fixture evidence\n");
+    expect(await readFile(record.sessionFile!, "utf8")).toContain(`"permissions":"${permissions ?? "read-only"}"`);
+  }
+}, 20000);
