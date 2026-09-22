@@ -7,6 +7,7 @@ import evidence from "./evidence.ts";
 import continuity from "./continuity.ts";
 import tasks from "./tasks.ts";
 import questions from "./questions.ts";
+import toolFeedback from "./tool-feedback.ts";
 import applyPatch from "./apply-patch.ts";
 import { registerGeneralistSettings } from "./generalist-settings.ts";
 import { registerSessionSetup } from "../lib/session-setup.ts";
@@ -31,4 +32,5 @@ export default function generalist(pi: ExtensionAPI) {
   continuity(pi);
   tasks(pi);
   questions(pi);
+  toolFeedback(pi);
 }
