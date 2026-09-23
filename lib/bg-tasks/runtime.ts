@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, mkdir, open, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { captureSource, type SourceIdentity } from "./source.ts";
@@ -42,7 +42,7 @@ interface LiveJob {
   timer?: ReturnType<typeof setTimeout>; stopping?: Promise<void>; settling?: Promise<void>;
   write: Promise<void>; done: Promise<void>; resolveDone: () => void;
   closed: Promise<void>; resolveClosed: () => void; streamsClosed: boolean;
-  acceptingOutput: boolean; reservedBytes: number;
+  acceptingOutput: boolean; reservedBytes: number; settled: boolean;
 }
 
 function copy(record: JobRecord): JobRecord { return { ...record, limits: { ...record.limits }, receipt: record.receipt ? { ...record.receipt } : undefined }; }
@@ -56,7 +56,6 @@ function parseCursor(id: string, value: string | undefined): number {
 function rendered(text: string): string {
   return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
-function active(record: Pick<JobRecord, "execution">): boolean { return record.execution === "starting" || record.execution === "running"; }
 
 /** Linux-only, session-bound finite commands. The caller owns lifecycle teardown. */
 export class BackgroundJobRuntime {
@@ -69,7 +68,7 @@ export class BackgroundJobRuntime {
     if (process.platform !== "linux") throw new Error("bg_tasks start is currently supported only on Linux.");
     if (this.closed) throw new Error("Background-job runtime is shutting down.");
     if (!options.command.trim() || options.command.length > 16_384 || /\0/.test(options.command)) throw new Error("command must be non-empty text up to 16 KiB.");
-    if ([...this.jobs.values()].filter(job => active(job.record)).length >= 4) throw new Error("At most four background jobs may run in this session runtime.");
+    if (this.pending().length >= 4) throw new Error("At most four background jobs may run in this session runtime.");
     signal?.throwIfAborted();
     const cwd = await realpath(options.cwd);
     if (!(await stat(cwd)).isDirectory()) throw new Error("cwd must resolve to an existing directory.");
@@ -101,7 +100,7 @@ export class BackgroundJobRuntime {
     const done = new Promise<void>(resolve => { resolveDone = resolve; });
     let resolveClosed!: () => void;
     const closed = new Promise<void>(resolve => { resolveClosed = resolve; });
-    const live: LiveJob = { record, child, source, write: Promise.resolve(), done, resolveDone, closed, resolveClosed, streamsClosed: false, acceptingOutput: true, reservedBytes: 0 };
+    const live: LiveJob = { record, child, source, write: Promise.resolve(), done, resolveDone, closed, resolveClosed, streamsClosed: false, acceptingOutput: true, reservedBytes: 0, settled: false };
     this.jobs.set(id, live);
     const append = (chunk: Buffer) => {
       if (!live.acceptingOutput) return;
@@ -145,15 +144,16 @@ export class BackgroundJobRuntime {
   }
 
   list(): JobRecord[] { return [...this.jobs.values()].map(job => copy(job.record)).sort((a, b) => b.createdAt - a.createdAt); }
+  /** Includes exited processes whose output/receipt is still settling. */
+  pending(): JobRecord[] { return [...this.jobs.values()].filter(job => !job.settled).map(job => copy(job.record)); }
   status(id: string): JobRecord { const job = this.jobs.get(id); if (!job) throw new Error("Unknown or no-longer-live background job ID."); return copy(job.record); }
 
-  /** Permanently suppress completion delivery for selected active jobs without stopping them. */
+  /** Permanently suppress delivery for selected jobs, including unsent settled results. */
   async ignore(ids: readonly string[]): Promise<JobRecord[]> {
     const selected = ids.map(id => {
       const job = this.jobs.get(id); if (!job) throw new Error("Unknown or no-longer-live background job ID."); return job;
     });
     await Promise.all(selected.map(async job => {
-      if (!active(job.record)) return;
       job.record.notify = "off";
       await this.writeState(job.record, join(this.root, this.owner, job.record.id));
     }));
@@ -165,7 +165,7 @@ export class BackgroundJobRuntime {
     if (waitFor !== "next" && waitFor !== "all") throw new Error("waitFor must be next or all.");
     if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) throw new Error("seconds must be an integer from 1 to 300.");
     signal?.throwIfAborted();
-    const selected = [...this.jobs.values()].filter(job => active(job.record));
+    const selected = [...this.jobs.values()].filter(job => !job.settled);
     if (!selected.length) return { waitFor, reason: "completed", completed: [], running: [] };
     const completion = waitFor === "all"
       ? Promise.all(selected.map(job => job.done)).then(() => "completed" as const)
@@ -187,8 +187,8 @@ export class BackgroundJobRuntime {
     }
     return {
       waitFor, reason,
-      completed: selected.filter(job => !active(job.record)).map(job => copy(job.record)),
-      running: selected.filter(job => active(job.record)).map(job => copy(job.record)),
+      completed: selected.filter(job => job.settled).map(job => copy(job.record)),
+      running: selected.filter(job => !job.settled).map(job => copy(job.record)),
     };
   }
 
@@ -197,16 +197,28 @@ export class BackgroundJobRuntime {
     if (!Number.isInteger(limit) || limit < 1 || limit > PAGE_MAX_BYTES) throw new Error(`limit must be an integer from 1 to ${PAGE_MAX_BYTES}.`);
     await job.write.catch(() => {});
     if (job.record.outputError) throw new Error(`Job output capture failed: ${job.record.outputError}`);
-    const bytes = await readFile(job.record.logPath).catch(error => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("Job output log is missing; retained output is unavailable, not empty.");
-      throw error;
-    });
     const retained = job.record.retainedBytes;
     let start = tail ? Math.max(0, retained - limit) : parseCursor(id, value);
     const gap = start > retained ? "Cursor is beyond retained output." : undefined;
     if (start > retained) start = retained;
     const end = Math.min(retained, start + limit);
-    return { text: rendered(bytes.subarray(start, end).toString("utf8")), start, end, retainedBytes: retained, nextCursor: end < retained ? cursor(id, end) : undefined, gap };
+    // Read only the requested page, not a potentially 64 MiB log for every hint.
+    const log = await open(job.record.logPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(error => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("Job output log is missing; retained output is unavailable, not empty.");
+      throw error;
+    });
+    try {
+      const info = await log.stat();
+      if (!info.isFile() || info.size < retained) throw new Error("Job output log is not a regular file or is shorter than retained output.");
+      const bytes = Buffer.alloc(end - start);
+      let offset = 0;
+      while (offset < bytes.length) {
+        const { bytesRead } = await log.read(bytes, offset, bytes.length - offset, start + offset);
+        if (!bytesRead) throw new Error("Job output log changed while reading; output is unavailable.");
+        offset += bytesRead;
+      }
+      return { text: rendered(bytes.toString("utf8")), start, end, retainedBytes: retained, nextCursor: end < retained ? cursor(id, end) : undefined, gap };
+    } finally { await log.close(); }
   }
 
   async cancel(id: string, reason: StopReason = "user_cancel"): Promise<JobRecord> {
@@ -220,7 +232,9 @@ export class BackgroundJobRuntime {
 
   private async stop(live: LiveJob, reason: StopReason): Promise<void> {
     const { record, child } = live; record.stopReason ??= reason; record.cleanup = "pending";
-    await this.writeState(record, join(this.root, this.owner, record.id));
+    // Metadata failure must never prevent termination of the owned process.
+    try { await this.writeState(record, join(this.root, this.owner, record.id)); }
+    catch (error) { record.persistenceError = String(error).slice(0, 2000); }
     const pid = child.pid;
     if (!pid) { record.cleanup = "incomplete"; return; }
     try { process.kill(-pid, "SIGTERM"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") record.cleanup = "incomplete"; }
@@ -252,6 +266,7 @@ export class BackgroundJobRuntime {
         if (live.record.receipt?.state === "pending") live.record.receipt = { ...live.record.receipt, state: "error", error: live.record.persistenceError };
       } finally {
         if (drainTimer) clearTimeout(drainTimer);
+        live.settled = true;
         live.resolveDone();
       }
       try { this.onComplete?.(copy(live.record)); }

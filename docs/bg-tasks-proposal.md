@@ -4,6 +4,11 @@ Status: **Linux-first, session-bound MVP implemented**. This document still desc
 
 Related: [tooling roadmap](ROADMAP.md).
 
+**Current completion delivery:** see [background completion delivery](bg-tasks-delivery.md).
+The implemented v2 batches unsent completions at model boundaries, uses bounded
+output packets, and debounces idle wakes. The historical per-job `followUp`
+proposal below is not the current delivery implementation.
+
 Implemented receipt behavior and its cache boundary are documented separately in
 [execution receipts](execution-receipts.md). The broader lifecycle/retention design
 below remains a proposal where it exceeds that runtime contract.

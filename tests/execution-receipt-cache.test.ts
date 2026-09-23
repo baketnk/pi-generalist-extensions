@@ -6,9 +6,9 @@ import { join } from "node:path";
 import { convertToLlm, SessionManager } from "@earendil-works/pi-coding-agent";
 import bgTasks from "../extensions/bg-tasks.ts";
 
-// Captured before the receipt implementation: deliberately guards the entire
-// existing model-facing tool contract, not merely equality between two new runs.
-const PRE_RECEIPT_TOOL_SHA256 = "115ab61b2cdd331b6f68372547631542756e459fa503487b740c1008ffe8ef48";
+// Intentional v2 contract change: completion tails/coalescing guidance. This
+// baseline still guards the complete static contract against per-job mutation.
+const COMPLETION_V2_TOOL_SHA256 = "57e03b6972c9ee081f663310ac26a2bb5dd6f6b6f5984d4c47869186d68ca33e";
 function harness(manager: SessionManager, cwd: string) {
   const events: Record<string, Function> = {}, messages: unknown[] = [];
   let tool: any, complete!: () => void;
@@ -38,14 +38,14 @@ test("receipts preserve tool-schema bytes and LLM context across completion and 
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
     const projection = () => JSON.stringify(convertToLlm(manager.buildSessionContext().messages));
     const before = projection();
-    expect(h.contract()).toBe(PRE_RECEIPT_TOOL_SHA256);
-    expect(Object.keys(h.events).sort()).toEqual(["session_shutdown", "session_start", "turn_end"]);
+    expect(h.contract()).toBe(COMPLETION_V2_TOOL_SHA256);
+    expect(Object.keys(h.events).sort()).toEqual(["agent_end", "agent_settled", "agent_start", "before_agent_start", "session_shutdown", "session_start", "session_tree", "turn_end"]);
     await h.events.session_start({}, h.ctx);
     const started = await h.call({ action: "start", command: "printf cache-fixture", notify: "off" });
     await h.done;
     expect(projection()).toBe(before);
     expect(h.messages).toEqual([]); // No new receipt wake/context injection.
-    expect(h.contract()).toBe(PRE_RECEIPT_TOOL_SHA256);
+    expect(h.contract()).toBe(COMPLETION_V2_TOOL_SHA256);
     const status = await h.call({ action: "status", id: started.details.job.id });
     expect(status.content[0].text).toContain("Receipt: recorded");
     expect(status.content[0].text).toContain("sha256=");
@@ -57,7 +57,7 @@ test("receipts preserve tool-schema bytes and LLM context across completion and 
     const reopened = SessionManager.open(manager.getSessionFile()!), restored = harness(reopened, root);
     await restored.events.session_start({}, restored.ctx);
     expect(JSON.stringify(convertToLlm(reopened.buildSessionContext().messages))).toBe(before);
-    expect(restored.contract()).toBe(PRE_RECEIPT_TOOL_SHA256);
+    expect(restored.contract()).toBe(COMPLETION_V2_TOOL_SHA256);
     expect(restored.messages).toEqual([]);
     await restored.events.session_shutdown({}, restored.ctx);
   } finally {

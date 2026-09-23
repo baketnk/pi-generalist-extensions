@@ -87,6 +87,18 @@ test("wait is bounded and reports jobs that remain active", async () => {
   await jobs.cancel(started.id);
 });
 
+test("wait includes exited processes until output and receipts have settled", async () => {
+  const jobs = await runtime();
+  const started = await jobs.start({ command: "(sleep 0.15; printf final-output) & exit 0", cwd: process.cwd(), notify: "off" });
+  for (let i = 0; i < 100 && jobs.status(started.id).execution !== "exited"; i++) await Bun.sleep(1);
+  expect(jobs.status(started.id).execution).toBe("exited");
+  expect(jobs.pending().map(job => job.id)).toContain(started.id);
+  const waited = await jobs.wait("all", 2);
+  expect(waited.completed.map(job => job.id)).toEqual([started.id]);
+  expect(waited.completed[0]?.receipt?.state).toBe("recorded");
+  expect((await jobs.output(started.id)).text).toBe("final-output");
+});
+
 test("turn end prompts for a disposition, and ignore all clears the gate", async () => {
   const root = await mkdtemp(join(tmpdir(), "bg-tasks-extension-test-")); roots.push(root);
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = join(root, "agent");
@@ -104,7 +116,7 @@ test("turn end prompts for a disposition, and ignore all clears the gate", async
     expect(sent).toHaveLength(1);
     expect(sent[0]!.message.content).toContain("cancel them");
     expect(sent[0]!.message.content).toContain("waitFor=next/all");
-    expect(sent[0]!.options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+    expect(sent[0]!.options).toEqual({ deliverAs: "steer", triggerTurn: true });
     await tool.execute("ignore", { action: "ignore", all: true }, undefined, undefined, ctx);
     await events.turn_end({ message: { role: "assistant", stopReason: "stop" } }, ctx);
     expect(sent).toHaveLength(1);
@@ -148,4 +160,16 @@ test("session shutdown terminates owned jobs and records shutdown cleanup", asyn
   expect(finished.stopReason).toBe("session_shutdown");
   expect(["confirmed", "incomplete"]).toContain(finished.cleanup);
   expect(finished.execution).toBe("exited");
+});
+
+test("shutdown still signals owned processes when metadata storage fails", async () => {
+  const jobs = await runtime();
+  const started = await jobs.start({ command: "sleep 1", cwd: process.cwd(), notify: "off" });
+  await Bun.sleep(20);
+  await rm(join(started.logPath, ".."), { recursive: true, force: true });
+  await jobs.shutdown();
+  const finished = jobs.status(started.id);
+  expect(finished.execution).toBe("exited");
+  expect(finished.stopReason).toBe("session_shutdown");
+  expect(finished.persistenceError).toBeDefined();
 });
