@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-test("real parent SDK: agent controls, missing-hook refusal, prefix preservation across tools/users/reload, no idle wake", async () => {
+test("real parent SDK: forced model policy and provider prefix survive tools, users, and reload", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-subagents-parent-"));
   await writeFile(join(root, "README.md"), "Synthetic evidence only.\n");
   try {

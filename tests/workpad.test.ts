@@ -97,6 +97,28 @@ test("2/4/8 KiB write caps count UTF-8 bytes; historical 8 KiB reads remain avai
   } finally { f.clean(); }
 });
 
+test("oversized writes report received UTF-8 bytes, cap and excess with headroom guidance", async () => {
+  const f = fixture();
+  try {
+    const h = harness(f);
+    const content = "明".repeat(1400); // 1400 characters, 4200 UTF-8 bytes
+    const message = "Active page received 4200 UTF-8 bytes; limit 4096 (excess: 104 UTF-8 bytes). Shorten it by roughly 1.5–2× the excess to leave headroom rather than trimming to the exact limit. Preserve key information by summarizing, not shaving individual characters. Alternatively, select a larger cap if available (no automatic truncation).";
+    await expect(h.call({ action: "create", id: "too-large", content })).rejects.toThrow(message);
+    expect(existsSync(f.root)).toBe(false);
+    f.store.create("task", "Keep this revision.");
+    await h.call({ action: "attach", id: "task" });
+    await expect(h.call({ action: "update", expectedRevision: 1, content })).rejects.toThrow(message);
+    expect(f.store.read("task")).toMatchObject({ revision: 1, content: "Keep this revision." });
+    expect(readdirSync(join(f.store.directory, "task"))).toEqual(["00000001.md"]);
+    for (const cap of [2048, 4096, 8192]) {
+      const store = new WorkpadStore(f.root, f.dir, cap);
+      expect(() => store.create(`over-${cap}`, "x".repeat(cap + 1)))
+        .toThrow(`received ${cap + 1} UTF-8 bytes; limit ${cap} (excess: 1 UTF-8 bytes)`);
+      expect(store.create(`exact-${cap}`, "x".repeat(cap)).content.length).toBe(cap);
+    }
+  } finally { f.clean(); }
+});
+
 test("independent writers cannot both publish the same successor", async () => {
   const f = fixture();
   try {

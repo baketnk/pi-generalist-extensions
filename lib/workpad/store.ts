@@ -12,7 +12,8 @@ const validId = (id: string) => {
 };
 export function validateContent(content: string, maxBytes = PAGE_BYTES) {
   if (!content.trim()) throw new Error("Workpad page cannot be empty.");
-  if (Buffer.byteLength(content, "utf8") > maxBytes) throw new Error(`Active page exceeds ${maxBytes} UTF-8 bytes; shorten it explicitly or select a larger cap (no automatic truncation).`);
+  const receivedBytes = Buffer.byteLength(content, "utf8");
+  if (receivedBytes > maxBytes) throw new Error(`Active page received ${receivedBytes} UTF-8 bytes; limit ${maxBytes} (excess: ${receivedBytes - maxBytes} UTF-8 bytes). Shorten it by roughly 1.5–2× the excess to leave headroom rather than trimming to the exact limit. Preserve key information by summarizing, not shaving individual characters. Alternatively, select a larger cap if available (no automatic truncation).`);
 }
 function directory(path: string, create: boolean) {
   if (create) mkdirSync(path, { recursive: true, mode: 0o700 });

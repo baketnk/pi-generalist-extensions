@@ -144,7 +144,16 @@ export function registerSessionSetup(pi: ExtensionAPI, toggles: Toggles,
   }
 
   pi.on("session_start", async (event, ctx) => {
-    if (ctx.mode !== "tui" || !["startup", "new"].includes(event.reason)) return;
+    if (ctx.mode !== "tui") return;
+    if (event.reason === "reload") {
+      // UI-only: do not append a session entry or change provider context.
+      ctx.ui.notify(`Reloaded UI at ${new Date().toLocaleString(undefined, {
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short", hour12: false,
+      })}`, "info");
+      return;
+    }
+    if (!["startup", "new"].includes(event.reason)) return;
     if (pi.getFlag("no-session-setup") || pi.getFlag("meitan") || pi.getFlag("memory-config") || hasLaunchOverrides(argv)) return;
     // Fresh sessions already contain initial model/thinking entries. Any saved
     // session, conversation, or extension decision should not be reconfigured.

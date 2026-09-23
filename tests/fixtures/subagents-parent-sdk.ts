@@ -6,6 +6,7 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import { createAssistantMessageEventStream, InMemoryCredentialStore, type AssistantMessage } from "@earendil-works/pi-ai";
 import subagents from "../../extensions/subagents.ts";
 import { saveModelConfig } from "../../lib/subagents/models.ts";
+import { SUBAGENT_MODEL_POLICY_ENTRY } from "../../lib/subagents/model-policy.ts";
 
 const root = process.argv[2]!;
 const agentDir = join(root, "config"); await mkdir(agentDir, { mode: 0o700 });
@@ -22,9 +23,11 @@ const loader = new DefaultResourceLoader({ cwd: root, agentDir, settingsManager,
   agentsFilesOverride: () => ({ agentsFiles: [] }), systemPromptOverride: () => "Synthetic parent. No personal context.",
   extensionFactories: [pi => subagents(pi, { home: join(root, "runs"), workerEntry: fileURLToPath(new URL("./subagent-sdk-worker.ts", import.meta.url)) })] });
 await loader.reload();
-const { session } = await createAgentSession({ cwd: root, agentDir, modelRuntime, model, thinkingLevel: "off", settingsManager, resourceLoader: loader, sessionManager: SessionManager.create(root, join(root, "sessions")), tools: ["subagents"] });
+const sessionManager = SessionManager.create(root, join(root, "sessions"));
+const { session } = await createAgentSession({ cwd: root, agentDir, modelRuntime, model, thinkingLevel: "off", settingsManager, resourceLoader: loader, sessionManager, tools: ["subagents"] });
 const errors: string[] = [];
 await session.bindExtensions({ mode: "print", onError: e => errors.push(e.error) });
+sessionManager.appendCustomEntry(SUBAGENT_MODEL_POLICY_ENTRY, "next-smaller");
 let turn = 0, run = "";
 const payloads: any[] = [];
 const stream: typeof session.agent.streamFunction = (_model, context) => {
@@ -43,6 +46,7 @@ session.agent.streamFunction = stream;
 const lastResult = () => session.messages.filter(m => m.role === "toolResult").at(-1)!;
 try {
   await session.prompt("Try the explicit fork on this unpatched SDK.");
+  assert.match(payloads[0].systemPrompt, /human-locked to next-smaller; you cannot change it/);
   assert.ok(lastResult(), JSON.stringify({ errors, messages: session.messages }));
   assert.equal(lastResult().isError, true); assert.match(JSON.stringify(lastResult()), /context_snapshot/);
   await session.prompt("Start an independent fresh review; parent can work meanwhile.");

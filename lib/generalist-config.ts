@@ -1,6 +1,8 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { modelRef } from "./subagents/models.ts";
+import { validLoopLimit } from "./loop-config.ts";
 
 export type BackgroundModel = { provider: string; model: string };
 
@@ -19,9 +21,17 @@ export type GeneralistDefaults = {
   patch?: boolean;
   icons?: boolean;
   backgroundModel?: BackgroundModel | null;
+  forcedSubagentModel?: string | null;
+  loopLimit?: number;
 };
 
 export const generalistConfigPath = (agentDir = getAgentDir()) => join(agentDir, "extensions", "generalist-settings.json");
+
+function validForcedSubagentModel(value: unknown): value is string | null {
+  if (value === null || value === "self" || value === "next-smaller") return true;
+  if (typeof value !== "string") return false;
+  try { modelRef(value); return true; } catch { return false; }
+}
 
 function valid(value: unknown): value is GeneralistDefaults {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -30,7 +40,9 @@ function valid(value: unknown): value is GeneralistDefaults {
     && (v.memory === undefined || typeof v.memory === "boolean")
     && (v.patch === undefined || typeof v.patch === "boolean") && (v.icons === undefined || typeof v.icons === "boolean")
     && (v.backgroundModel === undefined || v.backgroundModel === null || validBackgroundModel(v.backgroundModel))
-    && Object.keys(v).every(key => ["version", "meitan", "memory", "output", "patch", "icons", "backgroundModel"].includes(key));
+    && (v.forcedSubagentModel === undefined || validForcedSubagentModel(v.forcedSubagentModel))
+    && (v.loopLimit === undefined || validLoopLimit(v.loopLimit))
+    && Object.keys(v).every(key => ["version", "meitan", "memory", "output", "patch", "icons", "backgroundModel", "forcedSubagentModel", "loopLimit"].includes(key));
 }
 
 /** Global defaults explicitly saved from the Generalist TUI; branch entries still take precedence. */

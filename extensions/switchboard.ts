@@ -181,13 +181,19 @@ export default function switchboard(pi: ExtensionAPI, options: { paths?: Paths; 
       if (target) line += ` ${theme.fg("muted", plain(target))}`;
       return new Text(line, 0, 0);
     },
-    renderResult(result, _options, theme) {
+    renderResult(result, _options, theme, context) {
       const details = result.details as SwitchboardDetails | undefined;
       if (!details) {
         const fallback = result.content.find(item => item.type === "text");
         return new Text(theme.fg("toolOutput", fallback?.type === "text" ? fallback.text : ""), 0, 0);
       }
-      return new Text(theme.fg("toolOutput", formatSwitchboard(details.action, details.result)), 0, 0);
+      // The receipt intentionally omits the body. Render the already-recorded
+      // outgoing arguments for humans only; don't change model content or fetch mail.
+      let value = details.result;
+      if (!context?.isError && ["send", "reply"].includes(details.action) &&
+          value && typeof value === "object" && "sender" in value && !("body" in value) &&
+          typeof context?.args.body === "string") value = { ...value, body: plain(context.args.body) };
+      return new Text(theme.fg("toolOutput", formatSwitchboard(details.action, value)), 0, 0);
     },
   });
   pi.registerCommand("switchboard-reload", {

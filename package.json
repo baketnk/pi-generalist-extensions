@@ -5,7 +5,7 @@
   "type": "module",
   "keywords": ["pi-package"],
   "pi": {
-    "extensions": ["./extensions/generalist.ts", "./extensions/bg-tasks.ts", "./extensions/switchboard.ts", "./extensions/subagents.ts", "./extensions/autocomplete.ts"],
+    "extensions": ["./extensions/generalist.ts", "./extensions/bg-tasks.ts", "./extensions/switchboard.ts", "./extensions/subagents.ts", "./extensions/autocomplete.ts", "./extensions/turn-timestamp.ts"],
     "themes": ["./themes"]
   },
   "scripts": { "test": "bun test", "typecheck": "tsc --noEmit" },

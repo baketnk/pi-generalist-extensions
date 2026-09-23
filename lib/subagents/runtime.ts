@@ -7,6 +7,7 @@ import { atomicJson, plain } from "../switchboard/shared.ts";
 import { RunStore } from "./store.ts";
 import { hash } from "./snapshot.ts";
 import { LIMITS, workerPermissions, type Launch, type RunRecord, type TaskState, type WorkerPacket } from "./types.ts";
+import { RESOURCE_CEILINGS } from "./limits.ts";
 
 export interface RuntimeOptions {
   home: string; owner: string; maxActive?: number; node?: string;
@@ -76,7 +77,7 @@ export class SubagentRuntime {
       if (launch.cwd !== await realpath(launch.cwd) || !isAbsolute(launch.agentDir)) throw new Error("Canonical root and absolute agent config directory required.");
       if (!["fresh", "fork"].includes(launch.mode) || (launch.mode === "fork") !== !!launch.snapshot) throw new Error("Origin must be explicit and match its snapshot.");
       if (Buffer.byteLength(JSON.stringify(launch.instructions)) > LIMITS.taskBytes) throw new Error("Repository instructions exceed the 32 KiB worker handoff bound; no silent truncation.");
-      for (const [value, max] of [[launch.seconds, LIMITS.secondsMax], [launch.maxTurns, LIMITS.turns], [launch.maxTools, LIMITS.tools], [launch.maxOutputTokens, LIMITS.outputTokens]])
+      for (const [value, max] of [[launch.seconds, LIMITS.secondsMax], [launch.maxTurns, RESOURCE_CEILINGS.turns], [launch.maxTools, RESOURCE_CEILINGS.tools], [launch.maxOutputTokens, LIMITS.outputTokens]])
         if (!Number.isInteger(value) || value! < 1 || value! > max!) throw new Error("Invalid worker resource limit.");
       const old = [...this.records.values()].find(r => r.operation === launch.operation);
       if (old) {

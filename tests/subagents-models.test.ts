@@ -1,11 +1,12 @@
 import { test, expect } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createEventBus, SessionManager } from "@earendil-works/pi-coding-agent";
 import subagents from "../extensions/subagents.ts";
 import { loadModelConfig, modelRef, resolveWorkerModel, saveModelConfig, validateModelConfig } from "../lib/subagents/models.ts";
+import { forcedSubagentModel, normalizeForcedSubagentModel } from "../lib/subagents/model-policy.ts";
 
 const ladder = { version: 1 as const, ladder: ["fixture/astra", "fixture/sol", "fixture/terra", "fixture/luna"] };
 test("default/self/same preserve exact parent; explicit identifiers need no parent or ladder", () => {
@@ -39,7 +40,8 @@ async function harness() {
     modelRegistry: { find: (p: string, id: string) => refs.includes(`${p}/${id}`) ? { provider: p, id } : undefined, hasConfiguredAuth: () => true },
     ui: { setStatus() {}, notify() {}, confirm: async () => true } };
   subagents({ on: (event: string, fn: Function) => handlers.set(event, fn), registerCommand: (name: string, cmd: any) => commands.set(name, cmd),
-    registerTool: (t: any) => tool = t, registerFlag() {}, getFlag: (flag: string) => flag === "subagent-forks" ? true : "4", getThinkingLevel: () => "off", events: createEventBus() } as any,
+    registerTool: (t: any) => tool = t, appendEntry: (type: string, data: unknown) => manager.appendCustomEntry(type, data),
+    registerFlag() {}, getFlag: (flag: string) => flag === "subagent-forks" ? true : "4", getThinkingLevel: () => "off", events: createEventBus() } as any,
     { home: join(root, "runs"), workerEntry: fileURLToPath(new URL("./fixtures/subagent-ipc.ts", import.meta.url)) });
   await handlers.get("session_start")!({}, ctx);
   const execute = async (params: any) => JSON.parse((await tool.execute(`call-${Math.random()}`, params, undefined, undefined, ctx)).content[0].text);
@@ -71,6 +73,54 @@ test("tool and human ladder command resolve concrete models, expose availability
     expect((await h.execute({ ...start, operation: "explicit", model: "other-synthetic/small" })).id).toBe(explicit.id);
     await expect(h.execute({ ...start, operation: "new-unavailable", model: "other-synthetic/small" })).rejects.toThrow("unavailable");
     await expect(h.execute({ action: "list", model: "self" })).rejects.toThrow("not valid");
+  } finally { await h.clean(); }
+});
+
+test("saved human limits reach start tool and stay fixed for existing operations", async () => {
+  const h = await harness();
+  try {
+    await h.command("limits 48 160");
+    expect((await h.execute({ action: "list" })).newRunLimits).toEqual({ version: 1, turns: 48, tools: 160 });
+    const start = { action: "start", mode: "fresh", task: "hold", label: "limits", operation: "limits-op" };
+    const run = await h.execute(start);
+    const files = await readdir(join(h.root, "runs"), { recursive: true });
+    const path = files.find(file => file.endsWith(`${run.id}/launch.json`));
+    expect(path).toBeDefined();
+    const launch = JSON.parse(await readFile(join(h.root, "runs", path!), "utf8"));
+    expect([launch.maxTurns, launch.maxTools]).toEqual([48, 160]);
+    await h.command("limits 36 120");
+    await expect(h.execute(start)).rejects.toThrow("different intent");
+    const next = await h.execute({ ...start, operation: "new-limits-op" });
+    expect(next.id).not.toBe(run.id);
+    expect((await h.execute({ action: "list" })).newRunLimits).toEqual({ version: 1, turns: 36, tools: 120 });
+  } finally { await h.clean(); }
+});
+
+test("human model lock is branch-local, enforced, reported, and stated in the model prompt", async () => {
+  const h = await harness();
+  try {
+    expect(normalizeForcedSubagentModel("same")).toBe("self");
+    expect(() => normalizeForcedSubagentModel("bare-model")).toThrow("exact");
+    await h.command("model next-smaller");
+    expect(forcedSubagentModel(h.ctx)).toBe("next-smaller");
+    saveModelConfig(join(h.root, "agent"), { version: 1, ladder: ["synthetic/inspect", "synthetic/small"] });
+
+    const prompt = { systemPrompt: "Stable base prompt.", systemPromptOptions: {} };
+    const promptResult = await h.handlers.get("before_agent_start")!(prompt, h.ctx);
+    expect(promptResult.systemPrompt).toBe(
+      "Stable base prompt.\n\nSubagent model selection is human-locked to next-smaller; you cannot change it. Omit model or pass exactly next-smaller.",
+    );
+
+    const start = { action: "start", mode: "fresh", task: "hold", label: "locked", operation: "locked-op" };
+    const run = await h.execute(start);
+    expect(run.model).toEqual(modelRef("synthetic/small"));
+    await expect(h.execute({ ...start, operation: "override", model: "self" })).rejects.toThrow("cannot override");
+    expect((await h.execute({ action: "models" })).forcedModel).toBe("next-smaller");
+
+    await h.command("model off");
+    expect(forcedSubagentModel(h.ctx)).toBeNull();
+    const unlocked = await h.execute({ ...start, operation: "unlocked", model: "self" });
+    expect(unlocked.model).toEqual(modelRef("synthetic/inspect"));
   } finally { await h.clean(); }
 });
 

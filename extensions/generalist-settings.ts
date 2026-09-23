@@ -1,10 +1,13 @@
-import { getSettingsListTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, getSettingsListTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
 import { BACKGROUND_MODEL_ENTRY, backgroundModel, backgroundModelLabel, configureBackgroundModel } from "../lib/background-model.ts";
 import type { ToggleController } from "../lib/toggle.ts";
 import { requestDashboard } from "../lib/switchboard/dashboard.ts";
 import { OUTPUT_CONFIG_ENTRY, rawJsonOutput } from "../lib/output.ts";
 import { saveGeneralistDefaults, type GeneralistDefaults } from "../lib/generalist-config.ts";
+import { configureForcedSubagentModel, forcedSubagentModel, forcedSubagentModelLabel, setForcedSubagentModel, SUBAGENT_MODEL_POLICY_ENTRY } from "../lib/subagents/model-policy.ts";
+import { loadWorkerLimits, saveWorkerLimits, validateWorkerLimits, RESOURCE_CEILINGS } from "../lib/subagents/limits.ts";
+import { LOOP_LIMIT_ENTRY, loopLimit, validLoopLimit } from "../lib/loop-config.ts";
 
 type FeatureId = "meitan" | "memory" | "output" | "patch" | "icons";
 type Features = Record<"meitan" | "memory", ToggleController> & {
@@ -64,6 +67,30 @@ export function isGeneralistSaveKey(keys: { matches?(data: string, action: strin
   return keys.matches?.(data, "app.models.save") === true || keys.matches?.(data, "app.thinking.save") === true || data === "\x13";
 }
 
+export async function configureWorkerLimits(ctx: ExtensionContext, agentDir = getAgentDir()): Promise<void> {
+  if (!ctx.hasUI) throw new Error("Subagent limits configuration requires TUI or RPC UI.");
+  const current = loadWorkerLimits(agentDir);
+  const turns = await ctx.ui.input(`Max subagent turns (1–${RESOURCE_CEILINGS.turns})`, String(current.turns));
+  if (turns === undefined) return;
+  const tools = await ctx.ui.input(`Max subagent tool calls (1–${RESOURCE_CEILINGS.tools})`, String(current.tools));
+  if (tools === undefined) return;
+  const parse = (value: string) => /^\d+$/.test(value.trim()) ? Number(value.trim()) : NaN;
+  const selected = validateWorkerLimits({ version: 1, turns: parse(turns), tools: parse(tools) });
+  saveWorkerLimits(agentDir, selected);
+  ctx.ui.notify(`New subagent runs: ${selected.turns} turns, ${selected.tools} tool calls. Existing runs are unchanged.`, "info");
+}
+
+export async function configureLoopLimit(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+  if (!ctx.hasUI) throw new Error("Loop limit configuration requires TUI or RPC UI.");
+  const answer = await ctx.ui.input("Default /loop count (1–1000)", String(loopLimit(ctx)));
+  if (answer === undefined) return;
+  const value = answer.trim();
+  const limit = /^\d+$/.test(value) ? Number(value) : NaN;
+  if (!validLoopLimit(limit)) { ctx.ui.notify("Loop count must be an integer from 1 to 1000.", "warning"); return; }
+  pi.appendEntry(LOOP_LIMIT_ENTRY, limit);
+  ctx.ui.notify(`Default /loop count: ${limit}. Ctrl+S in /generalist saves it for new sessions.`, "info");
+}
+
 export function generalistDefaults(features: Features, ctx: ExtensionContext): GeneralistDefaults {
   return {
     version: 1,
@@ -71,13 +98,15 @@ export function generalistDefaults(features: Features, ctx: ExtensionContext): G
     memory: features.memory(),
     output: rawJsonOutput(ctx),
     backgroundModel: backgroundModel(ctx),
+    forcedSubagentModel: forcedSubagentModel(ctx),
+    loopLimit: loopLimit(ctx),
     ...(features.patch ? { patch: features.patch() } : {}),
     ...(features.icons ? { icons: features.icons() } : {}),
   };
 }
 
 /** Unified bundle controls; feature state remains branch-local until Ctrl+S saves global defaults. */
-export function registerGeneralistSettings(pi: ExtensionAPI, features: Features, defaults?: GeneralistDefaults) {
+export function registerGeneralistSettings(pi: ExtensionAPI, features: Features, defaults?: GeneralistDefaults, options: { agentDir?: string } = {}) {
   const persist = (ctx: ExtensionContext) => {
     try {
       saveGeneralistDefaults(generalistDefaults(features, ctx));
@@ -88,12 +117,16 @@ export function registerGeneralistSettings(pi: ExtensionAPI, features: Features,
     if (defaults?.backgroundModel !== undefined && !hasBranchSetting(ctx, BACKGROUND_MODEL_ENTRY)) {
       pi.appendEntry(BACKGROUND_MODEL_ENTRY, defaults.backgroundModel);
     }
+    if (defaults?.forcedSubagentModel !== undefined && !hasBranchSetting(ctx, SUBAGENT_MODEL_POLICY_ENTRY)) {
+      setForcedSubagentModel(pi, defaults.forcedSubagentModel);
+    }
+    if (defaults?.loopLimit !== undefined && !hasBranchSetting(ctx, LOOP_LIMIT_ENTRY)) pi.appendEntry(LOOP_LIMIT_ENTRY, defaults.loopLimit);
     // Output has no controller; saved defaults seed only a branch with no explicit choice.
     if (defaults && !hasBranchSetting(ctx, OUTPUT_CONFIG_ENTRY)) pi.appendEntry(OUTPUT_CONFIG_ENTRY, { rawJson: defaults.output });
   });
   pi.registerCommand("generalist", {
-    description: "Configure Generalist features and output: /generalist [status|meitan|memory|output|patch|icons] [on|off|toggle]; personal|pairing|companion|housekeeping|background|dashboard",
-    getArgumentCompletions: prefix => ["status", ...featureIds(features), "personal", "pairing", "companion", "housekeeping", "background", "dashboard", "on", "off", "toggle"]
+    description: "Configure Generalist features and output: /generalist [status|meitan|memory|output|patch|icons] [on|off|toggle]; personal|pairing|companion|housekeeping|background|subagents|subagent-limits|loop|dashboard",
+    getArgumentCompletions: prefix => ["status", ...featureIds(features), "personal", "pairing", "companion", "housekeeping", "background", "subagents", "subagent-limits", "loop", "dashboard", "on", "off", "toggle"]
       .filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
     handler: async (args, ctx) => {
       const [target, action, ...extra] = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -110,6 +143,9 @@ export function registerGeneralistSettings(pi: ExtensionAPI, features: Features,
       }
       const settings = {
         background: (context: ExtensionContext) => configureBackgroundModel(pi, context),
+        subagents: (context: ExtensionContext) => configureForcedSubagentModel(pi, context),
+        "subagent-limits": (context: ExtensionContext) => configureWorkerLimits(context, options.agentDir ?? getAgentDir()),
+        loop: (context: ExtensionContext) => configureLoopLimit(pi, context),
         dashboard: (context: ExtensionContext) => requestDashboard(pi, context),
         housekeeping: features.memory.configureHousekeeping,
         personal: features.memory.configurePersonal,
@@ -154,6 +190,13 @@ export function registerGeneralistSettings(pi: ExtensionAPI, features: Features,
           });
           items.push({ id: "background", label: "Small/background model", currentValue: backgroundModelLabel(ctx),
             values: [backgroundModelLabel(ctx), "configure…"], description: "Configuration only; no consumers enabled." });
+          items.push({ id: "subagents", label: "Force subagent model", currentValue: forcedSubagentModelLabel(ctx),
+            values: [forcedSubagentModelLabel(ctx), "configure…"], description: "Human lock; the agent cannot override it." });
+          const workerLimits = loadWorkerLimits(options.agentDir ?? getAgentDir());
+          items.push({ id: "subagent-limits", label: "Subagent turn/tool limits", currentValue: `${workerLimits.turns}/${workerLimits.tools}`,
+            values: [`${workerLimits.turns}/${workerLimits.tools}`, "configure…"], description: "Saved immediately; applies to new runs only." });
+          items.push({ id: "loop", label: "Default /loop count", currentValue: String(loopLimit(ctx)),
+            values: [String(loopLimit(ctx)), "configure…"], description: "Branch setting; Ctrl+S saves for new sessions." });
           items.push({ id: "dashboard", label: "Switchboard dashboard", currentValue: "open…", values: ["open…", "open"],
             description: "Model-free registered roster/inbox." });
           const container = new Container();

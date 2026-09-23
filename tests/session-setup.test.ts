@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, setSystemTime, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +10,7 @@ import { pickModel } from "../lib/model-picker.ts";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 const dirs: string[] = [];
-afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+afterEach(() => { setSystemTime(); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 function temp() { const dir = mkdtempSync(join(tmpdir(), "generalist-setup-")); dirs.push(dir); return dir; }
 const alpha: any = { provider: "test", id: "alpha", name: "Alpha", reasoning: true };
 const beta: any = { provider: "test", id: "beta", name: "Beta", reasoning: true,
@@ -89,6 +89,40 @@ test("fresh session asks personality first, records both off/on decisions, then 
   h.entries.pop();
   await h.emit("session_tree");
   expect(h.toggles.meitan()).toBe(true);
+});
+
+test("TUI reload shows fresh local timestamps without prompts or session/context writes", async () => {
+  const h = harness(["--no-session-setup", "--model", "alpha"]);
+  h.flags["no-session-setup"] = true;
+  const before = structuredClone(h.entries);
+  for (const iso of ["2026-09-23T13:50:09Z", "2026-09-23T13:50:10Z"]) {
+    const now = new Date(iso); setSystemTime(now);
+    await h.emit("session_start", { reason: "reload" });
+    expect(h.notices.at(-1)).toBe(`Reloaded UI at ${now.toLocaleString(undefined, {
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short", hour12: false,
+    })}`);
+  }
+  expect(h.notices).toHaveLength(2);
+  expect(h.notices[0]).not.toBe(h.notices[1]);
+  expect(h.entries).toEqual(before);
+  expect(h.prompts).toEqual([]);
+  expect(h.changes).toEqual([]);
+  expect(readHistory(h.historyPath)).toEqual([]);
+});
+
+test("reload timestamp is absent on startup, session replacement, and non-TUI reloads", async () => {
+  for (const reason of ["startup", "new", "resume", "fork"]) {
+    const h = harness(["--no-session-setup"]);
+    await h.emit("session_start", { reason });
+    expect(h.notices).toEqual([]);
+  }
+  for (const mode of ["print", "json", "rpc"]) {
+    const h = harness(); h.ctx.mode = mode;
+    await h.emit("session_start", { reason: "reload" });
+    expect(h.notices).toEqual([]);
+    expect(h.prompts).toEqual([]);
+  }
 });
 
 test("remembered companion preference only reorders explicit startup choices", async () => {

@@ -13,6 +13,7 @@ import { registerGeneralistSettings } from "./generalist-settings.ts";
 import { registerSessionSetup } from "../lib/session-setup.ts";
 import { registerStatusIcons } from "../lib/status-icons.ts";
 import { loadGeneralistDefaults } from "../lib/generalist-config.ts";
+import loop from "./loop.ts";
 
 /** One entrypoint guarantees toggles restore before the startup picker runs. */
 export default function generalist(pi: ExtensionAPI) {
@@ -26,6 +27,7 @@ export default function generalist(pi: ExtensionAPI) {
   };
   registerSessionSetup(pi, toggles);
   registerGeneralistSettings(pi, toggles, defaults);
+  loop(pi);
   history(pi);
   workpad(pi);
   evidence(pi);

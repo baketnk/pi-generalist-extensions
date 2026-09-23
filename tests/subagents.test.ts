@@ -78,6 +78,18 @@ test("worker count is agent chosen: zero, one, two, four, and at-ceiling rejecti
   }
 });
 
+test("configured worker limits above defaults are accepted and frozen into launch intent", async () => {
+  const { runtime, request } = await setup();
+  const chosen = { ...request("hold"), maxTurns: 48, maxTools: 160 };
+  const run = await runtime.start(chosen);
+  expect((await runtime.store.launch(run.id)).maxTurns).toBe(48);
+  expect((await runtime.store.launch(run.id)).maxTools).toBe(160);
+  expect((await runtime.start(chosen)).id).toBe(run.id);
+  await expect(runtime.start({ ...chosen, maxTurns: 49 })).rejects.toThrow("different intent");
+  await expect(runtime.start({ ...request("too-many-turns"), maxTurns: 1001 })).rejects.toThrow("resource limit");
+  await expect(runtime.start({ ...request("too-many-tools"), maxTools: 4001 })).rejects.toThrow("resource limit");
+});
+
 test("progress peeking, parked clarification, join wake, report collection and observed cleanup are distinct", async () => {
   const { runtime, request } = await setup();
   const run = await runtime.start(request("block"));

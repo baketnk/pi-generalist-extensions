@@ -105,6 +105,17 @@ Explicit selection may choose any configured model; the ladder is **not** a dele
 allowlist or the future graph policy. It is independent of autocomplete/background-model
 settings and never dynamically changes the tool schema/cache prefix.
 
+Use `/subagents model self`, `/subagents model next-smaller`, or `/subagents model
+provider/id` to place a human model lock on the current branch; `/subagents model off`
+clears it and `/subagents model` reports it. While enabled, every new worker uses that
+specifier and a conflicting tool argument is rejected rather than ignored or silently
+rewritten. The active lock is stated concisely in the model prompt and reported by the
+`models` action. It is also available in the Generalist settings window; `Ctrl+S` there
+saves the current lock as the default for branches without an explicit choice. Exact
+saved identities remain configured even if temporarily unavailable, and launch still
+fails without fallback. The lock is routing policy only: it grants neither fork sharing
+nor implementation permissions.
+
 The selected model may have less context capacity. It must fit the existing worker
 request budget; no inherited messages are silently removed/summarized and no model
 is substituted. Cross-provider forks use normal SDK message conversion: frozen source
@@ -199,7 +210,7 @@ exit is not proof that arbitrary shell-created descendants have exited.
 |---|---|
 | Concurrent processes | default 4; human `--subagent-limit 0..16` |
 | Wall clock | default 600 s; `start.seconds` 1..1800; includes clarification |
-| Responses/tools | 24 responses / 80 tool calls |
+| Responses/tools | default 24 responses / 80 tool calls; human-configurable 1..1000 / 1..4000 for new runs |
 | Output per response | 4096 tokens, additionally capped by model maximum |
 | Context | conservative serialized-byte estimate plus output reserve before each request; provider tokenizer can differ |
 | Assignment / repository instructions | 32 KiB each; overflow refused |
@@ -208,6 +219,15 @@ exit is not proof that arbitrary shell-created descendants have exited.
 | Public event journal | <=8 MiB per run; 16 KiB pages; oversized events explicitly clipped |
 | Structured report | <=8 KiB |
 | Run history | <=128 records per owning session; no automatic pruning |
+
+Use `/subagents limits` to inspect the saved limits or `/subagents limits 48 160`
+to change both. The **Subagent turn/tool limits** row in `/generalist` offers the
+same setting; it saves immediately, without Ctrl+S. Values are stored in
+`<Pi agent directory>/subagent-limits.json` and read at each new launch. Existing
+runs keep their frozen budgets; reusing an operation ID after changing limits
+cannot silently change that run (the intent must still match). No model tool
+argument can override the human setting. Delete the file to restore 24/80.
+Invalid or unsafe config files refuse new launches rather than falling back.
 
 SDK automatic retry and compaction are disabled. Context overflow does not silently
 summarize, switch models, or truncate the inherited history. Provider transport may

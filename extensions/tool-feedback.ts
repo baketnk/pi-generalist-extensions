@@ -1,8 +1,21 @@
 import { join } from "node:path";
-import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { stripVTControlCharacters } from "node:util";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { feedbackCategories, MAX_REPORT_BYTES, ToolFeedbackStore } from "../lib/tool-feedback/store.ts";
+import { feedbackCategories, MAX_REPORT_BYTES, ToolFeedbackStore, type ToolFeedback } from "../lib/tool-feedback/store.ts";
+
+const display = (value: string) => stripVTControlCharacters(value).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+
+/** Show submitted prose, not the serialized record or a title-only alert. */
+export function formatToolFeedback(report: ToolFeedback): string {
+  const fields: [string, string | undefined][] = [
+    ["Summary", report.summary], ["Details", report.details], ["Observed", report.observed],
+    ["Expected", report.expected], ["Impact", report.impact], ["Suggestion", report.suggestion],
+  ];
+  return [`New tool feedback for ${display(report.tool)}${report.category ? ` (${report.category})` : ""}:`,
+    ...fields.filter(([, value]) => value !== undefined).map(([name, value]) => `${name}: ${display(value!).replace(/\n/g, "\n  ")}`)].join("\n");
+}
 
 const parameters = Type.Object({
   tool: Type.String({ minLength: 1, maxLength: 120, description: "Tool name or tool family; use 'tooling' for a concern that spans tools." }),
@@ -17,6 +30,18 @@ const parameters = Type.Object({
 
 /** Explicit, local-only reporting. No tool calls or conversation content are collected automatically. */
 export default function toolFeedback(pi: ExtensionAPI, root = () => join(getAgentDir(), "tool-feedback")) {
+  const pending: ToolFeedback[] = [];
+  const showPending = (ctx: ExtensionContext) => {
+    if (!ctx.hasUI) return;
+    while (pending.length) {
+      ctx.ui.notify(formatToolFeedback(pending[0]!), "warning");
+      pending.shift();
+    }
+  };
+  // agent_end can precede retries and queued continuations. A shutdown before
+  // settlement (e.g. reload) must not silently discard feedback already saved.
+  pi.on("agent_settled", (_event, ctx) => showPending(ctx));
+  pi.on("session_shutdown", (_event, ctx) => showPending(ctx));
   pi.registerTool({
     name: "tool_feedback",
     label: "Tool feedback",
@@ -30,6 +55,7 @@ export default function toolFeedback(pi: ExtensionAPI, root = () => join(getAgen
     async execute(_call, params, signal) {
       signal?.throwIfAborted();
       const saved = new ToolFeedbackStore(root()).save(params);
+      pending.push(saved);
       return {
         content: [{ type: "text", text: `Recorded tool feedback ${saved.id} for ${saved.tool}. Local record: ${saved.path}` }],
         details: { id: saved.id, reportedAt: saved.reportedAt, tool: saved.tool, path: saved.path },

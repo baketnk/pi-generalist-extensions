@@ -1,9 +1,15 @@
 import { expect, test } from "bun:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadWorkerLimits } from "../lib/subagents/limits.ts";
 import { BACKGROUND_MODEL_ENTRY, backgroundModel } from "../lib/background-model.ts";
+import { LOOP_LIMIT_ENTRY, loopLimit } from "../lib/loop-config.ts";
 import { generalistDefaults, isGeneralistSaveKey, registerGeneralistSettings } from "../extensions/generalist-settings.ts";
+import { forcedSubagentModel, SUBAGENT_MODEL_POLICY_ENTRY } from "../lib/subagents/model-policy.ts";
 
-function harness(configureHousekeeping?: (ctx: any) => Promise<void>, memoryMethods: object = {}, defaults?: any) {
+function harness(configureHousekeeping?: (ctx: any) => Promise<void>, memoryMethods: object = {}, defaults?: any, agentDir?: string) {
   const commands: Record<string, any> = {};
   const events: Record<string, any> = {};
   const changes: Array<[string, boolean]> = [];
@@ -26,7 +32,7 @@ function harness(configureHousekeeping?: (ctx: any) => Promise<void>, memoryMeth
     on: (event: string, handler: any) => events[event] = handler,
     registerCommand: (name: string, command: any) => commands[name] = command,
     appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
-  } as any, features, defaults);
+  } as any, features, defaults, { agentDir });
   return { commands, changes, enabled, notices, entries, events, ctx, features };
 }
 
@@ -62,6 +68,7 @@ test("saved Generalist defaults include the current memory selection", () => {
   const h = harness();
   h.features.memory.set(true);
   expect(generalistDefaults(h.features, h.ctx).memory).toBe(true);
+  expect(generalistDefaults(h.features, h.ctx).forcedSubagentModel).toBeNull();
 });
 
 test("saved defaults seed output only when the branch has no explicit choice", async () => {
@@ -75,6 +82,28 @@ test("saved defaults seed output only when the branch has no explicit choice", a
   expect(h.entries.filter(entry => entry.customType === "generalist:output-config-v1")).toEqual([
     { type: "custom", customType: "generalist:output-config-v1", data: { rawJson: false } },
   ]);
+});
+
+test("/generalist loop configures a branch limit and defaults seed only when absent", async () => {
+  const h = harness(undefined, {}, { version: 1, meitan: false, output: false, loopLimit: 7 });
+  h.events.session_start({}, h.ctx);
+  expect(loopLimit(h.ctx)).toBe(7);
+  h.ctx.ui.input = async () => "3";
+  await h.commands.generalist.handler("loop", h.ctx);
+  expect(h.entries.at(-1)).toEqual({ type: "custom", customType: LOOP_LIMIT_ENTRY, data: 3 });
+  h.events.session_start({}, h.ctx);
+  expect(loopLimit(h.ctx)).toBe(3);
+  expect(generalistDefaults(h.features, h.ctx).loopLimit).toBe(3);
+  for (const invalid of ["0", "1001", "2.5", "oops"]) {
+    const count = h.entries.length;
+    h.ctx.ui.input = async () => invalid;
+    await h.commands.generalist.handler("loop", h.ctx);
+    expect(h.entries).toHaveLength(count);
+  }
+  h.ctx.ui.input = async () => undefined;
+  await h.commands.generalist.handler("loop", h.ctx);
+  expect(loopLimit(h.ctx)).toBe(3);
+  expect(h.commands.generalist.getArgumentCompletions("loo")).toEqual([{ value: "loop", label: "loop" }]);
 });
 
 test("/generalist output toggles branch-local raw JSON diagnostics", async () => {
@@ -166,6 +195,62 @@ test("background defaults seed once, retain unavailable identities, and respect 
   expect(backgroundModel(h.ctx)).toBeNull();
 });
 
+test("forced subagent model defaults seed once and branch choices win", () => {
+  const h = harness(undefined, {}, { version: 1, meitan: false, output: false, forcedSubagentModel: "next-smaller" });
+  h.events.session_start({}, h.ctx);
+  expect(forcedSubagentModel(h.ctx)).toBe("next-smaller");
+  const entries = [...h.entries];
+  h.events.session_start({}, h.ctx);
+  expect(h.entries).toEqual(entries);
+  h.entries.push({ type: "custom", customType: SUBAGENT_MODEL_POLICY_ENTRY, data: "self" });
+  h.events.session_start({}, h.ctx);
+  expect(forcedSubagentModel(h.ctx)).toBe("self");
+  expect(generalistDefaults(h.features, h.ctx).forcedSubagentModel).toBe("self");
+});
+
+test("Generalist subagent model picker configures named and exact human locks", async () => {
+  const h = harness();
+  h.ctx.modelRegistry = { getAll: () => [{ provider: "Local", id: "Org/Small", name: "Small" }] };
+  h.ctx.ui.select = async () => "next-smaller";
+  await h.commands.generalist.handler("subagents", h.ctx);
+  expect(forcedSubagentModel(h.ctx)).toBe("next-smaller");
+  h.ctx.ui.select = async () => "Local/Org/Small";
+  await h.commands.generalist.handler("subagents", h.ctx);
+  expect(forcedSubagentModel(h.ctx)).toBe("Local/Org/Small");
+  expect(h.notices.at(-1)?.[0]).toContain("cannot override");
+  h.ctx.ui.select = async () => "Off";
+  await h.commands.generalist.handler("subagents", h.ctx);
+  expect(forcedSubagentModel(h.ctx)).toBeNull();
+});
+
+test("Generalist TUI exposes and configures saved subagent turn/tool budgets", async () => {
+  const agentDir = await mkdtemp(join(tmpdir(), "pi-generalist-worker-limits-"));
+  try {
+    const h = harness(undefined, {}, undefined, agentDir); h.ctx.mode = "tui";
+    const answers = ["48", "160"];
+    h.ctx.ui.input = async () => answers.shift();
+    initTheme("dark", false);
+    const seen: string[] = [];
+    h.ctx.ui.custom = async (factory: any) => {
+      const theme = { fg: (_: string, text: string) => text, bold: (text: string) => text };
+      const component = factory({ requestRender() {} }, theme, {}, () => {});
+      const rendered = component.render(100).join("\n");
+      expect(rendered).toContain("Subagent turn/tool limits");
+      seen.push(rendered);
+      return undefined;
+    };
+    await h.commands.generalist.handler("", h.ctx);
+    await h.commands.generalist.handler("subagent-limits", h.ctx);
+    expect(loadWorkerLimits(agentDir)).toEqual({ version: 1, turns: 48, tools: 160 });
+    await h.commands.generalist.handler("", h.ctx);
+    expect(seen[0]).toContain("24/80");
+    expect(seen[1]).toContain("48/160");
+    expect(h.notices.at(-1)?.[0]).toContain("Existing runs are unchanged");
+  } finally {
+    await rm(agentDir, { recursive: true, force: true });
+  }
+});
+
 test("background picker rejects headless use and is visible in Generalist TUI", async () => {
   const h = harness();
   h.ctx.hasUI = false;
@@ -176,6 +261,8 @@ test("background picker rejects headless use and is visible in Generalist TUI", 
     const theme = { fg: (_: string, text: string) => text, bold: (text: string) => text };
     const component = factory({ requestRender() {} }, theme, {}, () => {});
     expect(component.render(100).join("\n")).toContain("Small/background model");
+    expect(component.render(100).join("\n")).toContain("Force subagent model");
+    expect(component.render(100).join("\n")).toContain("Default /loop count");
     return undefined;
   };
   await h.commands.generalist.handler("", h.ctx);

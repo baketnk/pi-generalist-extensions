@@ -117,6 +117,11 @@ your actual roster. Summary is an explicit declaration, clipped to 480 UTF-8 byt
 Pi session names remain optional task labels (160 bytes), followed automatically;
 no automatic first-prompt extraction or renaming of the Pi session.
 
+Successful `send` and `reply` tool results show the outgoing message body directly
+in the sender's TUI, including the collapsed view. This uses the recorded tool
+arguments for display only: model-facing receipts and recipient read/ack state are
+unchanged. Incoming hints remain metadata-only; this is not a global mail feed.
+
 ### Stable readable handles
 
 Each participant has an immutable machine ID and a server-derived four-word handle,
