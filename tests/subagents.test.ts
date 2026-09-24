@@ -143,7 +143,7 @@ test("actual SDK child: fork payload fidelity, explicit tools, fresh usage, park
     expect(record.persistenceError).toBeUndefined();
     expect(record.taskState, JSON.stringify({ record, events })).toBe(task === "silent" ? "incomplete" : task === "budget" ? "budget-exceeded" : "reported");
     const payloads = (await readFile(join(dirname(runtime.store.path(run.id, "launch.json")), "payloads.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
-    expect(payloads.length).toBe(task === "silent" ? 1 : 2);
+    expect(payloads.length).toBe(task === "silent" ? 1 : task === "budget" ? 3 : 2);
     expect(JSON.stringify(payloads[0].context).includes("SYNTHETIC_FORK_MARKER")).toBe(task === "inspect");
     expect(payloads[0].context.tools.map((t: { name: string }) => t.name).sort()).toEqual(["grep", "ls", "needs_input", "progress", "read", "report"]);
     expect(payloads[0].options.maxTokens).toBe(1024);
@@ -158,6 +158,112 @@ test("actual SDK child: fork payload fidelity, explicit tools, fresh usage, park
     }
   }
 }, 20000);
+
+test("SDK exhaustion reserves one synthesis response/report, blocks sibling work, and preserves provider prefixes", async () => {
+  const { runtime, request, cwd } = await setup("subagent-sdk-worker.ts");
+  const cases = [
+    { task: "turn-budget", maxTurns: 1, maxTools: 12 },
+    { task: "tool-budget", maxTurns: 4, maxTools: 1 },
+    { task: "budget-batch", maxTurns: 1, maxTools: 1 },
+    { task: "budget-ignore", maxTurns: 1, maxTools: 1 },
+    { task: "budget-invalid", maxTurns: 1, maxTools: 1 },
+    { task: "budget-invalid-empty", maxTurns: 1, maxTools: 1 },
+    { task: "budget-text", maxTurns: 1, maxTools: 1 },
+    { task: "budget-text-controls", maxTurns: 1, maxTools: 1 },
+    { task: "silent", maxTurns: 1, maxTools: 1 },
+    { task: "budget-error", maxTurns: 1, maxTools: 1 },
+    { task: "provider-error", maxTurns: 1, maxTools: 1 },
+    { task: "provider-aborted", maxTurns: 1, maxTools: 1 },
+    { task: "normal-boundary-report", maxTurns: 2, maxTools: 2 },
+  ];
+  for (const spec of cases) {
+    const run = await runtime.start({ ...request(spec.task), ...spec, permissions: spec.task.startsWith("budget-invalid") ? "read-only" : "implement" });
+    await until(() => runtime.status(run.id).process === "exited");
+    const record = (await runtime.collect(run.id)).record;
+    const payloads = (await readFile(join(dirname(runtime.store.path(run.id, "launch.json")), "payloads.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    const events = (await runtime.peek(run.id, 0, 100)).events;
+    const earlyFailure = spec.task.startsWith("provider-");
+    const normal = spec.task === "normal-boundary-report";
+    expect(record.taskState, JSON.stringify(record)).toBe(spec.task.endsWith("error") ? "failed" : spec.task === "provider-aborted" ? "cancelled" : normal ? "reported" : "budget-exceeded");
+    expect(payloads).toHaveLength(earlyFailure ? 1 : 2);
+    expect(record.turns).toBe(payloads.length);
+    expect(record.usage.input).toBe(payloads.length * 12);
+    expect(record.usage.output).toBe(payloads.length * 3);
+    expect(record.tools).toBeLessThanOrEqual(spec.maxTools + 1);
+    expect(record.exitCode).toBe(0); expect(record.cleanup).toBe("observed");
+    expect(events.filter(e => e.kind === "budget-synthesis")).toHaveLength(earlyFailure || normal ? 0 : 1);
+    expect(events.filter(e => e.kind === "tool-start" && /SHOULD_NOT_EXIST|unauthorized progress|More time/.test(e.text ?? ""))).toHaveLength(0);
+    if (!earlyFailure) {
+      const before = payloads[0].context, final = payloads[1].context;
+      expect(final.systemPrompt).toBe(before.systemPrompt);
+      expect(final.tools).toEqual(before.tools);
+      expect(final.messages.slice(0, before.messages.length)).toEqual(before.messages);
+      if (spec.task !== "silent") expect(JSON.stringify(final)).toContain("fixture evidence");
+      expect(payloads[1].options.maxTokens).toBe(1024);
+      if (!normal) expect(JSON.stringify(final.messages.at(-1))).toContain("FINAL SYNTHESIS:");
+      if (spec.task === "budget-batch") {
+        const results = final.messages.filter((m: any) => m.role === "toolResult");
+        expect(results).toHaveLength(5);
+        expect(results[0].isError).toBe(false);
+        expect(results.slice(1).every((r: any) => r.isError && JSON.stringify(r).includes("Tool budget reached"))).toBe(true);
+      }
+    }
+    if (earlyFailure || ["budget-ignore", "budget-invalid-empty", "budget-error"].includes(spec.task)) {
+      expect(record.report).toBeUndefined();
+      if (!earlyFailure) expect(events.filter(e => e.kind === "tool-start" && e.tool === "report")).toHaveLength(0);
+    } else if (spec.task === "budget-invalid") {
+      expect(record.report?.outcome).toBe("partial");
+      expect(record.report?.summary).toContain("rejected final report");
+      expect(record.report?.summary).toContain("no tests run");
+      expect(record.report?.findings).toContain("README.md:1 contains fixture evidence");
+      expect(record.report?.findings).toContain("[Model field clipped.]");
+      expect(record.report?.verification).toBe("Only source inspection; no tests run.");
+      expect(record.reason).toContain("rejected");
+      expect(Buffer.byteLength(JSON.stringify(record.report))).toBeLessThanOrEqual(8192);
+      expect(events.filter(e => e.kind === "tool-start" && e.tool === "report")).toHaveLength(0);
+    } else if (spec.task.startsWith("budget-text")) {
+      expect(record.report?.outcome).toBe("partial");
+      expect(record.report?.findings).toContain("Partial findings:");
+      expect(record.report?.findings).toContain("[Final synthesis clipped.]");
+      expect(Buffer.byteLength(JSON.stringify(record.report))).toBeLessThanOrEqual(8192);
+    } else {
+      expect(record.report?.summary).toBe(normal ? "Synthetic SDK report" : "Synthetic final synthesis");
+      if (!normal) {
+        expect(record.report?.outcome).toBe("partial");
+        expect(record.report?.findings).toContain("README.md:1");
+        expect(record.reason).toContain("Final report retained");
+      }
+    }
+    if (["budget-invalid", "budget-invalid-empty", "budget-ignore"].includes(spec.task)) {
+      expect(events.filter(e => e.kind === "budget-synthesis-result")).toHaveLength(1);
+      if (spec.task.startsWith("budget-invalid")) expect(record.reason).toContain("rejected");
+    }
+    await expect(readFile(join(cwd, "SHOULD_NOT_EXIST"))).rejects.toThrow("ENOENT");
+  }
+}, 20000);
+
+test("SDK final synthesis remains cancellable and inside the original deadline", async () => {
+  const { runtime, request } = await setup("subagent-sdk-worker.ts");
+  for (const cancel of [true, false]) {
+    const run = await runtime.start({ ...request("budget-hold", `hold-${cancel}`), maxTurns: 1, seconds: cancel ? 10 : 3 });
+    const payloadFile = join(dirname(runtime.store.path(run.id, "launch.json")), "payloads.jsonl");
+    // Wait until the synthetic final provider stream is actually open, without inference.
+    let ready = false;
+    const end = Date.now() + 5000;
+    while (!ready && Date.now() < end) {
+      ready = await readFile(payloadFile, "utf8").then(s => s.trim().split("\n").length === 2, () => false);
+      if (!ready) await Bun.sleep(10);
+    }
+    expect(ready).toBe(true);
+    if (cancel) await runtime.cancel(run.id);
+    await until(() => runtime.status(run.id).process === "exited");
+    const record = runtime.status(run.id);
+    expect(record.taskState).toBe(cancel ? "cancelled" : "timed-out");
+    expect(record.report).toBeUndefined();
+    expect(record.cleanup).toBe("observed");
+    expect((await readFile(payloadFile, "utf8")).trim().split("\n")).toHaveLength(2);
+  }
+}, 10000);
 
 test("real SDK worker joins only its provisioned mailbox; parent retirement follows observed exit", async () => {
   const { runtime, request, root, cwd } = await setup("subagent-sdk-worker.ts");

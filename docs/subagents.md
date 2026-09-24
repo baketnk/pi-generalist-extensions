@@ -64,7 +64,9 @@ continuity, Code Mode, and the task checklist. Nothing launches at registration.
 - **Collect** returns the structured report and a collection timestamp, not a transcript
   merge, verified evidence, repository change, or task-checklist completion. Repeated
   collection preserves the same receipt. Reports can be completed, partial, blocked,
-  or inconclusive. A model stopping without a report is `incomplete`, not an invitation
+  or inconclusive. Turn/tool exhaustion gets one reserved synthesis response; the run
+  remains `budget-exceeded`, with any resulting report available to collect. A model
+  stopping without a report before exhaustion is `incomplete`, not an invitation
   for hidden formatting retries.
 
 ## Model ladder
@@ -210,7 +212,7 @@ exit is not proof that arbitrary shell-created descendants have exited.
 |---|---|
 | Concurrent processes | default 4; human `--subagent-limit 0..16` |
 | Wall clock | default 600 s; `start.seconds` 1..1800; includes clarification |
-| Responses/tools | default 24 responses / 80 tool calls; human-configurable 1..1000 / 1..4000 for new runs |
+| Responses/tools | default 24 work responses / 80 tool calls; human-configurable 1..1000 / 1..4000 for new runs; plus at most one synthesis response / report call on exhaustion |
 | Output per response | 4096 tokens, additionally capped by model maximum |
 | Context | conservative serialized-byte estimate plus output reserve before each request; provider tokenizer can differ |
 | Assignment / repository instructions | 32 KiB each; overflow refused |
@@ -228,6 +230,32 @@ runs keep their frozen budgets; reusing an operation ID after changing limits
 cannot silently change that run (the intent must still match). No model tool
 argument can override the human setting. Delete the file to restore 24/80.
 Invalid or unsafe config files refuse new launches rather than falling back.
+
+When the turn or tool budget is reached without a report, the worker finishes the
+current batch (blocking calls beyond the tool ceiling), then appends one **final
+synthesis** instruction to the same session. That response may only submit one
+`report`; reads, edits, shell commands, progress, clarification and duplicate reports
+are blocked, including sibling calls. The instruction asks for already-observed
+findings/source locations, changed paths, actual checks, uncertainties and unfinished
+work. Tool declarations and the prior system/message prefix remain unchanged; the
+execution guard enforces the restricted authority. Recorded turn/tool/usage totals
+include this reserve and can therefore exceed the configured budgets by one.
+
+The terminal state remains `budget-exceeded`, even with a completed/partial report.
+If synthesis returns prose instead of a structured report, a bounded, explicitly
+labelled `partial` report retains that prose without inventing verification. If a
+`report` call is rejected by schema validation or execution (for example, an
+oversized findings field), its model-authored string fields are clipped and retained
+as **unvalidated partial findings**; the original report did not execute, and its
+claimed outcome is not adopted. Synthesis result events and the terminal reason
+distinguish a recorded report, rejected report, prose fallback, and no usable content.
+Empty or tool-only synthesis without usable report fields ends without a report or
+another attempt. A later sibling report cannot replace the first synthesis attempt.
+An existing valid report never triggers synthesis. Cancellation, parent loss,
+deadlines, provider/extension errors, context admission and log/storage failures do
+not grant it; a synthesis already running remains subject to those same hard stops,
+original deadline, context check and per-response output limit. No extra wall-clock
+allowance, context truncation or fallback model is used.
 
 SDK automatic retry and compaction are disabled. Context overflow does not silently
 summarize, switch models, or truncate the inherited history. Provider transport may
@@ -294,6 +322,10 @@ physical-terminal ergonomics trial. Permissions regressions exercise fresh and f
 workers with omitted/explicit read-only and implementation grants, actual write/edit
 and shell checks, post-report write blocking, persisted permissions, retry escalation
 refusal, and stable worker system/tool/message prefixes across tool follow-ups.
+Budget regressions cover turn/tool/exact/batched exhaustion, a single synthesis
+response, retained structured/prose findings, blocked synthesis/sibling work,
+oversized and malformed reporting, provider errors, cancellation and deadlines during
+synthesis, and unchanged provider-bound prefixes at the synthesis transition.
 
 The first live `openai-codex/gpt-5.6-sol` fresh-worker smoke test found the synthetic
 boundary bug and correctly reported inspection rather than test execution. It also

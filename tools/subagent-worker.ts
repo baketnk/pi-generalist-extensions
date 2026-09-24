@@ -28,6 +28,26 @@ let terminal: TaskState | undefined;
 let finishing = false;
 let board: BoardClient | undefined, heartbeat: ReturnType<typeof setInterval> | undefined;
 const cancel = () => { cancelled = true; pending?.reject(new Error("Worker cancelled.")); pending = undefined; void session?.abort(); };
+// A schema-invalid report never reaches tool_call. Retain only bounded model-authored
+// fields from that rejected final call, explicitly as partial rather than execution.
+function salvageFinalReport(args: unknown): WorkerReport | undefined {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return;
+  const input = args as Record<string, unknown>;
+  const clip = (value: unknown, maxChars: number, maxBytes: number): string | undefined => {
+    if (typeof value !== "string" || !value.trim()) return;
+    const source = value.trim(), marker = "\n[Model field clipped.]";
+    let result = source.slice(0, maxChars - marker.length);
+    while (Buffer.byteLength(JSON.stringify(result + marker)) > maxBytes) result = result.slice(0, Math.floor(result.length * 0.8));
+    return result.length < source.length ? result + marker : source;
+  };
+  const summary = clip(input.summary, 900, 1100);
+  const findings = clip(input.findings, 3800, 4500);
+  const verification = clip(input.verification, 750, 950);
+  const uncertainties = clip(input.uncertainties, 750, 950);
+  if (!summary && !findings && !verification && !uncertainties) return;
+  return { outcome: "partial", summary: `Budget exhausted; rejected final report retained as unvalidated partial findings. ${summary ?? ""}`.trim(),
+    ...(findings ? { findings } : {}), ...(verification ? { verification } : {}), ...(uncertainties ? { uncertainties } : {}) };
+}
 process.on("disconnect", () => { if (!finishing) { cancel(); setTimeout(() => process.exit(1), 1000).unref(); } });
 process.on("SIGTERM", cancel);
 process.on("SIGINT", cancel);
@@ -61,11 +81,27 @@ async function main() {
   const model = modelRuntime.getModel(launch.model.provider, launch.model.id);
   if (!model) throw new Error(`Requested model unavailable: ${launch.model.provider}/${launch.model.id}`);
   if (!await modelRuntime.getAuth(model)) throw new Error(`No credentials for requested model ${launch.model.provider}/${launch.model.id}`);
-  let turns = 0, tools = 0;
+  let turns = 0, tools = 0, synthesisRequests = 0;
+  let budgetReason: string | undefined;
+  let synthesizing = false, synthesisReportAttempted = false, synthesisReportCallId: string | undefined;
+  let synthesisCandidate: unknown, synthesisText = "", synthesisDisposition = "";
+  const exhaustedBudget = () => tools >= launch.maxTools ? `Tool budget reached (${tools}/${launch.maxTools}).`
+    : turns >= launch.maxTurns ? `Turn budget reached (${turns}/${launch.maxTurns}).` : undefined;
   const guard: ExtensionFactory = pi => {
     pi.on("tool_call", e => {
       if (cancelled || report || terminal) return { block: true, reason: "Worker stopped; sibling tools are not authorized." };
-      if (++tools > launch.maxTools) { terminal = "budget-exceeded"; void session?.abort(); return { block: true, reason: "Tool budget reached." }; }
+      if (synthesizing) {
+        // Keep declarations stable for cache reuse; enforce report-only authority here.
+        if (e.toolName !== "report" || e.toolCallId !== synthesisReportCallId || synthesisReportAttempted) return { block: true, reason: "Final synthesis permits only the first report call; no further work or clarification." };
+        synthesisReportAttempted = true;
+      } else {
+        if (tools >= launch.maxTools) {
+          budgetReason ??= exhaustedBudget();
+          // Finish the batch with explicit blocked results, not an aborted transcript.
+          return { block: true, reason: "Tool budget reached; remaining calls are blocked. A final synthesis turn follows." };
+        }
+        tools++;
+      }
       event("tool-start", { tool: e.toolName, toolId: e.toolCallId, text: JSON.stringify(e.input) });
     });
   };
@@ -120,14 +156,17 @@ async function main() {
   session.agent.toolExecution = "sequential";
   const previousStop = session.agent.shouldStopAfterTurn;
   session.agent.shouldStopAfterTurn = async (context, signal) => {
-    if (!report && !terminal && turns >= launch.maxTurns) terminal = "budget-exceeded";
-    return !!report || !!terminal || cancelled || (await previousStop?.(context, signal) ?? false);
+    if (!synthesizing && !report && !terminal && !cancelled) budgetReason ??= exhaustedBudget();
+    return !!report || !!terminal || cancelled || synthesizing || !!budgetReason || (await previousStop?.(context, signal) ?? false);
   };
   if (launch.snapshot) session.agent.state.messages = structuredClone(launch.snapshot.messages);
   const originalStream = session.agent.streamFunction;
   // SDK stream options have no stable session setter for maxTokens; cap every call.
   session.agent.streamFunction = (m, context, options) => {
-    if (turns > launch.maxTurns || cancelled || report || terminal) throw new Error("Worker stopped before provider request.");
+    if (cancelled || report || terminal) throw new Error("Worker stopped before provider request.");
+    if (synthesizing ? ++synthesisRequests > 1 : turns > launch.maxTurns || !!budgetReason) {
+      terminal = "budget-exceeded"; throw new Error("Worker response budget exhausted.");
+    }
     const outputReserve = Math.min(launch.maxOutputTokens, m.maxTokens);
     // Conservative byte-based estimate, not a provider tokenizer or cache claim.
     // Account for the ACTUAL worker system/tools/history, not parent usage counters.
@@ -138,20 +177,50 @@ async function main() {
   };
   session.subscribe(e => {
     if (e.type === "turn_start") {
+      turns++;
       event("turn-start");
-      if (++turns > launch.maxTurns) { terminal = "budget-exceeded"; void session?.abort(); }
     } else if (e.type === "message_update" && e.assistantMessageEvent.type === "text_delta") event("text", { text: e.assistantMessageEvent.delta });
     else if (e.type === "message_end" && e.message.role === "assistant") {
       const usage = e.message.usage;
       event("usage", { data: { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite, cost: usage.cost.total } });
       if (e.message.stopReason === "error") { terminal ??= "failed"; event("error", { text: e.message.errorMessage ?? "Provider error." }); }
+      else if (e.message.stopReason === "aborted") terminal ??= "cancelled";
+      else if (synthesizing) {
+        synthesisText = e.message.content.filter(c => c.type === "text").map(c => c.text).join("\n").trim();
+        const firstReport = e.message.content.find(c => c.type === "toolCall" && c.name === "report");
+        if (firstReport?.type === "toolCall") { synthesisReportCallId = firstReport.id; synthesisCandidate = firstReport.arguments; }
+      }
     } else if (e.type === "tool_execution_end") event("tool-end", { tool: e.toolName, toolId: e.toolCallId, text: JSON.stringify(e.result?.content ?? {}), data: { isError: e.isError } });
   });
   send({ version: 1, type: "ready", sessionFile: manager.getSessionFile()! });
   if (cancelled) throw new Error("Cancelled before inference.");
-  await session.prompt(`Current delegated task (run ${launch.id}; ${launch.mode} origin). This is the active assignment, not previous fork requests:\n\n${launch.task}\n\nUse the report tool when finished.`);
-  send({ version: 1, type: "terminal", state: cancelled ? "cancelled" : terminal ?? (report ? "reported" : "incomplete"), report,
-    reason: !report && !terminal && !cancelled ? "Model stopped without a structured report. No automatic formatting retry." : undefined });
+  await session.prompt(`Current delegated task (run ${launch.id}; ${launch.mode} origin). This is the active assignment, not previous fork requests:\n\n${launch.task}\n\nWork budget: ${launch.maxTurns} responses and ${launch.maxTools} tool calls. Use the report tool when finished. If either budget is exhausted before reporting, one final report-only synthesis response is reserved; it cannot do further work.`);
+  if (budgetReason && !report && !terminal && !cancelled) {
+    synthesizing = true;
+    event("budget-synthesis", { text: `${budgetReason} Starting one final report-only response.` });
+    // Append to the same session: never replace prior messages, system prompt or tools.
+    await session.prompt(`${budgetReason} FINAL SYNTHESIS: Your work budget is exhausted. You have exactly one response to summarize evidence already obtained. Only one report tool call is permitted; all other tools (including progress and needs_input) are blocked. Do not investigate, edit, or run checks. Submit report now with findings/source locations, changed files, actual verification, uncertainties and remaining work. Use partial, blocked or inconclusive if the assignment is unfinished; do not invent results. No retry follows this response.`, { expandPromptTemplates: false });
+    if (!report && !terminal && !cancelled && synthesisCandidate) {
+      report = salvageFinalReport(synthesisCandidate);
+      if (report) synthesisDisposition = "Final report call was rejected; bounded model-authored fields retained as unvalidated partial findings.";
+    }
+    if (!report && !terminal && !cancelled && synthesisText) {
+      // Preserve usable final prose without another formatting turn or inventing a verdict.
+      let findings = synthesisText.slice(0, 3900);
+      // Bound serialized bytes too: escaped controls can cost six bytes per character.
+      while (Buffer.byteLength(JSON.stringify(findings)) > 6000) findings = findings.slice(0, Math.floor(findings.length * 0.8));
+      report = { outcome: "partial", summary: "Budget exhausted; final synthesis returned as text, not a structured report.",
+        findings: findings + (findings !== synthesisText ? "\n[Final synthesis clipped.]" : ""),
+        uncertainties: "Host retained model-authored prose; completion and verification were not independently established." };
+      synthesisDisposition = "Final synthesis prose retained as unvalidated partial findings.";
+    }
+    if (!terminal && !cancelled) event("budget-synthesis-result", { text: synthesisDisposition || (report ? "Structured final report recorded." : synthesisCandidate
+      ? "Final report call rejected without usable fields; no synthesis retry." : "Final synthesis returned no usable report; no synthesis retry.") });
+  }
+  send({ version: 1, type: "terminal", state: cancelled ? "cancelled" : terminal ?? (budgetReason ? "budget-exceeded" : report ? "reported" : "incomplete"), report,
+    reason: budgetReason && !terminal && !cancelled ? `${budgetReason} ${synthesisDisposition || (report ? "Final report retained." : synthesisCandidate
+      ? "Final report call rejected without usable fields; no synthesis retry." : "Final synthesis returned no usable report; no synthesis retry.")}`
+      : !report && !terminal && !cancelled ? "Model stopped without a structured report. No automatic formatting retry." : undefined });
 }
 try { await main(); }
 catch (e) { send({ version: 1, type: "terminal", state: cancelled ? "cancelled" : terminal ?? "failed", reason: String(e).slice(0, 2000), report }); }
