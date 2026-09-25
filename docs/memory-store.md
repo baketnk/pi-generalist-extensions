@@ -7,9 +7,7 @@ now uses it; the store library itself changes no personality or workpad state.
 The intended boundary is **workpad inside the active session; memory outside
 it**. This implementation does not promote workpad contents or ingest history.
 It imports no Pi SDK, invokes no model, starts no worker, and has no default
-storage location. Tests use disposable synthetic data. Human-operated migration
-now supports an explicitly selected offline OptMem snapshot; see
-[migration and cutover status](memory-migration.md). No live import has been run.
+storage location. Tests use disposable synthetic data. The offline OptMem importer has been removed; imported records remain valid in existing stores.
 
 ## Available now
 

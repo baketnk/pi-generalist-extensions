@@ -9,7 +9,7 @@ import { LOOP_LIMIT_ENTRY, loopLimit } from "../lib/loop-config.ts";
 import { generalistDefaults, isGeneralistSaveKey, registerGeneralistSettings } from "../extensions/generalist-settings.ts";
 import { forcedSubagentModel, SUBAGENT_MODEL_POLICY_ENTRY } from "../lib/subagents/model-policy.ts";
 
-function harness(configureHousekeeping?: (ctx: any) => Promise<void>, memoryMethods: object = {}, defaults?: any, agentDir?: string) {
+function harness(_unused?: undefined, memoryMethods: object = {}, defaults?: any, agentDir?: string) {
   const commands: Record<string, any> = {};
   const events: Record<string, any> = {};
   const changes: Array<[string, boolean]> = [];
@@ -27,7 +27,7 @@ function harness(configureHousekeeping?: (ctx: any) => Promise<void>, memoryMeth
     waitForIdle: async () => {},
     ui: { notify: (text: string, level: string) => notices.push([text, level]) },
   };
-  const features = { meitan: feature("meitan"), memory: Object.assign(feature("memory"), { configureHousekeeping }, memoryMethods) };
+  const features = { meitan: feature("meitan"), memory: Object.assign(feature("memory"), memoryMethods) };
   registerGeneralistSettings({
     on: (event: string, handler: any) => events[event] = handler,
     registerCommand: (name: string, command: any) => commands[name] = command,
@@ -114,33 +114,10 @@ test("/generalist output toggles branch-local raw JSON diagnostics", async () =>
   expect(h.entries.at(-1)?.data).toEqual({ rawJson: false });
 });
 
-test("/generalist housekeeping delegates to native settings without enabling memory", async () => {
-  let called = 0;
-  const h = harness(async ctx => { expect(ctx).toBe(h.ctx); called++; });
-  await h.commands.generalist.handler("housekeeping", h.ctx);
-  expect(called).toBe(1); expect(h.changes).toEqual([]);
+test("unknown memory subcommands do not change activation", async () => {
+  const h = harness();
   await h.commands.generalist.handler("memory on garbage", h.ctx);
   expect(h.changes).toEqual([]);
-});
-
-test("TUI settings contain a real housekeeping entry and open it after closing the list", async () => {
-  initTheme("dark", false);
-  let configured = false;
-  const h = harness(async () => { configured = true; }); h.ctx.mode = "tui";
-  h.ctx.ui.custom = async (factory: any) => {
-    let selected: string | undefined;
-    const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
-    const component = factory({ requestRender() {} }, theme, { matches: () => false }, (value: string) => selected = value);
-    expect(component.render(100).join("\n")).toContain("Memory housekeeping model");
-    const heights = [component.render(40).length];
-    component.handleInput("\x1b[B"); heights.push(component.render(40).length);
-    component.handleInput("\x1b[B"); heights.push(component.render(40).length);
-    expect(new Set(heights).size).toBe(1);
-    component.handleInput("\x1b[B"); component.handleInput("\r");
-    expect(configured).toBe(false); return selected;
-  };
-  await h.commands.generalist.handler("", h.ctx);
-  expect(configured).toBe(true);
 });
 
 test("personal/pairing settings are independent; companion is an explicit combined action", async () => {

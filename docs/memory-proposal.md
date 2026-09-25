@@ -1,6 +1,6 @@
 # Proposal: pi-native memory with selective continuity
 
-Status: **broader design proposal; bounded foreground MVP implemented** in the [portable store](memory-store.md), [scoped index](memory-index.md), [native Pi runtime](memory-runtime.md) and [offline migration tooling](memory-migration.md). Optional workers, external-source registration and unlimited storage remain future scope. The agreed initial import destination is an unassigned review inbox; no live archive has been migrated. The user subsequently requested removal of the OptMem runtime rather than maintaining dual-backend controls. Current implementation contracts take precedence over the prospective details below.
+Status: **broader design proposal; bounded foreground MVP implemented** in the [portable store](memory-store.md), [scoped index](memory-index.md), [native Pi runtime](memory-runtime.md). Optional workers, external-source registration and unlimited storage remain future scope. The agreed initial import destination is an unassigned review inbox; no live archive has been migrated. The user subsequently requested removal of the OptMem runtime rather than maintaining dual-backend controls. Current implementation contracts take precedence over the prospective details below.
 
 The separately approved [reflective continuity adapter](continuity.md) now provides
 human-selected Markdown originals, explicit local indexing and a bounded return

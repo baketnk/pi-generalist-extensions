@@ -10,17 +10,14 @@ already-running processes do not update themselves.
 Requires Pi 0.85.1 and Node 24+ with `node:sqlite`/FTS5. It also works as a standalone
 `pi -e /absolute/path/extensions/memory.ts` resource; do not load it twice alongside
 the package. Ordinary recall/capture creates no extra model calls, automatic save reminders,
-compression passes or shutdown notes. A separately configured, human-triggered
-[housekeeping reviewer](#optional-housekeeping-model) can make one bounded model call.
+compression passes or shutdown notes.
 
 ## First use — human approval
 
 1. Create a private directory **outside the repository** and initialize the native
    store explicitly:
    `bun tools/memory-admin.ts init /absolute/native-store --confirm init-native-memory`.
-   Alternatively stage an approved inactive archive with the
-   [offline importer](memory-migration.md). Never point native memory at the old
-   OptMem directory.
+   Never point native memory at the old OptMem directory.
 2. In TUI/RPC, `/memory configure` asks for that initialized directory, an optional
    project UUID (`new` generates one; blank preserves an existing mapping or none),
    and a default personal UUID (`new` generates one; blank keeps the existing default
@@ -139,50 +136,12 @@ Human commands (never model tool actions):
 - `/memory off`: stops new lookups/captures and discards the current packet without
   waiting for the agent to settle. It also invalidates already-queued native writes.
 
-Classification, confirmed purge, export/restore and archive import remain explicit
-[offline maintenance](memory-migration.md), not model actions. Human edits to
+Classification, confirmed purge and export/restore remain explicit offline maintenance
+(`tools/memory-admin.ts`), not model actions. Human edits to
 canonical data must use the validated store API with expected revisions; never
 rewrite records in place. Unpin an assistant note before requesting an ordinary
 model revision, or use human maintenance for protected originals.
 
-## Optional housekeeping model
-
-The active conversational model authors `memory note/revise` calls; retrieval and
-reindexing use local SQLite, not an LLM. Housekeeping is a **separate read-only
-reviewer**, not an automatic saver or replacement for active-agent note authorship.
-
-After `/memory configure`, open **Memory housekeeping model** in `/generalist`,
-or use `/generalist housekeeping` (standalone: `/memory housekeeping`). Select an
-available Pi provider/model and explicitly enable manual reviews. The exact
-`housekeeping: { enabled, provider, model }` selection persists in native-memory.json.
-Absent means off. There is no default, active-model fallback, or automatic schedule.
-Selecting a lighter/local model does not change the conversation model. Changing
-settings turns recall off; `/memory on` reviews the new configuration again.
-
-Use `/memory review` to find candidate IDs, then `/memory housekeep ID [ID…]`:
-
-- One to eight explicitly selected records, at most 24 KiB total. Current project
-  and explicitly selected personal scopes only, plus the unassigned review inbox.
-  Unassigned can contain mixed private data; every run shows the exact selected
-  payload and destination model for human confirmation, even when recall is off.
-- Only titles, bodies and classification metadata are sent. No conversation,
-  system/personality context, retained source excerpts, tool access or whole-store scan.
-- One completion, requested reasoning off, at most 2,048 output tokens/8 KiB text,
-  with a 60-second deadline. No extension retries. Provider transport retries and
-  model-specific thinking behavior remain provider-controlled.
-- Escape in TUI or `/memory housekeep-cancel` cancels waiting; off, branch navigation,
-  shutdown/reload also abort. Config/source changes suppress stale results. A provider
-  ignoring abort may continue remotely; cancellation cannot retract disclosed text.
-- Suggestions appear in a temporary editor for human inspection. Edits to that
-  editor are ignored. Nothing is accepted, rewritten, classified, deleted, persisted
-  as a report, or injected into the active agent. Sources remain authoritative.
-- Successful runs append only provider/model, record IDs/revisions and usage metadata
-  to a custom audit entry. This usage is **not** included in Pi's built-in session
-  totals. Failed/cancelled requests may still incur provider charges.
-
-Model/auth failures do not fall back to the active agent. Configure authentication
-through Pi's normal provider settings; the memory config contains no credentials.
-Tests use mocked completions, not real provider calls or a live quality evaluation.
 
 ## Prompt and lifecycle contract
 

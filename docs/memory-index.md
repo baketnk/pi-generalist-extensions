@@ -91,9 +91,6 @@ Already-open read handles in another process can temporarily retain unlinked
 bytes, but generation checks prevent knowingly returning those as fresh memory.
 Already sent packets, prior exports and external filesystem backups cannot be
 recalled or securely erased. The index is not an encryption or process sandbox.
-The manual housekeeping reviewer retains no persistent payload/report. It checks
-selected records/configuration before showing results; already-sent requests and
-already-displayed text cannot be recalled.
 
 ## Validation
 

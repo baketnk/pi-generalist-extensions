@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { BorderedLoader, getAgentDir, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, withFileMutationQueue, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type, type Static } from "typebox";
 import { Check } from "typebox/value";
@@ -12,7 +12,6 @@ import { POLICY_ENTRY, readMemoryPolicy, type MemoryPolicy } from "../lib/memory
 import { RecallIndex, rebuildRecallIndex, storeStamp } from "../lib/memory/index.ts";
 import { makePacket, packetText, parsePacket, PACKET_TYPE, PACKET_BYTES, type MemoryPacket } from "../lib/memory/select.ts";
 import { captureOrigin, operationId, retainedSource, sourceCatalog } from "../lib/memory/capture.ts";
-import { boundedHousekeeping, housekeepingPayload, reviewMemory } from "../lib/memory/housekeeping.ts";
 import { formatOutput } from "../lib/output.ts";
 import type { StatusIconsController } from "../lib/status-icons.ts";
 import { snapshotContext, type Snapshot } from "../lib/snapshot-context.ts";
@@ -97,9 +96,7 @@ export default function memory(pi: ExtensionAPI, statusIcons?: StatusIconsContro
   let pending: { accessHash: string; packet: MemoryPacket; requestId?: string } | undefined;
   let supplied: Supplied | undefined;
   let validated: string | undefined;
-  let housekeepingJob: AbortController | undefined;
   let lastContext: ExtensionContext | undefined;
-  const cancelHousekeeping = () => { housekeepingJob?.abort(); };
   pi.registerFlag("memory-config", { type: "string", description: "Explicit native memory config path (does not enable memory)" });
   const configPath = () => {
     const flag = pi.getFlag("memory-config");
@@ -136,10 +133,10 @@ export default function memory(pi: ExtensionAPI, statusIcons?: StatusIconsContro
       policy = { ...policy, configDigest: digest };
     }
     pi.appendEntry(POLICY_ENTRY, policy);
-    cancelHousekeeping(); epoch++; pending = undefined; on = enabled; problem = undefined; syncTools(ctx);
+    epoch++; pending = undefined; on = enabled; problem = undefined; syncTools(ctx);
   };
   const restore = (ctx: ExtensionContext) => {
-    cancelHousekeeping(); closed = false; epoch++; on = false; pending = undefined; supplied = undefined; problem = undefined;
+    closed = false; epoch++; on = false; pending = undefined; supplied = undefined; problem = undefined;
     validated = undefined;
     const hasPolicy = ctx.sessionManager.getBranch().some(e => e.type === "custom" && e.customType === POLICY_ENTRY);
     if (!hasPolicy) {
@@ -170,7 +167,7 @@ export default function memory(pi: ExtensionAPI, statusIcons?: StatusIconsContro
   statusIcons?.onChange(() => { if (!closed && lastContext) syncStatus(lastContext); });
   pi.on("session_start", (_e, ctx) => restore(ctx));
   pi.on("session_tree", (_e, ctx) => restore(ctx));
-  pi.on("session_shutdown", () => { cancelHousekeeping(); closed = true; epoch++; on = false; pending = undefined; supplied = undefined; });
+  pi.on("session_shutdown", () => { closed = true; epoch++; on = false; pending = undefined; supplied = undefined; });
   pi.on("model_select", () => { pending = undefined; }); // never carry an old model allowance to a new model
   pi.on("session_compact", event => { if (!event.willRetry) pending = undefined; });
   pi.on("before_agent_start", (event, ctx) => {
@@ -348,86 +345,12 @@ export default function memory(pi: ExtensionAPI, statusIcons?: StatusIconsContro
     set(false, ctx);
     ctx.ui.notify("Pairing preference saved; memory off after configuration changes. /generalist companion explicitly enables both. /meitan remains independent.", "info");
   };
-  const configureHousekeeping = async (ctx: ExtensionContext) => {
-    if (closed || !ctx.hasUI) throw new Error("Housekeeping settings require interactive/RPC human review");
-    const ticket = epoch, path = configPath(), old = readMemoryConfig(path);
-    if (!old.value) throw new Error("Configure the native store with /memory configure first");
-    const current = old.value.housekeeping;
-    const choice = await ctx.ui.select(`Memory housekeeping (${current?.enabled ? `${current.provider}/${current.model}` : "off"})`,
-      ["Choose model and enable manual reviews", "Disable"]);
-    if (!choice) return;
-    let housekeeping = current;
-    if (choice === "Disable") {
-      if (!current) return;
-      housekeeping = { ...current, enabled: false };
-    } else {
-      const available = ctx.modelRegistry.getAvailable();
-      const choices = available.map(m => `${m.provider}/${m.id}`).sort();
-      if (!choices.length) throw new Error("No available models; configure provider authentication in Pi first");
-      const selected = await ctx.ui.select("Separate housekeeping model (no active-model fallback)", choices);
-      if (!selected) return;
-      const model = available.find(m => `${m.provider}/${m.id}` === selected);
-      if (!model) throw new Error("Unknown housekeeping model");
-      if (!await ctx.ui.confirm("Enable manual memory housekeeping?", `Selected records will be sent to ${selected}, independently of the chat model. Each run requires confirmation. No automatic scheduling, acceptance, deletion or original edits.`)) return;
-      housekeeping = { enabled: true, provider: model.provider, model: model.id };
-    }
-    if (closed || ticket !== epoch) throw new Error("Memory session changed during settings review");
-    saveMemoryConfig(path, { ...old.value, housekeeping }, old.digest);
-    set(false, ctx);
-    ctx.ui.notify("Housekeeping settings saved. Recall is off after configuration changes; review /memory on to restore it. Run /memory housekeep ID [ID…] for a separate read-only review.", "info");
-  };
-  const housekeep = async (ids: string[], ctx: ExtensionContext) => {
-    if (closed || !ctx.hasUI) throw new Error("Housekeeping requires interactive/RPC human review");
-    if (housekeepingJob) throw new Error("Housekeeping already running; use /memory housekeep-cancel");
-    const ticket = epoch, c = readMemoryConfig(configPath());
-    if (!c.value?.housekeeping?.enabled) throw new Error("Enable a separate model in /generalist housekeeping or /memory housekeeping first");
-    const scopes = [...scopesFor(c.value, readMemoryPolicy(ctx), ctx.cwd), "unassigned" as const];
-    if (!ids.length || ids.length > 8) throw new Error("Use /memory housekeep with one to eight memory IDs");
-    const store = new MemoryStore(c.value.storeRoot, c.value.storeId);
-    const rows = ids.map(recordId => store.read(recordId, scopes)), payload = housekeepingPayload(rows);
-    const policy = canonical(readMemoryPolicy(ctx));
-    const fresh = () => {
-      if (closed || ticket !== epoch || readMemoryConfig(configPath()).digest !== c.digest || canonical(readMemoryPolicy(ctx)) !== policy ||
-          housekeepingPayload(ids.map(recordId => store.read(recordId, scopes))) !== payload) throw new Error("Memory selection/configuration changed; review cancelled");
-    };
-    const controller = new AbortController(); housekeepingJob = controller;
-    try {
-      const selectedModel = `${c.value.housekeeping.provider}/${c.value.housekeeping.model}`;
-      if (!await ctx.ui.confirm(`Send selected memory to ${selectedModel}?`, `${payload}\n\nOnly these records; unassigned may contain mixed personal/project data. Output is advisory only, not saved to memory.`, { signal: controller.signal })) return;
-      controller.signal.throwIfAborted(); fresh();
-      const run = () => boundedHousekeeping(controller, async signal => {
-        fresh();
-        const result = await reviewMemory(ctx, c.value!.housekeeping!, payload, signal);
-        signal.throwIfAborted(); fresh();
-        return result;
-      });
-      const result = ctx.mode === "tui"
-        ? await ctx.ui.custom<Awaited<ReturnType<typeof reviewMemory>> | undefined>((tui, theme, _keys, done) => {
-          const loader = new BorderedLoader(tui, theme, `Reviewing memory with ${selectedModel} (60s limit)…`);
-          loader.onAbort = () => { controller.abort(); done(undefined); };
-          run().then(done).catch(() => done(undefined));
-          return loader;
-        })
-        : await run();
-      if (!result) { ctx.ui.notify("Housekeeping cancelled, failed or stale; no memory changes made.", "warning"); return; }
-      controller.signal.throwIfAborted(); fresh();
-      // Metadata only: the report/payload is not persisted or injected into the active agent.
-      pi.appendEntry("generalist:memory:housekeeping-run-v1", { provider: result.provider, model: result.model,
-        records: rows.map(r => ({ id: r.id, revision: r.revision })), usage: result.usage, timestamp: Date.now() });
-      await ctx.ui.editor("Housekeeping suggestions — unsaved, unverified; closing makes no changes", result.text);
-      ctx.ui.notify("Review closed. No records changed; usage is recorded in the housekeeping audit entry (not Pi session totals).", "info");
-    } finally { if (housekeepingJob === controller) housekeepingJob = undefined; }
-  };
-
   pi.registerCommand("memory", {
-    description: "Native memory: status|configure|on|off|profile|reindex|context|review|show|accept|pin|unpin|personal|housekeeping|housekeep ID [ID…]|housekeep-cancel",
-    getArgumentCompletions: prefix => ["status", "configure", "personal", "on", "off", "profile default", "profile project", "profile continuity", "reindex", "context", "review", "show", "accept", "pin", "unpin", "housekeeping", "housekeep", "housekeep-cancel"].filter(v => v.startsWith(prefix)).map(value => ({ value, label: value })),
+    description: "Native memory: status|configure|on|off|profile|reindex|context|review|show|accept|pin|unpin|personal",
+    getArgumentCompletions: prefix => ["status", "configure", "personal", "on", "off", "profile default", "profile project", "profile continuity", "reindex", "context", "review", "show", "accept", "pin", "unpin"].filter(v => v.startsWith(prefix)).map(value => ({ value, label: value })),
     async handler(raw, ctx) {
       const [action = "status", arg, revision, ...extra] = raw.trim().split(/\s+/).filter(Boolean);
-      if (action === "housekeep-cancel" && !arg) { cancelHousekeeping(); return; }
       if (action === "personal" && !arg) { await ctx.waitForIdle(); await configurePersonal(ctx); return; }
-      if (action === "housekeeping" && !arg) { await ctx.waitForIdle(); await configureHousekeeping(ctx); return; }
-      if (action === "housekeep") { await ctx.waitForIdle(); await housekeep([arg, revision, ...extra].filter((v): v is string => v !== undefined), ctx); return; }
       if (extra.length) throw new Error("Too many memory command arguments");
       const notify = (value: unknown) => { if (ctx.hasUI) ctx.ui.notify(typeof value === "string" ? value : formatOutput(value, ctx), "info"); };
       if (action === "off") { set(false, ctx); notify("Native memory off. Previous provider requests and session traces are not erased."); return; }
@@ -456,7 +379,6 @@ export default function memory(pi: ExtensionAPI, statusIcons?: StatusIconsContro
         const config: MemoryConfig = { version: 1, storeRoot: store.root, storeId: snapshot.storeId,
           projects: same ? old.value!.projects.map(p => ({ ...p, paths: p.paths.filter(path => !projectId || path !== cwd) })).filter(p => p.paths.length) : [],
           personalIds: same ? [...old.value!.personalIds] : [], pins: same ? old.value!.pins : [],
-          ...(same && old.value!.housekeeping ? { housekeeping: old.value!.housekeeping } : {}),
           ...(same && old.value!.defaultPersonalId ? { defaultPersonalId: old.value!.defaultPersonalId } : {}),
           ...(same && old.value!.preferMeitanMemory !== undefined ? { preferMeitanMemory: old.value!.preferMeitanMemory } : {}) };
         if (projectId) {
@@ -518,7 +440,7 @@ export default function memory(pi: ExtensionAPI, statusIcons?: StatusIconsContro
       throw new Error("Unknown /memory action; see command help");
     },
   });
-  return Object.assign(() => on, { set, configureHousekeeping, configurePersonal, configurePairing,
+  return Object.assign(() => on, { set, configurePersonal, configurePairing,
     prefersCompanion: () => readMemoryConfig(configPath()).value?.preferMeitanMemory === true,
     enableDefault: (ctx: ExtensionContext) => set(true, ctx, { profile: "default" }),
   });

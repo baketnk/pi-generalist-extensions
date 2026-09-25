@@ -14,7 +14,6 @@ type Features = Record<"meitan" | "memory", ToggleController> & {
   patch?: ToggleController;
   icons?: ToggleController;
   memory: ToggleController & {
-    configureHousekeeping?: (ctx: ExtensionContext) => Promise<void>;
     configurePersonal?: (ctx: ExtensionContext) => Promise<void>;
     configurePairing?: (ctx: ExtensionContext) => Promise<void>;
     enableDefault?: (ctx: ExtensionContext) => void;
@@ -125,8 +124,8 @@ export function registerGeneralistSettings(pi: ExtensionAPI, features: Features,
     if (defaults && !hasBranchSetting(ctx, OUTPUT_CONFIG_ENTRY)) pi.appendEntry(OUTPUT_CONFIG_ENTRY, { rawJson: defaults.output });
   });
   pi.registerCommand("generalist", {
-    description: "Configure Generalist features and output: /generalist [status|meitan|memory|output|patch|icons] [on|off|toggle]; personal|pairing|companion|housekeeping|background|subagents|subagent-limits|loop|dashboard",
-    getArgumentCompletions: prefix => ["status", ...featureIds(features), "personal", "pairing", "companion", "housekeeping", "background", "subagents", "subagent-limits", "loop", "dashboard", "on", "off", "toggle"]
+    description: "Configure Generalist features and output: /generalist [status|meitan|memory|output|patch|icons] [on|off|toggle]; personal|pairing|companion|background|subagents|subagent-limits|loop|dashboard",
+    getArgumentCompletions: prefix => ["status", ...featureIds(features), "personal", "pairing", "companion", "background", "subagents", "subagent-limits", "loop", "dashboard", "on", "off", "toggle"]
       .filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
     handler: async (args, ctx) => {
       const [target, action, ...extra] = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -147,7 +146,6 @@ export function registerGeneralistSettings(pi: ExtensionAPI, features: Features,
         "subagent-limits": (context: ExtensionContext) => configureWorkerLimits(context, options.agentDir ?? getAgentDir()),
         loop: (context: ExtensionContext) => configureLoopLimit(pi, context),
         dashboard: (context: ExtensionContext) => requestDashboard(pi, context),
-        housekeeping: features.memory.configureHousekeeping,
         personal: features.memory.configurePersonal,
         pairing: features.memory.configurePairing,
       };
@@ -176,10 +174,6 @@ export function registerGeneralistSettings(pi: ExtensionAPI, features: Features,
             values: ["on", "off"],
             description: descriptions[id],
           }));
-          if (features.memory.configureHousekeeping) items.push({
-            id: "housekeeping", label: "Memory housekeeping model", currentValue: "configure…",
-            values: ["configure…", "open"], description: "Optional separate review model.",
-          });
           if (features.memory.configurePersonal) items.push({
             id: "personal", label: "Default personal memory", currentValue: "configure…", values: ["configure…", "open"],
             description: "Optional personal context.",

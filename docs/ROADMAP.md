@@ -20,7 +20,7 @@ The environment already provides file reads and edits, shell execution, and para
 - **Switchboard dashboard and human task offers:** model-free roster/mail inspection and explicitly accepted foreground task delivery.
 - **Host-provided Code Mode (local Pi fork):** opt-in trusted nested-tool composition through a disposable Node worker; it is not packaged here or sandboxed.
 
-These provide useful remembering, execution, and organizing primitives. Native memory no longer depends on foreground wake/nap compression: ordinary retrieval is local and the optional housekeeping reviewer is separately configured and human-triggered. The remaining gaps center on making nested-tool orchestration portable and safely supportable, delegation, external information retrieval, visual observation, and the proposed orchestration follow-ons.
+These provide useful remembering, execution, and organizing primitives. Native memory no longer depends on foreground wake/nap compression: ordinary retrieval is local. The remaining gaps center on making nested-tool orchestration portable and safely supportable, delegation, external information retrieval, visual observation, and the proposed orchestration follow-ons.
 
 A missing first-class interface does not imply that the underlying capability is impossible. Shell commands, local programs, and project-specific scripts can often substitute. The question is where repeated improvisation creates enough lifecycle, safety, or context-management cost to justify a dedicated interface.
 
@@ -37,7 +37,7 @@ A missing first-class interface does not imply that the underlying capability is
 | Visual inspection loop | Project-driven | Observe and validate interactive applications |
 | Execution receipts | Implemented for new managed jobs | Preserve what actually ran and under which source state |
 
-Managed jobs and their initial receipts are implemented as independent execution capabilities. Pi-native memory is an independent, explicitly activated design track; its optional housekeeping reviewer can use a separately selected Pi model. Further implementation ordering should follow demonstrated needs and separate approval.
+Managed jobs and their initial receipts are implemented as independent execution capabilities. Pi-native memory is an independent, explicitly activated design track. Further implementation ordering should follow demonstrated needs and separate approval.
 
 ## 1. Managed background jobs
 
@@ -338,7 +338,7 @@ Verify that failed, cancelled, timed-out, and successful runs produce distinguis
 
 Detailed design: [portable, pi-native memory proposal](memory-proposal.md).
 Implemented foundations: [bounded portable store](memory-store.md) and
-[offline OptMem migration/review tooling](memory-migration.md), with immutable
+offline candidate review tooling, with immutable
 logical revisions, scoped explicit lookup, transfer, atomic candidate import,
 unassigned classification/acceptance and confirmed purge. The default migration
 destination is the unassigned review inbox. The [default-off Pi adapter](memory-runtime.md)
@@ -363,7 +363,6 @@ An optional, explicitly configured tool-free worker produces rebuildable search 
 The user wants a reusable Generalist setting for small/background model operations,
 including an optional conversation-to-memory candidate extractor to catch missed
 foreground captures. This is **not implemented by the lexical relevance change**.
-The existing housekeeping setting remains a separate, manual read-only reviewer.
 
 The configuration-only affordance is now implemented: `/generalist background`
 selects an exact provider/model from the existing catalogue, with branch-local

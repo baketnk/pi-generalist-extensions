@@ -12,13 +12,13 @@ Run `/reload` in an existing pi session, or start a new one. The bundled **Meita
 
 - `/meitan [on|off|status]`: toggle personality; no argument flips it.
 - `/memory`: native memory status; `/memory configure`, `/memory on`, `/memory off`, `/memory context` and review controls.
-- `/generalist`: bundle settings, including default personal memory, Meitan pairing preference, the housekeeping model, and output format. In its TUI, `Ctrl+S` saves the current Meitan, memory, output, patch, footer-icon, small/background-model, forced-subagent-model, and loop-count choices as global defaults in `~/.pi/agent/extensions/generalist-settings.json`; current branch choices still win. A saved memory-on preference creates a fresh grant against the current native-memory config and scopes, failing closed if validation fails. Existing branch grants suspend when their bound config changes. Extension results use readable plain text by default; `/generalist output on` enables branch-local raw JSON diagnostics (`output off` restores readable text). `/generalist companion` explicitly enables Meitan + default memory; `/generalist personal` and `/generalist pairing` configure the remembered defaults. Individual `meitan on|off|toggle` and `memory on|off|toggle` controls remain independent.
+- `/generalist`: bundle settings, including default personal memory, Meitan pairing preference, and output format. In its TUI, `Ctrl+S` saves the current Meitan, memory, output, patch, footer-icon, small/background-model, forced-subagent-model, and loop-count choices as global defaults in `~/.pi/agent/extensions/generalist-settings.json`; current branch choices still win. A saved memory-on preference creates a fresh grant against the current native-memory config and scopes, failing closed if validation fails. Existing branch grants suspend when their bound config changes. Extension results use readable plain text by default; `/generalist output on` enables branch-local raw JSON diagnostics (`output off` restores readable text). `/generalist companion` explicitly enables Meitan + default memory; `/generalist personal` and `/generalist pairing` configure the remembered defaults. Individual `meitan on|off|toggle` and `memory on|off|toggle` controls remain independent.
 - `/generalist patch on|off|toggle` (also `/patch on|off|status`, or `pi --patch`): optional Codex-style `apply_patch` tool, off by default. Add/update/delete/move local project files with preflight, tolerant matching, and explicit partial-failure reports. Built-in `edit` remains available. See [patch syntax, limits, and guarantees](docs/apply-patch.md).
 - `/status-icons [on|off|status]` (or `/generalist icons on|off|toggle`): show every Generalist footer boolean as a labelled check/cross (for example, `meitan: ✓` or `meitan: ✗`) instead of only showing enabled `name: on` labels. This is branch-local and off by default. Pi sends Unicode verbatim; terminals/fonts that lack those glyphs show their own fallback, so this does not require or attempt to detect Nerd Fonts.
 - `/tasks [clear]`: view or clear the branch-local task checklist.
 - `/bg-tasks [list|status ID|output ID|cancel ID]`: inspect finite Linux commands launched with `bg_tasks`. The model tool can also wait for the next/all active jobs, cancel all, or ignore selected/all results. Jobs are session-bound and stop on reload, session replacement, and graceful Pi exit.
 - `/subagents`: model-free live inspection of owned SDK workers (read-only by default, opt-in `permissions:"implement"` for edits and shell tests in the shared checkout); `/subagents stop` cancels them. `/subagents model [off|self|next-smaller|provider/model]` applies a branch-local human model lock that the agent cannot override; the Generalist settings window exposes it and `Ctrl+S` saves it as a default. `/subagents limits [turns tools]` inspects or saves the new-run work-response/tool budgets (24/80 by default, plus one report-only synthesis response/call on exhaustion); **Subagent turn/tool limits** in `/generalist` edits the same persistent setting immediately. The agent uses `subagents` for explicit fresh/fork starts, peeking, clarification, joining and report collection. Fork requires a compatible Pi snapshot hook and human history-sharing grant. See [the implemented contract](docs/subagents.md).
-- `/generalist background`: select or clear the **Small/background model** (also in `/generalist`); `background status` inspects it and `background clear` clears it. Uses the existing Pi model catalogue, including configured local models, without refresh or connection checks. Selection is branch-local; reopen `/generalist` and press `Ctrl+S` to save it for new sessions. Configuration only: no calls, server launches, foreground-model changes, fallback, or consumers. Memory housekeeping and subagents remain independent.
+- `/generalist background`: select or clear the **Small/background model** (also in `/generalist`); `background status` inspects it and `background clear` clears it. Uses the existing Pi model catalogue, including configured local models, without refresh or connection checks. Selection is branch-local; reopen `/generalist` and press `Ctrl+S` to save it for new sessions. Configuration only: no calls, server launches, foreground-model changes, fallback, or consumers. Subagents remain independent.
 - `/loop [count] <prompt>`: send the same prompt sequentially in fresh sessions (one completed response per session). If count is omitted, use the branch's **Default /loop count** in `/generalist` (10 initially; 1–1000). `/generalist loop` edits it; `Ctrl+S` in the settings window saves it for future sessions. The footer shows `loop:X/Y` while it runs and clears when it finishes or stops. Cancelling a session switch or aborting/failing a response stops the loop. The final session stays open.
 - `/questions [list|clear]` (or `/q`): answer, inspect, or discard asynchronously queued questions; `Ctrl+Shift+Q` opens the oldest batch.
 - `tool_feedback`: let the model report tool behavior, usability, limitations, or design concerns, including friction when a tool call succeeds. Each report is saved as a private, immutable JSON file under `~/.pi/agent/tool-feedback/`; only the supplied report fields and timestamp are recorded, with no automatic transcript capture or external sending. After the agent fully settles, a visible notification shows each new report's submitted prose (not raw JSON); pending reports are also shown before a reload or session shutdown when UI is available.
@@ -110,23 +110,15 @@ project` excludes personal memory; `/memory profile default` restores the combin
 profile. Existing project-only branch choices remain project-only until changed. Ordinary recall/reindexing is local;
 the active agent authors notes. No automatic compression, reminder or shutdown save.
 
-Optional **Memory housekeeping model** in `/generalist` (or `/generalist housekeeping`)
-selects a separate provider/model for manual, read-only review. After configuration,
-`/memory housekeep ID [ID…]` asks permission to send up to eight selected records.
-It returns cleanup/classification suggestions without modifying memory or involving
-the active conversation. Default off; no model fallback or automatic scheduling.
-
 See [first-use setup, commands and privacy/lifecycle contract](docs/memory-runtime.md),
 [index semantics and budgets](docs/memory-index.md), and [portable store](docs/memory-store.md).
 The workpad file is in-session working context; durable memory is out-of-session.
 **Off is not amnesia or a filesystem sandbox:** prior outputs, packet audits,
 exports and backups remain. Ordinary shell/read tools retain filesystem access.
 
-The OptMem runtime is removed. Remove obsolete standalone `optmem.ts` resources
-and `--optmem` launcher flags, then reload Pi. Existing archives remain untouched.
-The [offline importer](docs/memory-migration.md) remains for a separately approved
-migration, with digest-gated staging, unassigned review, classification/acceptance,
-and confirmed purge. No live archive is imported or native backend enabled automatically.
+The OptMem runtime and its offline importer are removed. Remove obsolete standalone `optmem.ts` resources
+and `--optmem` launcher flags, then reload Pi. Existing archives remain untouched; native stores already
+imported keep their imported records.
 
 ## Reflective continuity
 

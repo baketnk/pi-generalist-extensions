@@ -4,19 +4,12 @@ import { dirname, isAbsolute } from "node:path";
 import { canonical, hash, id, scope, type Scope } from "./schema.ts";
 import { boundedFile, checkRoot } from "./store.ts";
 
-export interface HousekeepingConfig {
-  enabled: boolean; provider: string; model: string;
-}
-export function validateHousekeeping(value: unknown): asserts value is HousekeepingConfig {
-  keys(value, ["enabled", "provider", "model"]);
-  if (typeof value.enabled !== "boolean" || [value.provider, value.model].some(v =>
-    typeof v !== "string" || !v.trim() || v.length > 200 || /[\s\x00-\x1f]/.test(v))) throw new Error("Invalid housekeeping model selection");
-}
 export interface MemoryConfig {
   version: 1; storeRoot: string; storeId: string;
   projects: Array<{ id: string; paths: string[] }>;
   personalIds: string[]; pins: Array<{ id: string; scope: Scope }>;
-  housekeeping?: HousekeepingConfig;
+  /** Removed feature: accepted so existing configs still load; never read or written. */
+  housekeeping?: unknown;
   defaultPersonalId?: string;
   preferMeitanMemory?: boolean;
 }
@@ -26,7 +19,6 @@ function keys(value: unknown, allowed: string[]): asserts value is Record<string
 export function validateConfig(value: unknown): asserts value is MemoryConfig {
   keys(value, ["version", "storeRoot", "storeId", "projects", "personalIds", "pins", "housekeeping", "defaultPersonalId", "preferMeitanMemory"]);
   if (value.preferMeitanMemory !== undefined && typeof value.preferMeitanMemory !== "boolean") throw new Error("Invalid Meitan/memory preference");
-  if (value.housekeeping !== undefined) validateHousekeeping(value.housekeeping);
   if (value.version !== 1 || typeof value.storeRoot !== "string" || !isAbsolute(value.storeRoot) || value.storeRoot.length > 4096) throw new Error("Explicit absolute native store root required");
   id(value.storeId);
   if (!Array.isArray(value.projects) || value.projects.length > 32 || !Array.isArray(value.personalIds) || value.personalIds.length > 8 || !Array.isArray(value.pins) || value.pins.length > 16) throw new Error("Native memory configuration exceeds bounds");
