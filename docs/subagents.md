@@ -206,6 +206,31 @@ roll back completed or partial changes. Review the actual diff and test results.
 Workers must not launch services or detached background commands; observed worker
 exit is not proof that arbitrary shell-created descendants have exited.
 
+**Extra read roots.** A read-only `start` may pass `roots` (<=4 absolute directories) for
+reference trees outside the checkout. This needs interactive human confirmation (the
+prompt names the provider that will see the contents), is refused for `implement`
+workers, and keeps private paths and secret-named files denied. Read-only starts also
+return `inspectRoots` and, when the task text names an existing path outside them,
+`grantWarnings`, so a doomed launch is visible immediately instead of after the worker
+stalls on "Path outside inspect grant".
+
+### Parent guidance to a running worker
+
+`guide(id, text)` (<=4 KiB, at most 8 per run, only while the worker is running; a
+pending clarification is answered with `input` instead) sends advice to the worker. The
+worker appends it as a steering message at its next model boundary, so the existing
+provider prefix is untouched. The message is marked `PARENT GUIDANCE`, states that it is
+not the human user and not a new task, and grants no permissions, file ownership, scope
+or budget. Receipt is explicit: `peek` shows `guidance-sent` and then `guidance-delivered`
+(or `guidance-dropped` if the worker was already finishing). It is not a substitute for
+correcting a wrong assignment: cancel and restart for that.
+
+### Budget exhaustion handoff
+
+If the worker's own synthesis yields no usable report, the worker attaches a host-built
+partial report from tool metadata (edit/write paths, inspected paths, bash commands with
+exit status, last prose), labelled as not model-authored or verified.
+
 ### Common resource bounds
 
 | Resource | Bound |

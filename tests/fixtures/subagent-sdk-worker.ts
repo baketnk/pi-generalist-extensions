@@ -48,7 +48,8 @@ const providerConfig: Parameters<ModelRuntime["registerProvider"]>[1] = { api: "
       if (synthesis && launch.task === "budget-hold") {
         const abort = () => { message.stopReason = "aborted"; finish(); };
         if (options?.signal?.aborted) abort(); else options?.signal?.addEventListener("abort", abort, { once: true });
-      } else finish();
+      } else if (launch.task === "guided" && first) setTimeout(finish, 600); // Leave a window for parent guidance.
+      else finish();
     });
     return stream;
   },

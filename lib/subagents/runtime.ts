@@ -20,7 +20,7 @@ export interface RuntimeOptions {
 interface Live {
   child: ChildProcess; done: Promise<void>; resolve: () => void; tail: Promise<void>;
   timer?: ReturnType<typeof setTimeout>; killTimer?: ReturnType<typeof setTimeout>;
-  logBytes: number; seq: number; terminal: boolean;
+  logBytes: number; seq: number; terminal: boolean; guidance: number;
 }
 const finished = (record: RunRecord) => !["starting", "running", "needs-input"].includes(record.taskState);
 const intentHash = ({ id: _id, workerFile: _worker, permissions, ...launch }: Launch) => hash({ ...launch, permissions: workerPermissions(permissions) });
@@ -75,6 +75,10 @@ export class SubagentRuntime {
       for (const [key, value, max] of [["task", launch.task, LIMITS.taskBytes], ["label", launch.label, 160], ["operation", launch.operation, 128]] as const)
         if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value) > max) throw new Error(`Invalid ${key}.`);
       if (launch.cwd !== await realpath(launch.cwd) || !isAbsolute(launch.agentDir)) throw new Error("Canonical root and absolute agent config directory required.");
+      if (launch.readRoots?.length) {
+        if (launch.permissions !== "read-only") throw new Error("Additional read roots apply only to read-only workers.");
+        if (launch.readRoots.length > 4 || !(await Promise.all(launch.readRoots.map(async root => isAbsolute(root) && root === await realpath(root)))).every(Boolean)) throw new Error("Read roots must be at most 4 canonical absolute paths.");
+      }
       if (!["fresh", "fork"].includes(launch.mode) || (launch.mode === "fork") !== !!launch.snapshot) throw new Error("Origin must be explicit and match its snapshot.");
       if (Buffer.byteLength(JSON.stringify(launch.instructions)) > LIMITS.taskBytes) throw new Error("Repository instructions exceed the 32 KiB worker handoff bound; no silent truncation.");
       for (const [value, max] of [[launch.seconds, LIMITS.secondsMax], [launch.maxTurns, RESOURCE_CEILINGS.turns], [launch.maxTools, RESOURCE_CEILINGS.tools], [launch.maxOutputTokens, LIMITS.outputTokens]])
@@ -117,7 +121,7 @@ export class SubagentRuntime {
         env: Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("PI_") && !["NODE_OPTIONS", "NODE_PATH", "BUN_OPTIONS"].includes(key))),
       });
       let resolve!: () => void; const done = new Promise<void>(r => { resolve = r; });
-      const live: Live = { child, done, resolve, tail: Promise.resolve(), logBytes: 0, seq: 0, terminal: false };
+      const live: Live = { child, done, resolve, tail: Promise.resolve(), logBytes: 0, seq: 0, terminal: false, guidance: 0 };
       this.live.set(record.id, live);
       live.timer = setTimeout(() => this.stopNow(record.id, "timed-out", "Host wall-clock deadline reached (includes clarification)."), launch.seconds * 1000);
       child.once("spawn", () => { record.pid = child.pid; record.process = "live"; this.persist(record, live); });
@@ -196,6 +200,23 @@ export class SubagentRuntime {
     await new Promise<void>((resolve, reject) => live.child.send({ version: 1, type: "input", id: question, text }, error => error ? reject(error) : resolve()));
     if (record.taskState === "needs-input" && record.question?.id === question) { record.question = undefined; record.taskState = "running"; this.persist(record, live); }
     return this.status(id);
+  }
+  /**
+   * Bounded parent guidance for a running worker. The worker appends it at its next model boundary
+   * (never rewriting prior context) and acknowledges with a `guidance-delivered` event.
+   */
+  async guide(id: string, text: string) {
+    if (typeof text !== "string" || !text.trim() || Buffer.byteLength(text) > LIMITS.guidanceBytes) throw new Error(`Guidance must be non-empty and at most ${LIMITS.guidanceBytes} bytes.`);
+    const record = this.records.get(id), live = this.live.get(id);
+    if (!record || !live || live.terminal || finished(record) || !live.child.connected) throw new Error("Guidance requires a live, unfinished owned worker.");
+    if (record.taskState === "needs-input") throw new Error("Worker is waiting on a clarification; answer it with input instead.");
+    if (live.guidance >= LIMITS.guidanceCount) throw new Error(`Guidance limit (${LIMITS.guidanceCount}) reached for this run; cancel and restart with a corrected task if the assignment changed.`);
+    const guidanceId = randomUUID(); live.guidance++;
+    await new Promise<void>((resolve, reject) => live.child.send({ version: 1, type: "guidance", id: guidanceId, text }, error => error ? reject(error) : resolve()));
+    live.tail = live.tail.then(() => this.store.append(id, { seq: ++live.seq, at: Date.now(), kind: "guidance-sent", text: plain(text), data: { id: guidanceId } })).catch(e => this.storageFailure(record, e));
+    await live.tail;
+    return { guidanceId, status: "sent", remaining: LIMITS.guidanceCount - live.guidance,
+      note: "Not yet received. Delivery happens at the worker's next model boundary; confirm with peek for a guidance-delivered (or guidance-dropped) event. Guidance is parent advice, not user authority, and grants no permissions, ownership or budget." };
   }
   async collect(id: string) {
     const record = this.records.get(id); if (!record) throw new Error("Unknown owned run.");

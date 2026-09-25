@@ -10,7 +10,7 @@ export function workerPermissions(value: unknown): WorkerPermissions {
 }
 export const LIMITS = { active: 4, activeMax: 16, seconds: 600, secondsMax: 1800, turns: 24, tools: 80,
   outputTokens: 4096, taskBytes: 32768, snapshotBytes: 2 * 1024 * 1024, logBytes: 8 * 1024 * 1024,
-  reportBytes: 8192, pageBytes: 16384, runs: 128 } as const;
+  reportBytes: 8192, guidanceBytes: 4096, guidanceCount: 8, pageBytes: 16384, runs: 128 } as const;
 export interface ContextSnapshotEvent {
   type: "context_snapshot"; messages: AgentMessage[]; leafId: string | null;
   contextErrors: number; providerRequestHooks: boolean;
@@ -30,6 +30,8 @@ export interface Launch {
   seconds: number; maxTurns: number; maxTools: number; maxOutputTokens: number;
   instructions: { path: string; content: string }[]; snapshot?: ForkSnapshot;
   privatePaths?: string[];
+  /** Additional human-confirmed read-only inspect roots (read-only workers only). */
+  readRoots?: string[];
   agentDir: string; workerFile?: string;
 }
 export type TaskState = "starting" | "running" | "needs-input" | "reported" | "incomplete" | "failed" | "cancelled" | "timed-out" | "budget-exceeded" | "interrupted";
@@ -51,4 +53,4 @@ export type WorkerPacket =
   | { version: 1; type: "event"; event: WorkerEvent }
   | { version: 1; type: "needs-input"; id: string; text: string }
   | { version: 1; type: "terminal"; state: TaskState; reason?: string; report?: WorkerReport };
-export type ParentPacket = { version: 1; type: "input"; id: string; text: string } | { version: 1; type: "cancel" };
+export type ParentPacket = { version: 1; type: "input"; id: string; text: string } | { version: 1; type: "guidance"; id: string; text: string } | { version: 1; type: "cancel" };

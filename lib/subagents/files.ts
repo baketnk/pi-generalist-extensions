@@ -1,5 +1,6 @@
 import { constants, type Dirent } from "node:fs";
 import { lstat, open, opendir, realpath } from "node:fs/promises";
+import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -9,16 +10,23 @@ const hidden = new Set([".git", ".pi", ".meitan", "node_modules", ".ssh", ".aws"
 const sensitive = (name: string) => hidden.has(name) || name === ".env" || name.startsWith(".env.") || /^(auth|credentials|capability)\.json$/i.test(name);
 export class InspectFiles {
   root: string;
+  /** Primary root first; extra roots are human-confirmed read-only grants. */
+  roots: string[];
   privatePaths: string[];
-  constructor(root: string, privatePaths: string[] = []) { this.root = root; this.privatePaths = privatePaths.map(p => resolve(p)); }
+  constructor(root: string, privatePaths: string[] = [], extraRoots: string[] = []) { this.root = root; this.roots = [root, ...extraRoots]; this.privatePaths = privatePaths.map(p => resolve(p)); }
   private denied(path: string) {
     return this.privatePaths.some(root => { const rel = relative(root, path); return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`)); });
   }
   async path(input: string) {
     if (typeof input !== "string" || input.includes("\0")) throw new Error("Invalid path.");
-    const path = resolve(this.root, input), rel = relative(this.root, path);
-    if (isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`) || rel.split(sep).some(sensitive) || this.denied(path)) throw new Error("Path outside inspect grant or private path.");
-    let current = this.root;
+    const path = resolve(this.root, input);
+    let base = this.root, rel = "", inside = false;
+    for (const root of this.roots) {
+      rel = relative(root, path);
+      if (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`)) { base = root; inside = true; break; }
+    }
+    if (!inside || rel.split(sep).some(sensitive) || this.denied(path)) throw new Error(`Path outside inspect grant or private path. Granted roots: ${this.roots.join(", ")}.`);
+    let current = base;
     for (const part of rel.split(sep).filter(Boolean)) {
       current = join(current, part);
       if ((await lstat(current)).isSymbolicLink()) throw new Error("Inspect profile does not follow symlinks.");
@@ -70,8 +78,24 @@ export class InspectFiles {
     return { matches, files, limited: omitted };
   }
 }
-export function inspectTools(root: string, privatePaths: string[] = []) {
-  const files = new InspectFiles(root, privatePaths);
+/**
+ * Existing absolute, ~/ or ../ paths named in task text that fall outside every granted root.
+ * A heuristic warning for read-only starts, not enforcement (InspectFiles enforces).
+ */
+export async function outsideGrantPaths(task: string, roots: string[]): Promise<string[]> {
+  const found = new Set<string>();
+  for (const match of task.matchAll(/(?<![\w.~\/-])(~\/|\.\.\/|\/)[\w.@+~\/-]*/g)) {
+    const token = match[0].replace(/[.,;:)\]}]+$/, "");
+    if (token === "/" || token.length < 3) continue;
+    const path = token.startsWith("~/") ? join(homedir(), token.slice(2)) : resolve(roots[0]!, token);
+    if (roots.some(root => { const rel = relative(root, path); return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`); })) continue;
+    try { await lstat(path); found.add(path); } catch { /* not a real path; likely prose or a URL fragment */ }
+    if (found.size >= 5) break;
+  }
+  return [...found];
+}
+export function inspectTools(root: string, privatePaths: string[] = [], extraRoots: string[] = []) {
+  const files = new InspectFiles(root, privatePaths, extraRoots);
   const result = (value: unknown) => {
     const encoded = Buffer.from(JSON.stringify(value));
     const text = encoded.subarray(0, 16000).toString("utf8") + (encoded.length > 16000 ? "\n[Output clipped to <=16 KiB; request a narrower range.]" : "");

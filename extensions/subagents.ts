@@ -3,31 +3,33 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { SubagentRuntime, runCard } from "../lib/subagents/runtime.ts";
 import { SnapshotShelf } from "../lib/subagents/snapshot.ts";
 import { LIMITS, type ContextSnapshotEvent } from "../lib/subagents/types.ts";
 import { loadWorkerLimits, saveWorkerLimits, validateWorkerLimits, RESOURCE_CEILINGS } from "../lib/subagents/limits.ts";
+import { outsideGrantPaths } from "../lib/subagents/files.ts";
 import { openRuns } from "../lib/subagents/ui.ts";
 import { provisionWorker, registerActiveRuns, retireWorker } from "../lib/subagents/bridge.ts";
 import { loadModelConfig, modelKey, resolveWorkerModel, saveModelConfig } from "../lib/subagents/models.ts";
 import { forcedSubagentModel, normalizeForcedSubagentModel, setForcedSubagentModel } from "../lib/subagents/model-policy.ts";
 
 const schema = Type.Object({
-  action: StringEnum(["start", "list", "status", "peek", "join", "input", "collect", "cancel", "checkpoints", "models"] as const),
+  action: StringEnum(["start", "list", "status", "peek", "join", "input", "guide", "collect", "cancel", "checkpoints", "models"] as const),
   id: Type.Optional(Type.String({ maxLength: 64 })), ids: Type.Optional(Type.Array(Type.String({ maxLength: 64 }), { maxItems: 16 })),
   mode: Type.Optional(StringEnum(["fresh", "fork"] as const)), task: Type.Optional(Type.String({ maxLength: LIMITS.taskBytes })),
   permissions: Type.Optional(StringEnum(["read-only", "implement"] as const, { description: "read-only (default): scoped inspection, no shell or edits. implement: normal coding tools including shell, edits and writes in the shared checkout; not sandboxed. Independent of fresh/fork origin; task text alone cannot grant tools." })),
   label: Type.Optional(Type.String({ maxLength: 160 })), from: Type.Optional(Type.String({ maxLength: 64 })),
   operation: Type.Optional(Type.String({ maxLength: 128 })),
   model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "self (default; same is an alias), next-smaller (immediate configured ladder successor), or exact provider/model ID. No fallback. A human-configured model lock cannot be overridden." })),
+  roots: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 1024 }), { maxItems: 4, description: "read-only start only: extra absolute directories the worker may read/ls/grep, beyond the checkout. Needs interactive human confirmation; private paths stay denied." })),
   seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: LIMITS.secondsMax })), all: Type.Optional(Type.Boolean()),
   after: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
   question: Type.Optional(Type.String({ maxLength: 64 })), text: Type.Optional(Type.String({ maxLength: LIMITS.taskBytes })),
 }, { additionalProperties: false });
 const allowed: Record<string, string[]> = {
-  start: ["mode", "permissions", "task", "label", "from", "operation", "seconds", "model"], models: [], list: [], status: ["id"], peek: ["id", "after", "limit"],
-  join: ["ids", "seconds", "all"], input: ["id", "question", "text"], collect: ["id"], cancel: ["id", "all"], checkpoints: [],
+  start: ["mode", "permissions", "task", "label", "from", "operation", "seconds", "model", "roots"], models: [], list: [], status: ["id"], peek: ["id", "after", "limit"],
+  join: ["ids", "seconds", "all"], input: ["id", "question", "text"], guide: ["id", "text"], collect: ["id"], cancel: ["id", "all"], checkpoints: [],
 };
 
 export default function subagents(pi: ExtensionAPI, options: { workerEntry?: string; home?: string; agentDir?: string } = {}) {
@@ -87,7 +89,7 @@ export default function subagents(pi: ExtensionAPI, options: { workerEntry?: str
     return { message: { customType: "subagents:observation:v1", content, display: false }, ...(systemPrompt ? { systemPrompt } : {}) };
   });
   pi.registerTool({ name: "subagents", label: "Subagents", parameters: schema, executionMode: "sequential",
-    description: "Owned SDK workers; permissions read-only (default) or implement (explicit opt-in). Choose zero/one/several based on independent work; ceilings are not team-size targets. start(mode fresh|fork,task,label,permissions?,model?,operation?,from?,seconds<=1800) returns immediately. model is self (default), next-smaller (immediate configured ladder successor), or exact provider/model; no fallback or skipped rungs. A human model lock, when enabled, cannot be overridden. models inspects the configured ladder and lock. Thinking inherits the parent; model choice adds no permissions. Fork needs a captured checkpoint plus human history-sharing grant, excludes the entire delegating tool batch, and never inherits permissions. Read-only has scoped read/ls/grep, no shell/edits. Implement has normal coding tools including bash/edit/write: shared live checkout, unsandboxed host access, no rollback. Assign disjoint file ownership; review changes and checks. No recursive delegation or personal memory/history tools in either profile. Prefer doing useful parent work before join. list/status(id)/peek(id,after=0,limit<=100) inspect without inference or acknowledgement; checkpoints lists captured fork origins. join(ids?,seconds<=300=60,all=false) waits for any result/blocker/failure/user input, not collection. input(id,question,text) answers only a pending clarification. collect(id) returns a report claim, not proof or transcript merge. cancel(id) or cancel(all=true) stops owned processes; cleanup is observed separately. Parent turn-end/closing peek leaves workers running; global stop/reload/session change/quit cancels. No idle-parent model wake. Linux/Node24+; default 24 work turns/80 tool calls (human-configurable via /subagents limits), plus one report-only synthesis response/call on turn/tool exhaustion; collect retains findings with budget-exceeded status. Cancellation/deadlines/hard failures do not grant synthesis. 4096 output tokens per request/8MiB public log. Private host artifacts persist.",
+    description: "Owned SDK workers; permissions read-only (default) or implement (explicit opt-in). Choose zero/one/several based on independent work; ceilings are not team-size targets. start(mode fresh|fork,task,label,permissions?,model?,operation?,from?,seconds<=1800) returns immediately. model is self (default), next-smaller (immediate configured ladder successor), or exact provider/model; no fallback or skipped rungs. A human model lock, when enabled, cannot be overridden. models inspects the configured ladder and lock. Thinking inherits the parent; model choice adds no permissions. Fork needs a captured checkpoint plus human history-sharing grant, excludes the entire delegating tool batch, and never inherits permissions. Read-only has scoped read/ls/grep, no shell/edits. Implement has normal coding tools including bash/edit/write: shared live checkout, unsandboxed host access, no rollback. Assign disjoint file ownership; review changes and checks. No recursive delegation or personal memory/history tools in either profile. Prefer doing useful parent work before join. list/status(id)/peek(id,after=0,limit<=100) inspect without inference or acknowledgement; checkpoints lists captured fork origins. join(ids?,seconds<=300=60,all=false) waits for any result/blocker/failure/user input, not collection. input(id,question,text) answers only a pending clarification. guide(id,text<=4KiB) sends parent advice to a running worker (max 8/run), appended at its next model boundary without rewriting its context; receipt is a guidance-delivered event in peek. It is not user authority and grants no permissions, ownership, scope or budget. Read-only starts return inspectRoots and grantWarnings for task-named paths outside the grant; roots[] (<=4 absolute dirs, read-only only) requests extra read roots with human confirmation. collect(id) returns a report claim, not proof or transcript merge. cancel(id) or cancel(all=true) stops owned processes; cleanup is observed separately. Parent turn-end/closing peek leaves workers running; global stop/reload/session change/quit cancels. No idle-parent model wake. Linux/Node24+; default 24 work turns/80 tool calls (human-configurable via /subagents limits), plus one report-only synthesis response/call on turn/tool exhaustion; collect retains findings with budget-exceeded status. Cancellation/deadlines/hard failures do not grant synthesis. 4096 output tokens per request/8MiB public log. Private host artifacts persist.",
     async execute(callId, params, signal, _update, ctx) {
       signal?.throwIfAborted();
       for (const [key, value] of Object.entries(params)) if (key !== "action" && value !== undefined && !allowed[params.action]!.includes(key)) throw new Error(`${key} is not valid for ${params.action}.`);
@@ -114,18 +116,36 @@ export default function subagents(pi: ExtensionAPI, options: { workerEntry?: str
           }
           signal?.throwIfAborted(); if (runtime !== r) throw new Error("Parent session changed during launch.");
           const cwd = await realpath(ctx.cwd);
+          const permissions = params.permissions ?? "read-only";
+          let readRoots: string[] | undefined;
+          if (params.roots?.length) {
+            if (permissions !== "read-only") throw new Error("roots apply only to read-only workers; implement workers already have host filesystem access.");
+            readRoots = [...new Set(await Promise.all(params.roots.map(async root => {
+              if (!isAbsolute(root)) throw new Error(`Read root must be an absolute path: ${root}`);
+              const real = await realpath(root); if (real === "/" || !(await stat(real)).isDirectory()) throw new Error(`Read root must be a directory other than /: ${root}`);
+              return real;
+            })))];
+            if (!ctx.hasUI || !await ctx.ui.confirm("Grant extra read-only roots?", `A read-only subagent will be able to read, list and search these directories (private state and secret-named files stay denied), and file contents are sent to provider ${model.provider}:\n${readRoots.join("\n")}\nAllow for this worker?`)) throw new Error("Additional read roots not authorized. They need interactive human confirmation; otherwise inspect the files yourself or pass their contents in the task.");
+            signal?.throwIfAborted(); if (runtime !== r || branchEpoch !== launchEpoch) throw new Error("Parent session/branch changed during consent.");
+          }
           // Only repository/ancestor instructions, never the global personal AGENTS file.
           const instructions = loadProjectContextFiles({ cwd, agentDir }).filter(file => {
             const rel = relative(agentDir, file.path); return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
           });
           signal?.throwIfAborted(); if (runtime !== r || branchEpoch !== launchEpoch) throw new Error("Parent session/branch changed during launch.");
           result = await r.start({ mode: params.mode, task: params.task, label: params.label, operation: params.operation ?? callId,
-            cwd, agentDir, model, thinking, instructions, snapshot, permissions: params.permissions ?? "read-only",
+            cwd, agentDir, model, thinking, instructions, snapshot, permissions, ...(readRoots ? { readRoots } : {}),
             privatePaths: [r.options.home, ...(ctx.sessionManager.getSessionFile() ? [dirname(ctx.sessionManager.getSessionFile()!)] : [])],
             seconds: params.seconds ?? LIMITS.seconds, maxTurns: workerLimits.turns, maxTools: workerLimits.tools, maxOutputTokens: LIMITS.outputTokens }, () => {
               const available = ctx.modelRegistry.find(model.provider, model.id);
               if (!available || !ctx.modelRegistry.hasConfiguredAuth(available)) throw new Error("Selected worker model is unavailable or has no configured parent-side auth; no fallback or skipped ladder rung.");
-            }); break;
+            });
+          if (permissions === "read-only") {
+            const inspectRoots = [cwd, ...(readRoots ?? [])], grantWarnings = await outsideGrantPaths(params.task, inspectRoots);
+            result = { ...(result as object), inspectRoots, ...(grantWarnings.length ? { grantWarnings: { paths: grantWarnings,
+              note: "Existing paths named in the task are outside this read-only worker's grant, so its reads will fail. Cancel and restart with roots (needs human confirmation), paste the needed content into the task, or inspect them yourself." } } : {}) };
+          }
+          break;
         }
         case "models": {
           const config = loadModelConfig(options.agentDir ?? getAgentDir());
@@ -140,6 +160,7 @@ export default function subagents(pi: ExtensionAPI, options: { workerEntry?: str
         case "checkpoints": result = { checkpoints: shelf.list(), lastError: shelf.error, note: "Only observed post-projection checkpoints, bounded to this runtime. Not the entire saved tree." }; break;
         case "join": result = await r.join(params.ids, params.seconds, params.all, signal); break;
         case "input": if (!params.question || !params.text) throw new Error("question and text required."); result = await r.input(id(), params.question, params.text); break;
+        case "guide": if (!params.text) throw new Error("text required."); result = await r.guide(id(), params.text); break;
         case "collect": result = await r.collect(id()); break;
         case "cancel": if (params.all === true) { if (params.id) throw new Error("Choose id or all, not both."); await r.cancelAll("Parent requested cancel all."); result = r.list().slice(-16).map(runCard); } else result = await r.cancel(id()); break;
       }

@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { freezeSnapshot, SnapshotShelf } from "../lib/subagents/snapshot.ts";
-import { InspectFiles } from "../lib/subagents/files.ts";
+import { InspectFiles, outsideGrantPaths } from "../lib/subagents/files.ts";
 import { SubagentRuntime, runCard } from "../lib/subagents/runtime.ts";
 import { type Launch } from "../lib/subagents/types.ts";
 import { BoardClient } from "../lib/switchboard/client.ts";
@@ -208,7 +208,13 @@ test("SDK exhaustion reserves one synthesis response/report, blocks sibling work
         expect(results.slice(1).every((r: any) => r.isError && JSON.stringify(r).includes("Tool budget reached"))).toBe(true);
       }
     }
-    if (earlyFailure || ["budget-ignore", "budget-invalid-empty", "budget-error"].includes(spec.task)) {
+    if (["budget-ignore", "budget-invalid-empty"].includes(spec.task)) {
+      expect(record.report?.outcome).toBe("partial");
+      expect(record.report?.summary).toContain("Host-generated activity summary");
+      expect(record.reason).toContain("Host activity summary attached");
+      expect(record.report?.findings).toContain("README.md");
+      expect(events.filter(e => e.kind === "tool-start" && e.tool === "report")).toHaveLength(0);
+    } else if (earlyFailure || spec.task === "budget-error") {
       expect(record.report).toBeUndefined();
       if (!earlyFailure) expect(events.filter(e => e.kind === "tool-start" && e.tool === "report")).toHaveLength(0);
     } else if (spec.task === "budget-invalid") {
@@ -421,3 +427,51 @@ test("actual SDK permissions enforce read-only and permit write/edit/tests for f
     expect(await readFile(record.sessionFile!, "utf8")).toContain(`"permissions":"${permissions ?? "read-only"}"`);
   }
 }, 20000);
+
+test("read-only extra roots are explicit, canonical, and keep private/secret paths denied", async () => {
+  const { cwd, root } = await setup(), extra = join(root, "reference"); await mkdir(extra);
+  await writeFile(join(extra, "notes.md"), "reference evidence\n"); await writeFile(join(extra, ".env"), "SECRET"); await writeFile(join(root, "unlisted"), "nope");
+  await mkdir(join(extra, "state")); await writeFile(join(extra, "state", "worker.json"), "PRIVATE");
+  const files = new InspectFiles(cwd, [join(extra, "state")], [extra]);
+  expect(await files.text(join(extra, "notes.md"))).toBe("reference evidence\n");
+  expect((await files.search("reference", extra)).matches).toEqual([`${join(extra, "notes.md")}:1: reference evidence`]);
+  for (const path of [join(extra, ".env"), join(extra, "state", "worker.json"), join(root, "unlisted"), "../unlisted"]) await expect(files.text(path)).rejects.toThrow("Granted roots");
+  await expect(new InspectFiles(cwd).text(join(extra, "notes.md"))).rejects.toThrow("outside inspect grant");
+});
+
+test("task-named existing paths outside the read-only grant are surfaced at start", async () => {
+  const { cwd, root } = await setup(), sibling = join(root, "sibling"); await mkdir(sibling);
+  const warned = await outsideGrantPaths(`Compare against ${sibling}/ and ../sibling, see /no/such/path, a/b and https://example.com/x, plus ${cwd}/README.md.`, [cwd]);
+  expect(warned).toEqual([sibling]);
+  expect(await outsideGrantPaths(`Look at ${sibling}.`, [cwd, sibling])).toEqual([]);
+});
+
+test("runtime rejects read roots for implement workers and non-canonical roots", async () => {
+  const { runtime, request, root } = await setup();
+  await expect(runtime.start({ ...request("hold", "a"), permissions: "implement", readRoots: [root] })).rejects.toThrow("read-only");
+  await expect(runtime.start({ ...request("hold", "b"), readRoots: ["relative"] })).rejects.toThrow("canonical absolute");
+});
+
+test("parent guidance is appended at a model boundary with receipt, bounded, and never rewrites the prefix", async () => {
+  const { runtime, request } = await setup("subagent-sdk-worker.ts");
+  const run = await runtime.start({ ...request("guided"), maxTurns: 4 });
+  await until(() => runtime.status(run.id).taskState === "running");
+  await expect(runtime.guide(run.id, "  ")).rejects.toThrow("non-empty");
+  await expect(runtime.guide(run.id, "x".repeat(4097))).rejects.toThrow("at most");
+  const sent = await runtime.guide(run.id, "Check the whitespace batch case too.");
+  expect(sent.status).toBe("sent"); expect(sent.remaining).toBe(7);
+  await until(() => runtime.status(run.id).process === "exited");
+  const events = (await runtime.peek(run.id, 0, 100)).events;
+  expect(events.filter(e => e.kind === "guidance-sent")).toHaveLength(1);
+  expect(events.filter(e => e.kind === "guidance-delivered").map(e => (e.data as any).id)).toEqual([sent.guidanceId]);
+  const payloads = (await readFile(join(dirname(runtime.store.path(run.id, "launch.json")), "payloads.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  expect(payloads).toHaveLength(2);
+  const [before, after] = [payloads[0].context, payloads[1].context];
+  expect(after.systemPrompt).toBe(before.systemPrompt); expect(after.tools).toEqual(before.tools);
+  expect(after.messages.slice(0, before.messages.length)).toEqual(before.messages);
+  expect(JSON.stringify(before.messages)).not.toContain("PARENT GUIDANCE");
+  const tail = JSON.stringify(after.messages.slice(before.messages.length));
+  expect(tail).toContain(`[guidance:${sent.guidanceId}] PARENT GUIDANCE`); expect(tail).toContain("not the human user");
+  expect(tail).toContain("Check the whitespace batch case too.");
+  await expect(runtime.guide(run.id, "late")).rejects.toThrow("live, unfinished");
+});
