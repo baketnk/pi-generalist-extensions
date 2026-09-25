@@ -10,6 +10,16 @@ pi install ~/workspace/pi-generalist-extensions
 
 Run `/reload` in an existing pi session, or start a new one. The bundled **Meitan** theme is then available from `/settings`; select `meitan` (or launch once with `pi --use-theme meitan`). It carries the forest-green palette from the local Hermes skin, but it is independent of the personality toggle.
 
+### What is on by default
+
+| Feature | Default | Enable |
+| --- | --- | --- |
+| Tools always in the prompt: `update_plan`, `ask_user`/`queue_questions`, `tool_feedback`, `history_search`/`history_read`, `bg_tasks`, `subagents`, `switchboard` | on | `PI_SWITCHBOARD=off` disables switchboard |
+| `apply_patch` | off | `/patch on` |
+| `evidence` tool | off | `/evidence-tool on` |
+| Workpad (`.pi/workpad.md` notes) | off | `/workpad on` |
+| Meitan personality, native memory, reflective continuity | off | `/meitan on`, `/memory on`, `/continuity on` |
+
 - `/meitan [on|off|status]`: toggle personality; no argument flips it.
 - `/memory`: native memory status; `/memory configure`, `/memory on`, `/memory off`, `/memory context` and review controls.
 - `/generalist`: bundle settings, including default personal memory, Meitan pairing preference, and output format. In its TUI, `Ctrl+S` saves the current Meitan, memory, output, patch, footer-icon, small/background-model, forced-subagent-model, and loop-count choices as global defaults in `~/.pi/agent/extensions/generalist-settings.json`; current branch choices still win. A saved memory-on preference creates a fresh grant against the current native-memory config and scopes, failing closed if validation fails. Existing branch grants suspend when their bound config changes. Extension results use readable plain text by default; `/generalist output on` enables branch-local raw JSON diagnostics (`output off` restores readable text). `/generalist companion` explicitly enables Meitan + default memory; `/generalist personal` and `/generalist pairing` configure the remembered defaults. Individual `meitan on|off|toggle` and `memory on|off|toggle` controls remain independent.
@@ -167,6 +177,7 @@ an immutable excerpt, `/evidence check ID` checks whole-file freshness, and
 provides the same operations. Source observations and inspected test contracts
 are distinct; neither is a test pass or truth verdict. Records stay project-scoped
 outside Git, with no background work or automatic context injection.
+The model-facing `evidence` tool is off by default (it adds a tool definition to every request); `/evidence-tool on` (or `pi --evidence-tool`) enables it. The human `/evidence` commands are always available.
 See [bounds, privacy, semantics and validation](docs/evidence.md).
 
 ## Development

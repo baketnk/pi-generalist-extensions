@@ -206,3 +206,18 @@ test("viewer scrolls/resizes and neutralizes terminal controls", () => {
   expect(safeText("\x1b]52;c;secret\x07safe\x1b[31mtext")).toBe("safetext");
   view.handleInput("cancel"); expect(closed).toBe(true);
 });
+
+test("bundle toggle keeps the evidence tool inactive until enabled", async () => {
+  let active = ["read", "evidence"]; const commands: Record<string, any> = {}, events: Record<string, Function> = {};
+  const entries: any[] = [];
+  evidence({
+    registerTool() {}, registerFlag() {}, registerCommand(n: string, c: any) { commands[n] = c; }, on(n: string, fn: Function) { events[n] = fn; },
+    getFlag: () => false, appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }),
+    getActiveTools: () => active, setActiveTools: (names: string[]) => { active = names; },
+  } as any, undefined, {});
+  const ctx: any = { hasUI: false, sessionManager: { getBranch: () => entries } };
+  events.session_start!({}, ctx);
+  expect(active).toEqual(["read"]);
+  await commands["evidence-tool"].handler("on", { ...ctx, waitForIdle: async () => {} });
+  expect(active).toContain("evidence");
+});

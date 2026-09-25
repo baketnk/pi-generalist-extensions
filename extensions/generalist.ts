@@ -30,7 +30,7 @@ export default function generalist(pi: ExtensionAPI) {
   workpad(pi, icons);
   loop(pi);
   history(pi);
-  evidence(pi);
+  evidence(pi, undefined, { icons });
   continuity(pi);
   tasks(pi);
   questions(pi);

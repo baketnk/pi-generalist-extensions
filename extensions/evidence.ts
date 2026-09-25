@@ -5,12 +5,19 @@ import { Type } from "typebox";
 import { EvidenceStore, MAX_LINES, type Evidence, type EvidenceKind } from "../lib/evidence/store.ts";
 import { EvidenceView, safeText } from "../lib/evidence/view.ts";
 import { formatOutput } from "../lib/output.ts";
+import { registerToggle } from "../lib/toggle.ts";
+import type { StatusIconsController } from "../lib/status-icons.ts";
 
 const kinds = ["source-observation", "test-contract-inspected"] as const;
 const format = (e: Evidence) => `${e.id}: ${e.title}\nKind: ${e.kind} (not a test run or verdict)\nSource: ${e.source}:${e.start}–${e.end}\nCaptured: ${e.capturedAt}\nWhole-file SHA-256: ${e.fileHash}\n\nCAPTURED EXCERPT\n${e.excerpt}`;
 
 /** No hooks, startup reads, subprocesses, model calls, or prompt injection. */
-export default function evidence(pi: ExtensionAPI, root = () => join(getAgentDir(), "evidence")) {
+export default function evidence(pi: ExtensionAPI, root = () => join(getAgentDir(), "evidence"), toggle?: { icons?: StatusIconsController }) {
+  // Bundle use: off by default so the tool definition is not carried on every request. Standalone/tests skip the toggle.
+  if (toggle) registerToggle(pi, "evidence-tool", "Enable the evidence shelf tool", on => {
+    const active = pi.getActiveTools().filter(name => name !== "evidence");
+    pi.setActiveTools(on ? [...active, "evidence"] : active);
+  }, toggle.icons);
   const store = (ctx: ExtensionContext) => new EvidenceStore(root(), ctx.cwd);
   pi.registerTool({
     name: "evidence", label: "Evidence shelf",
