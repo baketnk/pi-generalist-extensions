@@ -116,5 +116,5 @@ is tested separately. The Node/Pi loader and agent-loop fixture uses a scripted
 stream with network disabled. These checks establish integration mechanics, not
 live provider cache billing, model quality or human acceptance.
 
-Run `bun test tests/continuity.test.ts tests/continuity-sdk.test.ts tests/workpad.test.ts`
+Run `bun test tests/continuity.test.ts tests/continuity-sdk.test.ts tests/snapshot-context.test.ts`
 and `bun run typecheck`. No real journal has been registered or activated by these tests.

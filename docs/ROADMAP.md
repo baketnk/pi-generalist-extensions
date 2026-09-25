@@ -11,7 +11,7 @@ For ideas worth retaining but **not queued for implementation**, see [parked ide
 The environment already provides file reads and edits, shell execution, and parallel tool calls. This package adds several complementary capabilities:
 
 - **History search/read:** bounded, cited access to earlier conversations.
-- **Workpad:** in-session revisable task understanding, separate from a checklist or out-of-session durable memory.
+- **Workpad:** an opt-in scratch file (`.pi/workpad.md`) re-supplied after compaction; separate from a checklist or out-of-session durable memory.
 - **Evidence shelf:** immutable source excerpts with explicit freshness checks.
 - **Tasks and questions:** progress tracking, blocking clarification, and asynchronous user input.
 - **Optional personality and native selective memory:** independently enabled continuity aids with local indexed recall and explicit capture.

@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { estimateTokens } from "@earendil-works/pi-coding-agent";
 import { ContinuityStore, hash, type Span } from "./store.ts";
-import { snapshotContext, type Snapshot } from "../workpad/context.ts";
+import { snapshotContext, type Snapshot } from "../snapshot-context.ts";
 
 export const STATE = "generalist:continuity:state-v1", AUDIT = "generalist:continuity:audit-v1", CONTEXT = "generalist:continuity:context-v1";
 export const SNAPSHOTS = "generalist:continuity:snapshot-v1";

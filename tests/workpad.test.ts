@@ -1,433 +1,63 @@
-import { test, expect } from "bun:test";
-import { mkdtempSync, rmSync, existsSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { convertToLlm, SessionManager } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
-import workpad, { ATTACHMENT, CONTEXT } from "../extensions/workpad.ts";
-import { WorkpadStore, PAGE_BYTES } from "../lib/workpad/store.ts";
-import { WorkpadView, plain } from "../lib/workpad/view.ts";
+import { join } from "node:path";
+import workpad, { WORKPAD_MESSAGE, WORKPAD_PATH } from "../extensions/workpad.ts";
 
-function fixture() {
-  const dir = mkdtempSync(join(tmpdir(), "workpad-test-"));
-  const root = join(dir, "pads"), store = new WorkpadStore(root, dir);
-  return { dir, root, store, clean: () => rmSync(dir, { recursive: true, force: true }) };
-}
-function harness(f: ReturnType<typeof fixture>, entries: any[] = [], manager?: SessionManager) {
-  const events: Record<string, Function> = {}, tools: Record<string, any> = {}, commands: Record<string, any> = {};
-  const notices: string[] = [];
-  const pi: any = { on: (n: string, fn: Function) => events[n] = fn,
-    registerTool: (t: any) => tools[t.name] = t, registerCommand: (n: string, c: any) => commands[n] = c,
-    appendEntry: (customType: string, data: any) => manager ? manager.appendCustomEntry(customType, data) : entries.push({ type: "custom", customType, data }),
+function harness() {
+  const dir = mkdtempSync(join(tmpdir(), "workpad-"));
+  const events: Record<string, Function> = {}, sent: any[] = [], entries: any[] = [];
+  const pi: any = {
+    on: (name: string, fn: Function) => { events[name] = fn; }, registerFlag() {}, registerCommand() {},
+    getFlag: () => false, appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data }),
+    sendMessage: (message: any, options: any) => sent.push({ message, options }),
   };
-  const ctx: any = { cwd: f.dir, hasUI: true, mode: "tui", model: { contextWindow: 10000 }, waitForIdle: async () => {},
-    sessionManager: manager ?? { getSessionId: () => "session-a", getBranch: () => entries },
-    ui: { setStatus() {}, notify: (text: string) => notices.push(text), editor: async () => undefined, select: async () => undefined },
-  };
-  workpad(pi, () => f.root);
-  const call = async (params: any, signal?: AbortSignal) => (await tools.workpad.execute("id", params, signal, undefined, ctx)).details.result;
-  const request = (messages: any[] = []) => events.context!({ messages }, ctx).messages as any[];
-  const command = (args: string) => commands.workpad.handler(args, ctx);
-  return { events, tools, commands, entries, notices, ctx, call, request, command };
+  const ctx: any = { cwd: dir, hasUI: false, sessionManager: { getBranch: () => entries } };
+  const enabled = workpad(pi);
+  events.session_start!({}, ctx);
+  const write = (text: string) => { mkdirSync(join(dir, ".pi"), { recursive: true }); writeFileSync(join(dir, WORKPAD_PATH), text); };
+  return { dir, events, sent, ctx, enabled, write, clean: () => rmSync(dir, { recursive: true, force: true }) };
 }
-const user = (content: string, timestamp = 1) => ({ role: "user", content, timestamp });
-const encoded = (messages: any[]) => convertToLlm(messages).map(m => JSON.stringify(m)).join("\n");
-const snapshots = (messages: any[]) => messages.filter(m => m.customType === CONTEXT);
 
-test("storage is lazy; immutable revisions survive reopening and reject stale writers", () => {
-  const f = fixture();
+test("off by default: no system prompt change and nothing re-sent after compaction", async () => {
+  const h = harness();
   try {
-    expect(f.store.list()).toEqual([]); expect(existsSync(f.root)).toBe(false);
-    const page = f.store.create("design", "# Design\nMaybe.");
-    expect(page.revision).toBe(1); expect(page.path.endsWith("00000001.md")).toBe(true);
-    expect(() => f.store.create("design", "another")).toThrow("conflict");
-    f.store.update("design", 1, "# Design\nCorrected.");
-    const reopened = new WorkpadStore(f.root, f.dir);
-    expect(reopened.read("design").content).toContain("Corrected");
-    expect(reopened.read("design", 1).content).toContain("Maybe");
-    expect(reopened.list()).toEqual([{ id: "design", revision: 2, title: "Design" }]);
-    expect(() => reopened.update("design", 1, "stale")).toThrow("conflict");
-    expect(readdirSync(join(f.store.directory, "design"))).toHaveLength(2);
-  } finally { f.clean(); }
+    h.write("notes");
+    expect(h.events.before_agent_start!({ systemPrompt: "base" }, h.ctx)).toBeUndefined();
+    await h.events.session_compact!({}, h.ctx);
+    expect(h.sent).toEqual([]);
+  } finally { h.clean(); }
 });
 
-test("identical updates retain revision and cache projection, but stale identical updates conflict", async () => {
-  const f = fixture();
+test("enabled: constant system-prompt addition, applied once, and one appended message after compaction", async () => {
+  const h = harness();
   try {
-    const h = harness(f), content = "# Notes\n日本語";
-    const page = f.store.create("task", content);
-    await h.call({ action: "attach", id: "task" });
-    const base = [user("A")], first = h.request(base), entries = h.entries.length;
-    expect(await h.call({ action: "update", expectedRevision: 1, content })).toEqual(page);
-    expect(readdirSync(join(f.store.directory, "task"))).toEqual(["00000001.md"]);
-    expect(h.request(base)).toEqual(first);
-    expect(h.entries).toHaveLength(entries); // no redundant snapshot
-    expect(encoded(h.request([...base, user("B", 2)])).startsWith(encoded(first) + "\n")).toBe(true);
-    // Do not normalize whitespace or mistake a different page for a no-op.
-    const revised = f.store.update("task", 1, content + "\n");
-    expect(revised.revision).toBe(2);
-    await expect(h.call({ action: "update", expectedRevision: 1, content: revised.content })).rejects.toThrow("conflict");
-    expect(f.store.update("task", 2, revised.content)).toEqual(revised);
-    expect(readdirSync(join(f.store.directory, "task"))).toHaveLength(2);
-  } finally { f.clean(); }
+    h.enabled.set(true, h.ctx);
+    const first = h.events.before_agent_start!({ systemPrompt: "base" }, h.ctx).systemPrompt as string;
+    expect(first).toContain(WORKPAD_PATH);
+    expect(h.events.before_agent_start!({ systemPrompt: first }, h.ctx)).toBeUndefined();
+    await h.events.session_compact!({}, h.ctx); // no file yet
+    expect(h.sent).toEqual([]);
+    h.write("  \n");
+    await h.events.session_compact!({}, h.ctx); // blank file
+    expect(h.sent).toEqual([]);
+    h.write("hypothesis: cache miss");
+    await h.events.session_compact!({}, h.ctx);
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0].message.customType).toBe(WORKPAD_MESSAGE);
+    expect(h.sent[0].message.content).toContain("hypothesis: cache miss");
+    expect(h.sent[0].options).toEqual({ deliverAs: "nextTurn" });
+  } finally { h.clean(); }
 });
 
-test("2/4/8 KiB write caps count UTF-8 bytes; historical 8 KiB reads remain available", () => {
-  const f = fixture();
+test("oversized notes are truncated explicitly on a character boundary", async () => {
+  const h = harness();
   try {
-    expect(f.store.maxBytes).toBe(4096);
-    for (const cap of [2048, 4096, 8192]) {
-      const s = new WorkpadStore(f.root, f.dir, cap), id = `cap-${cap}`;
-      s.create(id, "x".repeat(cap));
-      expect(() => s.update(id, 1, "x".repeat(cap + 1))).toThrow("bytes");
-      expect(s.read(id).revision).toBe(1);
-    }
-    expect(f.store.read("cap-8192").content.length).toBe(PAGE_BYTES);
-    expect(() => f.store.create("unicode", "明".repeat(1400))).toThrow("bytes");
-    expect(() => new WorkpadStore(f.root, f.dir, 123)).toThrow();
-    for (const id of ["../escape", "A", "", "a/b", "a".repeat(65)]) expect(() => f.store.create(id, "text")).toThrow();
-    expect(() => f.store.create("empty", " ")).toThrow("empty");
-    expect(() => f.store.update("cap-2048", 0, "x")).toThrow();
-    expect(() => f.store.read("cap-2048", 999999999)).toThrow();
-    const other = join(f.dir, "outside.md"); writeFileSync(other, "outside");
-    symlinkSync(other, join(f.store.directory, "cap-2048", "00000002.md"));
-    expect(() => f.store.read("cap-2048")).toThrow();
-    symlinkSync(f.dir, join(f.store.directory, "alias"));
-    expect(() => f.store.create("alias", "bad")).toThrow("directory");
-  } finally { f.clean(); }
-});
-
-test("oversized writes report received UTF-8 bytes, cap and excess with headroom guidance", async () => {
-  const f = fixture();
-  try {
-    const h = harness(f);
-    const content = "明".repeat(1400); // 1400 characters, 4200 UTF-8 bytes
-    const message = "Active page received 4200 UTF-8 bytes; limit 4096 (excess: 104 UTF-8 bytes). Shorten it by roughly 1.5–2× the excess to leave headroom rather than trimming to the exact limit. Preserve key information by summarizing, not shaving individual characters. Alternatively, select a larger cap if available (no automatic truncation).";
-    await expect(h.call({ action: "create", id: "too-large", content })).rejects.toThrow(message);
-    expect(existsSync(f.root)).toBe(false);
-    f.store.create("task", "Keep this revision.");
-    await h.call({ action: "attach", id: "task" });
-    await expect(h.call({ action: "update", expectedRevision: 1, content })).rejects.toThrow(message);
-    expect(f.store.read("task")).toMatchObject({ revision: 1, content: "Keep this revision." });
-    expect(readdirSync(join(f.store.directory, "task"))).toEqual(["00000001.md"]);
-    for (const cap of [2048, 4096, 8192]) {
-      const store = new WorkpadStore(f.root, f.dir, cap);
-      expect(() => store.create(`over-${cap}`, "x".repeat(cap + 1)))
-        .toThrow(`received ${cap + 1} UTF-8 bytes; limit ${cap} (excess: 1 UTF-8 bytes)`);
-      expect(store.create(`exact-${cap}`, "x".repeat(cap)).content.length).toBe(cap);
-    }
-  } finally { f.clean(); }
-});
-
-test("independent writers cannot both publish the same successor", async () => {
-  const f = fixture();
-  try {
-    f.store.create("shared", "initial");
-    const module = resolve(import.meta.dir, "../lib/workpad/store.ts");
-    const script = `import {WorkpadStore} from ${JSON.stringify(module)}; const s = new WorkpadStore(${JSON.stringify(f.root)},${JSON.stringify(f.dir)}); try {s.update('shared',1,'winner'); process.exit(0);} catch(e) {process.exit(String(e).includes('conflict')?2:3);}`;
-    const children = [0, 1].map(() => Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", stderr: "pipe" }));
-    expect((await Promise.all(children.map(c => c.exited))).sort()).toEqual([0, 2]);
-    expect(f.store.read("shared").revision).toBe(2);
-  } finally { f.clean(); }
-});
-
-test("startup is inert; create doesn't attach; writes require attachment/revision and honor cancellation", async () => {
-  const f = fixture();
-  try {
-    const h = harness(f); h.events.session_start!({}, h.ctx);
-    expect(existsSync(f.root)).toBe(false); expect(h.request([user("A")])).toEqual([user("A")]);
-    await h.call({ action: "create", id: "task", content: "# Tentative" });
-    expect(h.entries).toHaveLength(0);
-    await expect(h.call({ action: "update", expectedRevision: 1, content: "bad" })).rejects.toThrow("No workpad");
-    await h.call({ action: "attach", id: "task" });
-    expect(h.entries[0].customType).toBe(ATTACHMENT);
-    await expect(h.call({ action: "update", id: "other", expectedRevision: 1, content: "bad" })).rejects.toThrow("attached");
-    await h.call({ action: "update", expectedRevision: 1, content: "# Corrected" });
-    expect((await h.call({ action: "read" })).revision).toBe(2);
-    expect((await h.call({ action: "read", revision: 1 })).content).toBe("# Tentative");
-    const controller = new AbortController(); controller.abort();
-    await expect(h.call({ action: "update", expectedRevision: 2, content: "abort" }, controller.signal)).rejects.toThrow();
-    expect(f.store.read("task").revision).toBe(2);
-  } finally { f.clean(); }
-});
-
-test("[A B W1 C D W2] is append-only across edits, tool follow-ups, retries and reload", async () => {
-  const f = fixture();
-  try {
-    const h = harness(f); f.store.create("task", "# Original");
-    await h.call({ action: "attach", id: "task" });
-    const base: any[] = [user("A".repeat(100000)), user("B", 2)];
-    const first = h.request(base), prefix = encoded(first);
-    expect(base).toHaveLength(2); expect(first).toHaveLength(3);
-    expect(first.at(-1).content).toContain("not a user request");
-    expect(convertToLlm(first).at(-1)!.role).toBe("user");
-    expect(h.request(base)).toEqual(first); // no duplicate on retry
-    expect(h.request(first)).toEqual(first); // projection fed back
-    const assistant: any = { role: "assistant", content: [
-      { type: "toolCall", id: "call-a", name: "read", arguments: { path: "a" } },
-      { type: "toolCall", id: "call-b", name: "read", arguments: { path: "b" } },
-    ], timestamp: 3 };
-    const results = ["a", "b"].map(id => ({ role: "toolResult", toolCallId: `call-${id}`, toolName: "read",
-      content: [{ type: "text", text: id }], isError: false, timestamp: 4 }));
-    const longer = [...base, assistant, ...results];
-    const unchanged = h.request(longer);
-    expect(encoded(unchanged).startsWith(prefix + "\n")).toBe(true);
-    expect(snapshots(unchanged)).toHaveLength(1); // no moving tail, no per-request repeat
-    f.store.update("task", 1, "# Corrected");
-    const changed = h.request(longer);
-    expect(encoded(changed).startsWith(encoded(unchanged) + "\n")).toBe(true);
-    expect(changed.slice(-3).map(m => m.role)).toEqual(["toolResult", "toolResult", "custom"]);
-    expect(changed.at(-1).content).toContain("revision 2");
-    expect(changed.at(-1).content).toContain("supersedes");
-    expect(snapshots(changed)[0]).toEqual(first.at(-1));
-    const restarted = harness(f, JSON.parse(JSON.stringify(h.entries)));
-    expect(restarted.request(longer)).toEqual(changed);
-    expect(restarted.request([...changed, user("E", 5)]).slice(0, -1)).toEqual(changed);
-    const foreign = { role: "custom", customType: "unrelated", content: "Keep", display: false, timestamp: 6 };
-    expect(h.request([...longer, foreign])).toContainEqual(foreign);
-    expect(snapshots(h.request([...base, assistant, ...results]))).toHaveLength(2);
-  } finally { f.clean(); }
-});
-
-test("external context trimming resets projection without resurrecting stale later snapshots", async () => {
-  const f = fixture();
-  try {
-    const h = harness(f); f.store.create("task", "# One");
-    await h.call({ action: "attach", id: "task" });
-    const base = [user("A")], longer = [...base, user("B", 2)];
-    h.request(base);
-    f.store.update("task", 1, "# Two"); h.request(longer);
-    f.store.update("task", 2, "# Three");
-    const trimmed = h.request(base);
-    expect(snapshots(trimmed)).toHaveLength(1);
-    expect(trimmed.at(-1).content).toContain("revision 3");
-    const restored = h.request(longer);
-    expect(encoded(restored).startsWith(encoded(trimmed) + "\n")).toBe(true);
-    expect(snapshots(restored)).toHaveLength(1);
-    expect(encoded(restored)).not.toContain("revision 2");
-  } finally { f.clean(); }
-});
-
-test("real SessionManager journals replay across compaction and fresh extension instances", async () => {
-  const f = fixture();
-  try {
-    const manager = SessionManager.create(f.dir, join(f.dir, "sessions")), h = harness(f, [], manager);
-    f.store.create("task", "# Initial");
-    await h.call({ action: "attach", id: "task" });
-    const firstId = manager.appendMessage(user("A") as any);
-    const first = h.request(manager.buildSessionContext().messages);
-    manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "C" }],
-      api: "openai-responses", provider: "fixture", model: "fixture", timestamp: 2, stopReason: "stop",
-      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-    });
-    manager.appendMessage(user("B", 3) as any);
-    f.store.update("task", 1, "# Revised");
-    const second = h.request(manager.buildSessionContext().messages);
-    expect(encoded(second).startsWith(encoded(first) + "\n")).toBe(true);
-    expect(snapshots(second)).toHaveLength(2);
-    expect(manager.buildSessionContext().messages).toHaveLength(3); // journal entries aren't ordinary messages
-    const restored = SessionManager.open(manager.getSessionFile()!);
-    const reloaded = harness(f, [], restored);
-    expect(reloaded.request(restored.buildSessionContext().messages)).toEqual(second);
-    restored.appendCompaction("Summary", firstId, 10000);
-    const compacted = reloaded.request(restored.buildSessionContext().messages);
-    expect(snapshots(compacted)).toHaveLength(1);
-    expect(compacted.at(-1).content).toContain("Revised");
-    expect(reloaded.request(restored.buildSessionContext().messages)).toEqual(compacted);
-    restored.branch(firstId); // before any published snapshot, but attachment exists
-    expect(snapshots(reloaded.request(restored.buildSessionContext().messages))).toHaveLength(1);
-  } finally { f.clean(); }
-});
-
-test("off/unavailable states append once, recovery supersedes, compaction restores only current state", async () => {
-  const f = fixture();
-  try {
-    const h = harness(f); f.store.create("task", "# Notes");
-    await h.call({ action: "attach", id: "task" });
-    const base = [user("A")], first = h.request(base);
-    rmSync(join(f.store.directory, "task"), { recursive: true });
-    const missing = h.request(base);
-    expect(missing.slice(0, first.length)).toEqual(first); expect(missing.at(-1).content).toContain("unavailable");
-    expect(h.request(base)).toEqual(missing);
-    f.store.create("task", "# Restored");
-    expect(h.request(base).at(-1).content).toContain("Restored");
-    await h.call({ action: "detach" });
-    const off = h.request(base); expect(off.at(-1).content).toContain("inactive");
-    expect(h.request(base)).toEqual(off);
-    h.entries.push({ type: "compaction", id: "compact-a", summary: "old notes" });
-    const compacted = [{ role: "compactionSummary", summary: "old notes", tokensBefore: 10000, timestamp: 10 }];
-    const compactOff = h.request(compacted);
-    expect(snapshots(compactOff)).toHaveLength(1); expect(compactOff.at(-1).content).toContain("inactive");
-    await h.call({ action: "attach", id: "task" });
-    const active = h.request(compacted); expect(active.at(-1).content).toContain("Restored");
-    h.entries.push({ type: "compaction", id: "compact-b", summary: "summary" });
-    expect(snapshots(h.request(compacted))).toHaveLength(1);
-    expect(h.request(compacted).at(-1).content).toContain("Restored");
-    // Branch back before compaction: the old anchored history is unchanged.
-    h.entries.splice(h.entries.findIndex(e => e.id === "compact-a"));
-    expect(h.request(base)).toEqual(off);
-  } finally { f.clean(); }
-});
-
-test("forks/projects start detached and mark inherited snapshots historical", async () => {
-  const f = fixture(), other = fixture();
-  try {
-    const h = harness(f); f.store.create("task", "# Parent");
-    await h.call({ action: "attach", id: "task" });
-    const base = [user("A")], parent = h.request(base);
-    h.ctx.sessionManager.getSessionId = () => "fork";
-    const fork = h.request(base); expect(fork.slice(0, parent.length)).toEqual(parent);
-    expect(fork.at(-1).content).toContain("inactive");
-    expect((await h.call({ action: "list" })).attached).toBeNull();
-    h.ctx.cwd = other.dir;
-    expect((await h.call({ action: "list" })).attached).toBeNull();
-    expect(h.request(base).at(-1).content).toContain("inactive");
-  } finally { f.clean(); other.clean(); }
-});
-
-test("session-scoped caps and optional percentage reminders persist; reminders retain revision", async () => {
-  const f = fixture();
-  try {
-    const h = harness(f);
-    await h.command("size 2");
-    await expect(h.call({ action: "create", id: "big", content: "x".repeat(2049) })).rejects.toThrow("bytes");
-    await h.command("size 8");
-    await h.call({ action: "create", id: "big", content: "x".repeat(5000) });
-    await h.call({ action: "attach", id: "big" });
-    await h.command("size 4"); expect(h.notices.at(-1)).toContain("bytes");
-    expect((await h.call({ action: "list" })).settings.pageBytes).toBe(8192);
-    const base = [user("A")]; h.request(base);
-    const longer = [...base, user("x".repeat(8000), 2)];
-    expect(snapshots(h.request(longer))).toHaveLength(1); // refresh off by default
-    await h.command("refresh 10");
-    const reminded = h.request(longer);
-    expect(snapshots(reminded)).toHaveLength(2);
-    expect(reminded.at(-1).content).toContain("reminder (same revision)");
-    expect(reminded.at(-1).content).toContain("revision 1");
-    expect(h.request(longer)).toEqual(reminded);
-    const reload = harness(f, JSON.parse(JSON.stringify(h.entries)));
-    expect((await reload.call({ action: "list" })).settings).toEqual({ pageBytes: 8192, refreshPercent: 10 });
-    expect(reload.request(longer)).toEqual(reminded);
-    await h.command("refresh off");
-    expect(snapshots(h.request([...longer, user("x".repeat(8000), 3)]))).toHaveLength(2);
-    for (const invalid of ["size 3", "refresh 0", "refresh 101", "refresh NaN", "refresh 1.5"]) {
-      await h.command(invalid); expect(h.notices.at(-1)).toMatch(/must be/);
-    }
-    h.ctx.sessionManager.getSessionId = () => "new-session";
-    expect((await h.call({ action: "list" })).settings).toEqual({ pageBytes: 4096, refreshPercent: 0 });
-  } finally { f.clean(); }
-});
-
-test("legacy oversized attachments fail explicitly, remain readable, and recover with larger cap", async () => {
-  const f = fixture();
-  try {
-    new WorkpadStore(f.root, f.dir, 8192).create("legacy", "x".repeat(5000));
-    const h = harness(f);
-    await expect(h.call({ action: "attach", id: "legacy" })).rejects.toThrow("bytes");
-    h.entries.push({ type: "custom", customType: ATTACHMENT, data: { project: f.store.project, session: "session-a", id: "legacy" } });
-    expect(h.request().at(-1).content).toContain("unavailable");
-    expect((await h.call({ action: "read" })).content.length).toBe(5000);
-    await h.command("size 8");
-    expect(h.request().at(-1).content).toContain("revision 1");
-  } finally { f.clean(); }
-});
-
-test("viewer opens while busy without mutations and reopens at the latest revision", async () => {
-  const f = fixture();
-  try {
-    const h = harness(f);
-    f.store.create("task", "# Original");
-    await h.call({ action: "attach", id: "task" });
-    const entries = structuredClone(h.entries);
-    let waits = 0;
-    h.ctx.waitForIdle = () => { waits++; return new Promise(() => {}); };
-    const theme = { fg: (_color: string, text: string) => text };
-    const keys = { getKeys: () => [] };
-    const views: WorkpadView[] = [];
-    h.ctx.ui.custom = async (factory: Function, options: any) => {
-      expect(options.overlay).toBe(true);
-      views.push(factory({ terminal: { rows: 24 }, requestRender() {} }, theme, keys, () => {}));
-    };
-    const first = h.command("");
-    expect(views).toHaveLength(1); // Must open before any idle promise resolves.
-    await first;
-    expect(views[0]!.render(120).join("\n")).toContain("# Original");
-    await h.call({ action: "update", expectedRevision: 1, content: "# Updated" });
-    expect(views[0]!.render(120).join("\n")).toContain("# Original");
-    await h.command("");
-    expect(views[1]!.render(120).join("\n")).toContain("# Updated");
-    expect(waits).toBe(0);
-    expect(h.entries).toEqual(entries);
-    expect(h.notices).toEqual([]);
-  } finally { f.clean(); }
-});
-
-test("mutating commands, including the list picker, still wait for idle", async () => {
-  for (const args of ["new draft", "attach task", "list", "edit", "off", "size 2", "refresh 25"]) {
-    const f = fixture();
-    try {
-      const h = harness(f);
-      f.store.create("task", "# Original");
-      await h.call({ action: "attach", id: "task" });
-      const entries = structuredClone(h.entries);
-      let release!: () => void, waits = 0, prompts = 0;
-      const idle = new Promise<void>(resolve => { release = resolve; });
-      h.ctx.waitForIdle = () => { waits++; return idle; };
-      h.ctx.ui.editor = h.ctx.ui.select = async () => { prompts++; return undefined; };
-      const pending = h.command(args);
-      expect(waits).toBe(1);
-      expect(prompts).toBe(0);
-      expect(h.entries).toEqual(entries);
-      expect(h.notices).toEqual([]);
-      release();
-      await pending;
-      expect(h.notices.some(n => n.includes("Error"))).toBe(false);
-    } finally { f.clean(); }
-  }
-});
-
-test("commands cancel safely, recover conflict drafts, and viewer fits narrow terminals", async () => {
-  const f = fixture();
-  try {
-    const h = harness(f); await h.command("new draft"); expect(existsSync(f.root)).toBe(false);
-    h.ctx.ui.editor = async () => "# User draft";
-    await h.command("new draft"); expect(h.entries).toHaveLength(1);
-    let editors = 0;
-    h.ctx.ui.editor = async (title: string, initial: string) => {
-      if (++editors === 1) { f.store.update("draft", 1, "# Concurrent"); return "# Unsaved"; }
-      expect(title).toContain("NOT SAVED"); expect(initial).toBe("# Unsaved"); return undefined;
-    };
-    await h.command("edit"); expect(editors).toBe(2); expect(h.notices.at(-1)).toContain("conflict");
-    await h.command("off"); expect(h.entries.at(-1).data.id).toBeNull();
-    await h.command("attach draft"); expect(h.entries.at(-1).data.id).toBe("draft");
-    await h.command("nonsense"); expect(h.notices.at(-1)).toContain("Usage:");
-    h.ctx.mode = "rpc"; await h.command(""); expect(h.notices.at(-1)).toContain("requires TUI");
-    const theme: any = { fg: (_color: string, text: string) => text };
-    const keys: any = { matches: (data: string, action: string) => data === action.split(".").pop(), getKeys: (action: string) => [action.split(".").pop()] };
-    let rows = 24, closed = false;
-    const page = { id: "task", revision: 3, path: "fixture", content: Array.from({ length: 80 }, (_, i) => `${i} 日本語`).join("\n") };
-    const view = new WorkpadView(page, theme, keys, () => rows, () => {}, () => closed = true);
-    expect(view.render(100).join("\n")).toContain("revision 3");
-    expect(view.render(100).join("\n")).toContain(`${Buffer.byteLength(page.content)}/4096 UTF-8 bytes · refresh off`);
-    const configured = new WorkpadView(page, theme, keys, () => rows, () => {}, () => {}, { pageBytes: 8192, refreshPercent: 10 });
-    expect(configured.render(120).join("\n")).toContain("/8192 UTF-8 bytes · refresh 10% context growth (estimated)");
-    // Exercise the command wiring, not just constructor defaults.
-    h.ctx.mode = "tui";
-    await h.command("size 2"); await h.command("refresh 25");
-    h.ctx.ui.custom = async (factory: Function) => {
-      const rendered = factory({ terminal: { rows: 24 }, requestRender() {} }, theme, keys, () => {}).render(120).join("\n");
-      expect(rendered).toContain("/2048 UTF-8 bytes · refresh 25% context growth (estimated)");
-    };
-    await h.command("");
-    view.handleInput("pageDown"); expect(view.render(100).join("\n")).not.toContain("\n0 日本語");
-    for (const width of [1, 10, 40, 100]) {
-      rows = width < 10 ? 3 : 24;
-      const lines = view.render(width);
-      expect(lines.every(line => visibleWidth(line) <= width)).toBe(true);
-      expect(lines.length).toBeLessThanOrEqual(Math.max(1, Math.floor(rows * 0.8)));
-    }
-    expect(plain("\x1b]52;c;secret\x07safe\x1b[31mtext")).toBe("safetext");
-    view.handleInput("cancel"); expect(closed).toBe(true);
-  } finally { f.clean(); }
+    h.enabled.set(true, h.ctx);
+    h.write("漢".repeat(10_000));
+    await h.events.session_compact!({}, h.ctx);
+    const content = h.sent[0].message.content as string;
+    expect(content).toContain("[Truncated: showing the first 16384 of 30000 bytes");
+    expect(content).not.toContain("�");
+  } finally { h.clean(); }
 });

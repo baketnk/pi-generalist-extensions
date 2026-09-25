@@ -8,7 +8,7 @@ attachment. It is independent of native memory profiles and activation; it does 
 implement automatic cross-source selection, worker descriptions or blanket journal
 integration in the native memory index.
 
-Related: [roadmap](ROADMAP.md), [history search](history-search.md), [workpad](workpad.md), [background jobs proposal](bg-tasks-proposal.md).
+Related: [roadmap](ROADMAP.md), [history search](history-search.md), [background jobs proposal](bg-tasks-proposal.md).
 
 ## Recommendation
 

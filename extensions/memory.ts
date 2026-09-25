@@ -15,7 +15,7 @@ import { captureOrigin, operationId, retainedSource, sourceCatalog } from "../li
 import { boundedHousekeeping, housekeepingPayload, reviewMemory } from "../lib/memory/housekeeping.ts";
 import { formatOutput } from "../lib/output.ts";
 import type { StatusIconsController } from "../lib/status-icons.ts";
-import { snapshotContext, type Snapshot } from "../lib/workpad/context.ts";
+import { snapshotContext, type Snapshot } from "../lib/snapshot-context.ts";
 
 const AUDIT_ENTRY = "generalist:memory:supplied-v1";
 const SNAPSHOT_ENTRY = "generalist:memory:snapshot-v1";

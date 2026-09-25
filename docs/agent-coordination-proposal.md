@@ -460,7 +460,7 @@ are design inputs, not verified switchboard runtime behavior.
   supplies a compact footer; custom viewers require `ctx.mode === "tui"`, not merely
   `ctx.hasUI` (which includes RPC).
 - `context` can publish at existing request boundaries using cached data. Use the
-  [workpad append-only contract](workpad.md) as a design/test reference, not a
+  append-only snapshot helper (`lib/snapshot-context.ts`) as a design/test reference, not a
   dependency on the user's notebook. No daemon I/O on the model-request path.
 - `appendEntry` + entry renderer is human-only; custom messages participate in
   model context even with `display: false`. **Pi converts custom messages to

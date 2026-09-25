@@ -6,7 +6,7 @@ import { SessionManager, convertToLlm } from "@earendil-works/pi-coding-agent";
 import continuity from "../extensions/continuity.ts";
 import { ContinuityStore, hash, SOURCE_BYTES } from "../lib/continuity/store.ts";
 import { AUDIT, CONTEXT, STATE, packet, materialize, validateAttachment } from "../lib/continuity/context.ts";
-import { snapshotContext, type Snapshot } from "../lib/workpad/context.ts";
+import { snapshotContext, type Snapshot } from "../lib/snapshot-context.ts";
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "continuity-test-")), root = join(dir, "shelf"), store = new ContinuityStore(root);

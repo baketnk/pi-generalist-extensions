@@ -31,7 +31,7 @@ export function freezeSnapshot(event: ContextSnapshotEvent, session: string, bra
   if (Buffer.byteLength(JSON.stringify(event.messages)) > LIMITS.snapshotBytes) throw new Error("Fork snapshot exceeds 2 MiB; no silent truncation.");
   const protectedKinds = new Set<string>();
   for (const message of event.messages) {
-    if (message.role === "custom" && !["workpad-snapshot-v2", "switchboard:observation:v1", "subagents:observation:v1"].includes(message.customType)) protectedKinds.add(message.customType);
+    if (message.role === "custom" && !["workpad-snapshot-v2", "workpad:compaction-v1", "switchboard:observation:v1", "subagents:observation:v1"].includes(message.customType)) protectedKinds.add(message.customType);
     if (message.role === "toolResult" && ["memory", "continuity", "history_read", "history_search"].includes(message.toolName)) protectedKinds.add(message.toolName);
     if (message.role === "compactionSummary" || message.role === "branchSummary") protectedKinds.add("summary-may-contain-private-history");
   }

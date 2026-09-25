@@ -6,7 +6,7 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { ContinuityStore, hash, type Span } from "../lib/continuity/store.ts";
 import { STATE, AUDIT, SNAPSHOTS, NOTICE, validateAttachment, materialize, auditKey, type State, type Audit, type BoundSnapshot } from "../lib/continuity/context.ts";
-import { plain } from "../lib/workpad/view.ts";
+import { plainText as plain } from "../lib/output.ts";
 
 const usage = "/continuity [status|context|on|off|register ID /absolute/file.md|refresh ID|remove ID|reindex|attach ID:START-END [ID:START-END]]";
 function describe(value: unknown): string {

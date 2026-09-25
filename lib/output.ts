@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from "node:util";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /** Branch-local diagnostic preference shared by all bundle entrypoints. */
@@ -52,3 +53,6 @@ export function formatOutput(value: unknown, ctx?: Pick<ExtensionContext, "sessi
   if (!ctx?.sessionManager?.getBranch || rawJsonOutput(ctx)) return JSON.stringify(value, null, 2);
   return plain(value).join("\n");
 }
+
+/** Strip terminal control sequences from untrusted text before display. */
+export const plainText = (text: string) => stripVTControlCharacters(text).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");

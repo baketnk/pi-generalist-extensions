@@ -27,9 +27,9 @@ export default function generalist(pi: ExtensionAPI) {
   };
   registerSessionSetup(pi, toggles);
   registerGeneralistSettings(pi, toggles, defaults);
+  workpad(pi, icons);
   loop(pi);
   history(pi);
-  workpad(pi);
   evidence(pi);
   continuity(pi);
   tasks(pi);

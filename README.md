@@ -118,7 +118,7 @@ the active conversation. Default off; no model fallback or automatic scheduling.
 
 See [first-use setup, commands and privacy/lifecycle contract](docs/memory-runtime.md),
 [index semantics and budgets](docs/memory-index.md), and [portable store](docs/memory-store.md).
-Workpad remains in-session working context; durable memory is out-of-session.
+The workpad file is in-session working context; durable memory is out-of-session.
 **Off is not amnesia or a filesystem sandbox:** prior outputs, packet audits,
 exports and backups remain. Ordinary shell/read tools retain filesystem access.
 
@@ -158,17 +158,14 @@ Additional roots (such as Kouseki's separate Pi-agent histories) are configured
 explicitly. Requires Node 24+ with `node:sqlite`/FTS5; no new runtime dependency.
 See [configuration, privacy, limits and validation](docs/history-search.md).
 
-## Task workpad (MVP)
+## Workpad
 
-`/workpad new ID` creates and attaches a durable Markdown task notebook;
-`/workpad` opens its dismissible viewer, `/workpad edit` edits it, `/workpad list`
-selects another, and `/workpad off` detaches. The `workpad` tool offers explicit
-creation/attachment, reads and revision-checked updates. Revision-labelled snapshots
-are journalled and replayed at fixed conversation boundaries for append-only cache
-reuse. `/workpad size 2|4|8` selects the KiB cap (default 4); `/workpad refresh 10`
-adds optional reminders after estimated context growth (off by default).
-New/forked sessions start detached. Independent of personality and native memory.
-See [storage, context/privacy, limitations and phase-two scope](docs/workpad.md).
+`/workpad [on|off|status]` (or `pi --workpad`) is a scratch-file convention, off by default. When on, a constant
+system-prompt paragraph asks the model to keep working notes in `.pi/workpad.md` with its ordinary read/edit/write
+tools, and after each compaction the file's contents (first 16 KiB, with an explicit truncation note) are appended once as a
+hidden message for the next turn. There is no tool, revision history or size cap; the file is normal project content, so
+consider gitignoring `.pi/workpad.md`. Concurrent agents in one checkout share it. The earlier tool-based workpad and its
+stored pages under `~/.pi` are no longer read. Independent of personality and native memory; not part of `/generalist` settings.
 
 ## Evidence shelf
 
