@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { CombinedAutocompleteProvider, visibleWidth } from "@earendil-works/pi-tui";
 import questions, { QUESTION_STATE_ENTRY, QuestionOverlay } from "../extensions/questions.ts";
 import tasks, { TASK_STATE_ENTRY, validateTaskState } from "../extensions/tasks.ts";
 
@@ -133,6 +133,27 @@ test("queue_questions returns immediately; /questions answers later as a user me
   expect(h.sent[0]!.text).toContain("batch 1");
   expect(h.sent[0]!.text).toContain("Answer: Green");
   expect(h.sent[0]!.options).toBeUndefined();
+});
+
+test("/q is a short alias with the same arguments and queued-answer behavior", async () => {
+  const h = harness(questions);
+  expect(h.commands.q).toBe(h.commands.questions);
+  expect(h.commands.q.getArgumentCompletions("l")).toEqual([{ value: "list", label: "list" }]);
+  const completion = new CombinedAutocompleteProvider(
+    [...Object.keys(h.commands), "quit"].map(name => ({ name })), process.cwd());
+  expect((await completion.getSuggestions(["/q"], 0, 2, { signal: new AbortController().signal }))?.items[0]?.value).toBe("q");
+  const queued = await h.tools.queue_questions.execute("call", { questions: [
+    { id: "choice", title: "Choose?", options: [{ label: "A" }] },
+  ] }, undefined, undefined, h.ctx);
+  h.entries.push(resultEntry("queue_questions", queued.details));
+  await h.commands.q.handler("list", h.ctx);
+  expect(h.notices.at(-1)).toContain("Batch 1: Choose?");
+  h.ctx.mode = "rpc";
+  h.selections.push("1. A");
+  await h.commands.q.handler("", h.ctx);
+  expect(h.sent[0]!.text).toContain("Answer: A");
+  await h.commands.q.handler("clear", h.ctx);
+  expect(h.statuses["generalist-questions"]).toBeUndefined();
 });
 
 test("queued questions survive reload and cancellation, and branch state rewinds", async () => {

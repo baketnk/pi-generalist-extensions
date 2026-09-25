@@ -389,7 +389,7 @@ export default function questions(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerCommand("questions", {
+  const questionCommand: Parameters<ExtensionAPI["registerCommand"]>[1] = {
     description: "Answer queued questions, inspect them with /questions list, or discard them with /questions clear",
     getArgumentCompletions: prefix => ["list", "clear"].filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
     handler: async (args, ctx) => {
@@ -416,5 +416,7 @@ export default function questions(pi: ExtensionAPI) {
       }
       await answerQueued(ctx, true);
     },
-  });
+  };
+  pi.registerCommand("questions", questionCommand);
+  pi.registerCommand("q", questionCommand);
 }
