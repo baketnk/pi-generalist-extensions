@@ -14,6 +14,12 @@ function parseLoop(args: string | string[], defaultLimit: number): { prompt: str
 }
 
 const LOOP_STATUS = "generalist-loop";
+export const LOOP_DONE = "LOOP_COMPLETE";
+/** Each iteration is a fresh session, so only the model can know the work is finished; let it say so. */
+export const loopPrompt = (prompt: string) =>
+  `${prompt}\n\n(Repeated in a fresh session. If the work is fully complete and further iterations would be redundant, end your final reply with a line containing only ${LOOP_DONE}.)`;
+const saidDone = (message: object) => { const content = (message as { content?: unknown }).content; return Array.isArray(content) &&
+  content.some(part => part?.type === "text" && typeof part.text === "string" && part.text.split("\n").some((line: string) => line.trim() === LOOP_DONE)); };
 
 function showProgress(ctx: ExtensionContext, current: number, total: number): void {
   if (ctx.hasUI) ctx.ui.setStatus(LOOP_STATUS, `loop:${current}/${total}`);
@@ -38,21 +44,26 @@ export default function loop(pi: ExtensionAPI) {
         for (let i = 0; i < parsed.limit; i++) {
           showProgress(current, i + 1, parsed.limit);
           const parentSession = current.sessionManager.getSessionFile();
-          let completed = false;
+          let completed = false, done = false;
           const result = await current.newSession({
             ...(parentSession ? { parentSession } : {}),
             withSession: async replacement => {
               current = replacement;
               showProgress(replacement, i + 1, parsed.limit); // Session replacement rebinds the UI.
-              await replacement.sendUserMessage(parsed.prompt);
+              await replacement.sendUserMessage(loopPrompt(parsed.prompt));
               const lastAssistant = replacement.sessionManager.getBranch().filter(entry =>
                 entry.type === "message" && entry.message.role === "assistant").at(-1);
               completed = lastAssistant?.type === "message" && lastAssistant.message.role === "assistant"
                 && lastAssistant.message.stopReason === "stop";
+              done = completed && lastAssistant?.type === "message" && saidDone(lastAssistant.message);
             },
           });
           if (result.cancelled || !completed) {
             if (current.hasUI) current.ui.notify(`Loop stopped after ${i + (result.cancelled ? 0 : 1)} of ${parsed.limit} sessions.`, "warning");
+            return;
+          }
+          if (done) {
+            if (current.hasUI) current.ui.notify(`Loop ended early: the model reported completion after ${i + 1} of ${parsed.limit} sessions.`, "info");
             return;
           }
         }

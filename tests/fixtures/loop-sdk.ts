@@ -3,7 +3,7 @@ import { mkdir, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream, InMemoryCredentialStore, type AssistantMessage } from "@earendil-works/pi-ai";
-import loop from "../../extensions/loop.ts";
+import loop, { loopPrompt } from "../../extensions/loop.ts";
 
 const root = process.argv[2]!;
 const sessionDir = join(root, "sessions");
@@ -50,7 +50,7 @@ const rebind = async () => {
 runtime.setRebindSession(rebind); await rebind();
 try {
   await runtime.session.prompt("/loop 3 Inspect code carefully");
-  assert.deepEqual(requests, ["Inspect code carefully", "Inspect code carefully", "Inspect code carefully"]);
+  assert.deepEqual(requests, Array(3).fill(loopPrompt("Inspect code carefully")));
   assert.deepEqual(errors, []);
   const files = (await readdir(sessionDir)).map(f => join(sessionDir, f));
   assert.equal(files.length, 3);

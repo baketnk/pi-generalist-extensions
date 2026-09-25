@@ -99,3 +99,15 @@ test("tool renderer does not emit terminal control codes from source text", asyn
   const output = component.render(100).join("\n");
   expect(output).not.toContain("\x1b]0;"); expect(output).toContain("\\u001b");
 });
+
+test("renderCall names the touched files", async () => {
+  const { Text } = await import("@earendil-works/pi-tui");
+  let tool: any;
+  applyPatch({ registerFlag() {}, registerCommand() {}, registerTool: (t: any) => tool = t, on() {}, getActiveTools: () => [], setActiveTools() {}, getFlag: () => false, appendEntry() {} } as any);
+  const theme = { fg: (_c: string, text: string) => text, bold: (text: string) => text };
+  const patch = "*** Begin Patch\n*** Add File: a.ts\n+x\n*** Update File: b.ts\n@@\n-1\n+2\n*** Delete File: c.ts\n*** Update File: d.ts\n@@\n-1\n+2\n*** Update File: e.ts\n@@\n-1\n+2\n*** End Patch";
+  const text = tool.renderCall({ patch }, theme).render(200).join("\n");
+  expect(text).toContain("apply_patch a.ts, b.ts, c.ts, +2 more");
+  expect(text).not.toContain("\x1b");
+  expect(tool.renderCall({}, theme)).toBeInstanceOf(Text);
+});

@@ -127,7 +127,7 @@ export default function tasks(pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       const action = args.trim().toLowerCase();
       if (action && action !== "clear") {
-        ctx.ui.notify("Usage: /tasks [clear]", "warning");
+        if (ctx.hasUI) ctx.ui.notify("Usage: /tasks [clear]", "warning");
         return;
       }
       await ctx.waitForIdle();
@@ -135,7 +135,7 @@ export default function tasks(pi: ExtensionAPI) {
         state = { plan: [] };
         pi.appendEntry(TASK_STATE_ENTRY, copyState(state));
         updateUi(ctx);
-        ctx.ui.notify("Task checklist cleared.", "info");
+        if (ctx.hasUI) ctx.ui.notify("Task checklist cleared.", "info");
         return;
       }
       if (!ctx.hasUI) return;

@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import loop from "../extensions/loop.ts";
+import loop, { LOOP_DONE, loopPrompt } from "../extensions/loop.ts";
 import { DEFAULT_LOOP_LIMIT, LOOP_LIMIT_ENTRY, loopLimit } from "../lib/loop-config.ts";
 
-function harness(outcomes: Array<"stop" | "aborted" | "error" | "cancelled" | "throw"> = []) {
+function harness(outcomes: Array<"stop" | "done" | "aborted" | "error" | "cancelled" | "throw"> = []) {
   const commands: Record<string, any> = {};
   const notices: string[] = [];
   const statuses: Array<[string, string | undefined]> = [];
@@ -28,7 +28,7 @@ function harness(outcomes: Array<"stop" | "aborted" | "error" | "cancelled" | "t
         current.prompt = prompt;
         promptStatuses.push(status);
         if (outcome === "throw") throw new Error("Synthetic send failure");
-        branch.push({ type: "message", message: { role: "assistant", stopReason: outcome } });
+        branch.push({ type: "message", message: { role: "assistant", stopReason: outcome === "done" ? "stop" : outcome, content: [{ type: "text", text: outcome === "done" ? `All finished.\n${LOOP_DONE}\n` : "working" }] } });
       } });
       return { cancelled: false };
     },
@@ -43,8 +43,8 @@ test("/loop awaits each prompt in a separate linked session with no repeated loo
   await h.commands.loop.handler("  do  this\nwith spaces  ", h.ctx());
   expect(h.sessions).toEqual([
     { file: "original" },
-    { file: "session-1", parent: "original", prompt: "do  this\nwith spaces" },
-    { file: "session-2", parent: "session-1", prompt: "do  this\nwith spaces" },
+    { file: "session-1", parent: "original", prompt: loopPrompt("do  this\nwith spaces") },
+    { file: "session-2", parent: "session-1", prompt: loopPrompt("do  this\nwith spaces") },
   ]);
   expect(h.notices.at(-1)).toBe("Loop finished: 2 sessions.");
   expect(h.promptStatuses).toEqual(["loop:1/2", "loop:2/2"]);
@@ -57,7 +57,7 @@ test("/loop awaits each prompt in a separate linked session with no repeated loo
 test("explicit count overrides branch default; split arguments are joined", async () => {
   const h = harness();
   await h.commands.loop.handler(["3", "check", "the code"], h.ctx());
-  expect(h.sessions.slice(1).map(session => session.prompt)).toEqual(["check the code", "check the code", "check the code"]);
+  expect(h.sessions.slice(1).map(session => session.prompt)).toEqual(Array(3).fill(loopPrompt("check the code")));
 });
 
 test("invalid commands and busy agent do not create sessions", async () => {
@@ -94,4 +94,12 @@ test("branch-specific limits ignore malformed entries", () => {
   entries.push({ type: "custom", customType: LOOP_LIMIT_ENTRY, data: 4 });
   entries.push({ type: "custom", customType: LOOP_LIMIT_ENTRY, data: "100" });
   expect(loopLimit(ctx)).toBe(4);
+});
+
+test("/loop ends early when the model reports completion", async () => {
+  const h = harness(["stop", "done", "stop"]);
+  await h.commands.loop.handler("5 finish the migration", h.ctx());
+  expect(h.sessions).toHaveLength(3); // original + 2 iterations; the third never starts
+  expect(h.notices.at(-1)).toContain("Loop ended early: the model reported completion after 2 of 5 sessions.");
+  expect(h.statuses.at(-1)?.[1]).toBeUndefined();
 });

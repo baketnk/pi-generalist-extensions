@@ -49,7 +49,12 @@ Example: *** Begin Patch\n*** Update File: src/a.ts\n@@\n-export const enabled =
       if (result.status === "rejected" || result.status === "partial") throw new Error(text);
       return { content: [{ type: "text", text }], details: result };
     },
-    renderCall(_args, theme) { return new Text(theme.fg("toolTitle", theme.bold("apply_patch")), 0, 0); },
+    renderCall(args, theme) {
+      // Name the touched files so the transcript shows what is being patched before the result arrives.
+      const files = [...String(args.patch ?? "").matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map(match => match[1]!.trim());
+      const shown = files.slice(0, 3).map(safeDisplay).join(", ") + (files.length > 3 ? `, +${files.length - 3} more` : "");
+      return new Text(theme.fg("toolTitle", theme.bold("apply_patch ")) + theme.fg("muted", shown), 0, 0);
+    },
     renderResult(result) {
       return new Text(safeDisplay(result.content.filter(c => c.type === "text").map(c => c.text).join("\n")), 0, 0);
     },
