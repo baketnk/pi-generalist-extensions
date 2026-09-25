@@ -173,3 +173,25 @@ test("shutdown still signals owned processes when metadata storage fails", async
   expect(finished.stopReason).toBe("session_shutdown");
   expect(finished.persistenceError).toBeDefined();
 });
+
+test("output pages never split multibyte characters and tail starts on a boundary", async () => {
+  const jobs = await runtime();
+  const started = await jobs.start({ command: "printf 'aé漢字b'", cwd: process.cwd() });
+  await settle(jobs, started.id);
+  let cursor: string | undefined, text = "";
+  do {
+    const page = await jobs.output(started.id, cursor, 2);
+    expect(page.text).not.toContain("�");
+    text += page.text; cursor = page.nextCursor;
+  } while (cursor);
+  expect(text).toBe("aé漢字b");
+  for (const limit of [1, 2, 3, 4, 5, 6, 7]) expect((await jobs.output(started.id, undefined, limit, true)).text).not.toContain("�");
+  expect((await jobs.output(started.id, undefined, 32, true)).text).toBe("aé漢字b");
+});
+
+test("carriage-return progress output collapses to its final rendering", async () => {
+  const jobs = await runtime();
+  const started = await jobs.start({ command: "printf 'a 10%%\\ra 50%%\\ra 100%%\\ndone\\r\\n'", cwd: process.cwd() });
+  await settle(jobs, started.id);
+  expect((await jobs.output(started.id)).text).toBe("a 100%\ndone\n");
+});

@@ -53,8 +53,16 @@ function parseCursor(id: string, value: string | undefined): number {
   if (!match) throw new Error("Cursor does not belong to this job.");
   return Number(match[1]);
 }
+/** Progress bars rewrite a line with \r; keep only what a terminal would finally show. */
+function collapseCarriageReturns(text: string): string {
+  return text.replace(/\r\n/g, "\n").split("\n").map(line => {
+    const parts = line.split("\r");
+    return [...parts].reverse().find(part => part.length) ?? "";
+  }).join("\n");
+}
+const isContinuation = (byte: number | undefined) => byte !== undefined && (byte & 0xc0) === 0x80;
 function rendered(text: string): string {
-  return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+  return collapseCarriageReturns(text).replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
 }
 
 /** Linux-only, session-bound finite commands. The caller owns lifecycle teardown. */
@@ -201,7 +209,7 @@ export class BackgroundJobRuntime {
     let start = tail ? Math.max(0, retained - limit) : parseCursor(id, value);
     const gap = start > retained ? "Cursor is beyond retained output." : undefined;
     if (start > retained) start = retained;
-    const end = Math.min(retained, start + limit);
+    let end = Math.min(retained, start + limit);
     // Read only the requested page, not a potentially 64 MiB log for every hint.
     const log = await open(job.record.logPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(error => {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error("Job output log is missing; retained output is unavailable, not empty.");
@@ -210,14 +218,24 @@ export class BackgroundJobRuntime {
     try {
       const info = await log.stat();
       if (!info.isFile() || info.size < retained) throw new Error("Job output log is not a regular file or is shorter than retained output.");
-      const bytes = Buffer.alloc(end - start);
+      // Read up to 3 bytes of slack each side so pages split on character boundaries, not mid-codepoint.
+      const from = Math.max(0, start - 3), to = Math.min(retained, end + 3);
+      const raw = Buffer.alloc(to - from);
       let offset = 0;
-      while (offset < bytes.length) {
-        const { bytesRead } = await log.read(bytes, offset, bytes.length - offset, start + offset);
+      while (offset < raw.length) {
+        const { bytesRead } = await log.read(raw, offset, raw.length - offset, from + offset);
         if (!bytesRead) throw new Error("Job output log changed while reading; output is unavailable.");
         offset += bytesRead;
       }
-      return { text: rendered(bytes.toString("utf8")), start, end, retainedBytes: retained, nextCursor: end < retained ? cursor(id, end) : undefined, gap };
+      const at = (position: number) => raw[position - from];
+      // A tail start snaps forward (stay within limit); cursor starts and page ends snap back so the next cursor resumes on a boundary.
+      if (tail) while (start < end && isContinuation(at(start))) start++;
+      else while (start > from && isContinuation(at(start))) start--;
+      if (end < retained) {
+        while (end > start && isContinuation(at(end))) end--;
+        if (end === start) { end = Math.min(retained, start + limit); while (end < retained && isContinuation(at(end))) end++; } // limit smaller than one character
+      }
+      return { text: rendered(raw.subarray(start - from, end - from).toString("utf8")), start, end, retainedBytes: retained, nextCursor: end < retained ? cursor(id, end) : undefined, gap };
     } finally { await log.close(); }
   }
 
