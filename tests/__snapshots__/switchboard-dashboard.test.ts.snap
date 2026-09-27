@@ -1,0 +1,133 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`selection automatically peeks mail once, never mutates receipts, and Escape closes directly: mail table and automatic preview 1`] = `
+"  Switchboard command center                                                                                                                                    
+  Sessions/Agents   [Mail]   Offers                                                                                                                             
+  Status: live · Updated: 0s ago                                                                                                                                
+  Pending: 1/3 · Omitted: 2                                                                                                                                     
+  Filter: none · Matches: 1                                                                                                                                     
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  
+    Message                               Status        Kind      From                To                  Created     │ Message details                         
+  › m_one                                 unread        question  p_other             p_self              1s ago      │ Snapshot 0s ago · 1/14                  
+                                                                                                                      │ question · From: p_other                
+                                                                                                                      │ To: p_self                              
+                                                                                                                      │                                         
+                                                                                                                      │ untrusted                               
+                                                                                                                      │ /shell NO ]52;c;bad                     
+                                                                                                                      │                                         
+                                                                                                                      │ Mail: m_one                             
+                                                                                                                      │ Sender ID: p_other                      
+                                                                                                                      │ Recipient ID: p_self                    
+                                                                                                                      │ Reply to: none                          
+                                                                                                                      │ Created: 1970-01-01T00:01:39.000Z       
+                                                                                                                      │ Expires: 1970-01-01T00:01:50.000Z       
+                                                                                                                      │ Fetched: 1970-01-01T00:01:40.000Z       
+                                                                                                                      │ Acknowledged: unknown                   
+                                                                                                                      │                                         
+                                                                                                                      │                                         
+                                                                                                                      │                                         
+                                                                                                                      │                                         
+                                                                                                                      │                                         
+                                                                                                                      │                                         
+  Tab/Shift+Tab views · ↑↓/PgUp/PgDn select · ←/→ pane · / filter · r refresh · Esc close                                                                       
+  o offer task · p offer policy                                                                                                                                 "
+`;
+
+exports[`full and narrow layouts have readable, deterministic table/details snapshots: wide sessions 1`] = `
+"  Switchboard command center                                                                                                                                    
+  [Sessions/Agents]   Mail   Offers                                                                                                                             
+  Status: live · Updated: 0s ago                                                                                                                                
+  Peers: 1/5 · Self: 1 · Omitted: 4                                                                                                                             
+  Filter: none · Matches: 2                                                                                                                                     
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  
+    Sessions / Agents                       Handle                Status            Model                 Heartbeat   │ Session details                         
+  /project/.git                                                                                                       │ Snapshot 0s ago · 1/19                  
+  › task-p_self                             handle-p_self         idle              not reported          0s ago      │ Name: task-p_self                       
+    ↳ task-p_other                          handle-p_other        idle              not reported          0s ago      │ Activity: idle                          
+                                                                                                                      │ Model: unknown                          
+                                                                                                                      │ Summary: declared work                  
+                                                                                                                      │                                         
+                                                                                                                      │ Participant: handle-p_self              
+                                                                                                                      │ ID: p_self                              
+                                                                                                                      │ Relationship: self                      
+                                                                                                                      │ Project: /project/.git                  
+                                                                                                                      │ Checkout: /project                      
+                                                                                                                      │ Cwd: /project                           
+                                                                                                                      │                                         
+                                                                                                                      │ Status: online                          
+                                                                                                                      │ Heartbeat: 0s ago                       
+                                                                                                                      │ (1970-01-01T00:01:40.000Z)              
+                                                                                                                      │ Registered: unknown                     
+                                                                                                                      │ Parent: none                            
+                                                                                                                      │ Run: none                               
+                                                                                                                      │ Type: agent                             
+                                                                                                                      │                                         
+  Tab/Shift+Tab views · ↑↓/PgUp/PgDn select · ←/→ pane · / filter · r refresh · Esc close                                                                       
+  o offer task · p offer policy                                                                                                                                 "
+`;
+
+exports[`full and narrow layouts have readable, deterministic table/details snapshots: stacked sessions 1`] = `
+"  Switchboard command center                                                    
+  [Sessions/Agents]   Mail   Offers                                             
+  Status: live · Updated: 0s ago                                                
+  Peers: 1/5 · Self: 1 · Omitted: 4                                             
+  Filter: none · Matches: 2                                                     
+  ────────────────────────────────────────────────────────────────────────────  
+    Sessions / Agents                            Status            Heartbeat    
+  /project/.git                                                                 
+  › task-p_self                                  idle              0s ago       
+    ↳ task-p_other                               idle              0s ago       
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+  ────────────────────────────────────────────────────────────────────────────  
+  Session details                                                               
+  Snapshot 0s ago · 1/18                                                        
+  Name: task-p_self                                                             
+  Activity: idle                                                                
+  Model: unknown                                                                
+  Summary: declared work                                                        
+                                                                                
+  Participant: handle-p_self                                                    
+  ID: p_self                                                                    
+  Relationship: self                                                            
+  Project: /project/.git                                                        
+  Esc close · Tab views · ↑↓ select · ←/→ pane · / filter · r refresh           
+  o offer task · p offer policy                                                 "
+`;
+
+exports[`offer selection is automatic and read-only; metadata changes fence old bodies and actions: offers table and automatic preview 1`] = `
+"  Switchboard command center                                                                                                                                    
+  Sessions/Agents   Mail   [Offers]                                                                                                                             
+  Status: live · Updated: 0s ago                                                                                                                                
+  Offers: 1/1 · Policy: unknown · Omitted: 0                                                                                                                    
+  Filter: none · Matches: 1                                                                                                                                     
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  
+    Offer                                               State              Direction  Recipient           Updated     │ Offer details                           
+  › q_one                                               accepted           incoming   p_self              0s ago      │ Snapshot 0s ago · 1/14                  
+                                                                                                                      │ Offer: q_one                            
+                                                                                                                      │ State: accepted                         
+                                                                                                                      │ Generation: 2                           
+                                                                                                                      │ Task:                                   
+                                                                                                                      │ PRIVATE ORIGINAL TASK                   
+                                                                                                                      │                                         
+                                                                                                                      │ Authority: human-ui                     
+                                                                                                                      │ Creator: p_other                        
+                                                                                                                      │ Recipient: p_self                       
+                                                                                                                      │ Project: /project/.git                  
+                                                                                                                      │ Checkout: /project                      
+                                                                                                                      │ Created: 1970-01-01T00:01:40.000Z       
+                                                                                                                      │ Updated: 1970-01-01T00:01:40.000Z       
+                                                                                                                      │ Expires: 1970-01-01T00:01:50.000Z       
+                                                                                                                      │                                         
+                                                                                                                      │                                         
+                                                                                                                      │                                         
+                                                                                                                      │                                         
+                                                                                                                      │                                         
+                                                                                                                      │                                         
+  Tab/Shift+Tab views · ↑↓/PgUp/PgDn select · ←/→ pane · / filter · r refresh · Esc close                                                                       
+  o offer · p policy · a accept · d decline · c cancel · s start · x resolve                                                                                    "
+`;

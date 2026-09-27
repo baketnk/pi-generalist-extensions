@@ -158,6 +158,11 @@ function uiFixture() {
 test("human-confirmed start appends exact original task once; busy/queued work defers", async () => {
   const f = uiFixture();
   try {
+    f.ctx.ui.confirm = async (title: string, body: string) => {
+      expect(title).toBe(`Start accepted task ${f.offer.id}?`);
+      expect(body).toBe(`Session: current\nCheckout: ${f.offer.worktree}\nTask: ${f.offer.originalTask.replace(/\n/g, " ").slice(0, 600)}`);
+      return true;
+    };
     await f.start(); expect(f.sent).toEqual([taskMessage({ ...f.offer, state: "delivery-claimed" })]);
     expect(f.request(f.b, "b", "inspect", { id: f.offer.id }).state).toBe("delivery-claimed");
     await f.delivery.observe({ role: "user", content: [{ type: "text", text: f.sent[0] }] });

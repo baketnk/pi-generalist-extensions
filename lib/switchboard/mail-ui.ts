@@ -16,7 +16,7 @@ export async function openMail(ctx: ExtensionContext, runtime: BoardRuntime, rec
     const page = await client.call<{ pending: number; recent: number; messages: Mail[] }>("mail", { recent });
     if (!current() || runtime.closed) return;
     const choices = page.messages.map(m => mailLabel(m));
-    const selected = await ctx.ui.select(`Mail — ${page.pending} pending + ${page.recent} recent (peek only)`, [...choices, "Refresh", "Close"]);
+    const selected = await ctx.ui.select(`Mail — ${page.pending} pending + ${page.recent} recent`, [...choices, "Refresh", "Close"]);
     if (!current() || runtime.closed || selected === undefined || selected === "Close") return;
     if (selected === "Refresh") continue;
     const mail = page.messages[choices.indexOf(selected)];

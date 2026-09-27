@@ -40,6 +40,7 @@ export async function serve(paths: Paths, options: { staleSocket?: boolean; now?
         case "provision": result = store.provision(token, runtime, args.runId, args.capability); break;
         case "retire_worker": result = store.retireWorker(token, runtime, args.runId); break;
         case "inspect": result = store.inspect(token, args.id); break;
+        case "directory": result = store.directory(token, runtime); break;
         case "queue_reload": result = store.queueReload(token, runtime); break;
         case "take_reload": result = store.takeReload(token, runtime); break;
         case "send": result = store.send(token, runtime, args); break;
@@ -74,7 +75,7 @@ export async function serve(paths: Paths, options: { staleSocket?: boolean; now?
         default: throw new BoardError("Unknown action.");
       }
       reply(200, result ?? {});
-      if (!["snapshot", "watch", "inspect", "status", "mail", "peek"].includes(action)) changed();
+      if (!["snapshot", "watch", "inspect", "directory", "status", "mail", "peek"].includes(action)) changed();
     } catch (error) {
       // Never log requests or arbitrary exception text (which may contain bodies).
       reply(error instanceof BoardError ? error.status : 400, { error: error instanceof BoardError ? error.message : "Invalid request or storage failure." });

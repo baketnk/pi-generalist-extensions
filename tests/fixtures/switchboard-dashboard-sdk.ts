@@ -7,7 +7,7 @@ import switchboard from "../../extensions/switchboard.ts";
 import { registerGeneralistSettings } from "../../extensions/generalist-settings.ts";
 import { BoardClient } from "../../lib/switchboard/client.ts";
 import { serve } from "../../lib/switchboard/server.ts";
-import { secret, type Offer } from "../../lib/switchboard/shared.ts";
+import { secret, type Mail, type Offer } from "../../lib/switchboard/shared.ts";
 
 process.umask(0o077);
 const root = process.argv[2]!;
@@ -39,26 +39,31 @@ session.agent.streamFunction = (_model, context) => {
   stream.push({ type: "done", reason: "stop", message }); stream.end(); return stream;
 };
 const errors: string[] = [], notices: string[] = [];
-let mode: "view" | "accept" | "start" = "view";
+let mode: "view" | "mail" | "accept" | "start" = "view";
 const sleep = () => new Promise(r => setTimeout(r, 10));
 const until = async (predicate: () => boolean) => { for (let i = 0; i < 200; i++) { if (predicate()) return; await sleep(); } throw new Error("Fixture timed out"); };
 const theme: any = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
 const keys: any = { matches: (data: string, action: string) => matchesKey(data, ({ "tui.select.cancel": "escape", "tui.select.confirm": "enter", "tui.select.up": "up", "tui.select.down": "down" } as any)[action] ?? "escape") };
 const ui: any = { theme, setStatus() {}, notify: (text: string) => notices.push(text), confirm: async () => true,
-  custom: async (factory: any) => {
+  custom: async (factory: any, options: any) => {
+    assert.deepEqual(options, { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", anchor: "top-left", margin: 0 } });
     let finished = false;
     const component = factory({ requestRender() {}, terminal: { rows: 40 } }, theme, keys, () => { finished = true; });
     try {
       const action = mode; mode = "view";
       if (action === "view") {
-        assert.match(component.render(180).join("\n"), /registered\/partial/);
+        assert.match(component.render(180).join("\n"), /Status: live/);
         component.handleInput("/"); component.handleInput("nonmatching"); component.handleInput("\r"); component.render(180);
         component.handleInput("r"); await sleep(); component.handleInput("\x1b");
+      } else if (action === "mail") {
+        component.handleInput("\t");
+        await until(() => component.render(180).join("\n").includes("PRIVATE MAIL BODY"));
+        assert.equal(component.render(180).length, 40);
+        component.handleInput("\x1b");
       } else {
         component.handleInput("\t"); component.handleInput("\t");
         await until(() => component.render(180).join("\n").includes("q_"));
-        component.handleInput("\r");
-        await until(() => component.render(180).join("\n").includes("Original human task"));
+        await until(() => component.render(180).join("\n").includes("Task:"));
         assert.match(component.render(180).join("\n"), /PRIVATE ORIGINAL TASK/);
         component.handleInput(action === "accept" ? "a" : "s");
       }
@@ -76,6 +81,11 @@ try {
   const tools = JSON.stringify(session.agent.state.tools.map(t => ({ name: t.name, description: t.description, parameters: t.parameters })));
   await session.prompt("/generalist dashboard");
   assert.equal(turns, 1); assert.equal(JSON.stringify(session.messages), before);
+  const message = await parent.send("sdk-mail", { recipient: participant.id, body: "PRIVATE MAIL BODY" }) as Mail;
+  mode = "mail"; await session.prompt("/switchboard");
+  const receipt = await parent.call<Mail>("peek", { id: message.id });
+  assert.equal(receipt.fetchedAt ?? null, null); assert.equal(receipt.ackAt ?? null, null);
+  assert.equal(turns, 1); assert.equal(JSON.stringify(session.messages), before, "Automatic pane peek stays human-only");
   const originalTask = "PRIVATE ORIGINAL TASK\nKeep this exact wording; do not execute repository mutations in this fixture.";
   const offer = await parent.createOffer("sdk-offer", { recipient: participant.id, worktree: root, originalTask, authority: "human-ui", generation: 0 });
   mode = "accept"; await session.prompt("/switchboard dashboard");
@@ -92,7 +102,7 @@ try {
   assert.equal(JSON.stringify(session.agent.state.tools.map(t => ({ name: t.name, description: t.description, parameters: t.parameters }))), tools);
   assert.equal(session.model?.id, model.id); assert.equal(session.thinkingLevel, thinking);
   assert.deepEqual(outgoing[1].messages.slice(0, outgoing[0].messages.length), outgoing[0].messages, "Provider-bound prefix preserved");
-  await session.prompt("/switchboard dashboard"); assert.equal(turns, 2);
+  await session.prompt("/switchboard"); assert.equal(turns, 2);
   assert.deepEqual(errors, []);
   await session.prompt("/switchboard off");
   console.log(JSON.stringify({ dashboardNoInference: true, explicitOfferDelivery: true, providerPrefix: true, turns, noNetwork: true }));

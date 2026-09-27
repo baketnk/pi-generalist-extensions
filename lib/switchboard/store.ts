@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { participantHandle } from "./handles.ts";
 import { OfferStore } from "./offers-store.ts";
-import { BODY_BYTES, LEASE_MS, hash, plain, secret, text, type Card, type Mail, type Snapshot } from "./shared.ts";
+import { BODY_BYTES, LEASE_MS, RECENT_SESSION_MS, hash, plain, secret, text, type Card, type Directory, type Mail, type Snapshot } from "./shared.ts";
 
 const DAY = 86_400_000;
 type Row = Record<string, any>;
@@ -171,6 +171,18 @@ export class BoardStore {
     const reloadPending = !!this.one("SELECT 1 FROM reloads WHERE recipient=?", actor.id);
     const view = { peers: peers.slice(0, 64).map(row => this.public(row)), total: peers.length, inbox: inbox.slice(0, 64).map(mailHandles), pending: inbox.length, reloadPending, ...this.offers.list(actor.id) };
     return { ...view, version: hash(JSON.stringify({ ...view, peers: view.peers.map(({ updatedAt, ...card }) => card) })) };
+  }
+  /** Human-only directory: all projects, live registrations and sessions started
+   * in the last day. Retired workers remain visible but cannot be addressed. */
+  directory(token: string, runtime: unknown): Directory {
+    this.owner(token, runtime);
+    const now = this.now();
+    const rows = this.all(`SELECT * FROM participants WHERE type='agent' AND (archived=0 OR parent IS NOT NULL)
+      AND (lease>? OR created>=?) ORDER BY CASE WHEN lease>? AND archived=0 THEN 0 ELSE 1 END, updated DESC, id DESC`,
+      now, now - RECENT_SESSION_MS, now);
+    return { agents: rows.slice(0, 128).map(row => ({ ...this.public(row), online: !row.archived && row.lease > now,
+      createdAt: row.created, ...(row.archived ? { retired: true } : {}) })), total: rows.length,
+      recentWindowMs: RECENT_SESSION_MS, observedAt: now };
   }
   inspect(token: string, pid: unknown): Card {
     this.auth(token);

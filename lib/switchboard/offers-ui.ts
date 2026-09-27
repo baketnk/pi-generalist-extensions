@@ -44,24 +44,24 @@ export async function actOnOffer(pi: ExtensionAPI, ctx: ExtensionContext, r: Boa
   if (request.action === "create") {
     const snapshot = await r.refresh(); guard();
     const choices = snapshot.peers.map(c => `${plain(c.handle)} · ${plain(c.name)} · ${plain(c.model || "model not reported")} · ${plain(c.worktree)}`);
-    choices.push("Enter exact ID/handle (including offline queue recipients)");
-    const selected = await ctx.ui.select("Offer a task — recipient must explicitly accept", choices); guard();
+    choices.push("Enter ID/handle");
+    const selected = await ctx.ui.select("Offer recipient", choices); guard();
     if (!selected) return;
     const candidate = snapshot.peers[choices.indexOf(selected)];
-    const recipient = candidate?.id ?? await ctx.ui.input("Exact participant ID/handle — no name guessing or worker launch"); guard();
+    const recipient = candidate?.id ?? await ctx.ui.input("Participant ID/handle"); guard();
     if (!recipient) return;
     const policy = await client.call<OfferPolicyRecord & { card: Card }>("offer", { op: "policy-get", recipient }); guard();
     if (policy.policy === "off") throw new Error("Recipient has disabled task offers.");
-    const originalTask = await ctx.ui.editor(`Original human task for ${plain(policy.card.handle)} (no model decomposition)`, ""); guard();
+    const originalTask = await ctx.ui.editor(`Task for ${plain(policy.card.handle)}`, ""); guard();
     if (originalTask === undefined || !originalTask.trim()) return;
     if (Buffer.byteLength(originalTask) > BODY_BYTES) throw new Error("Task exceeds 16 KiB UTF-8.");
-    const confirmed = await ctx.ui.confirm("Create task offer?", `Recipient: ${plain(policy.card.handle)}\nCheckout: ${plain(policy.card.worktree)}\nPolicy: ${policy.policy}; generation ${policy.generation}\nExpires in 24 hours. No model call, execution, or session replacement occurs. Recipient acceptance and start are separate human actions.`); guard();
+    const confirmed = await ctx.ui.confirm("Create task offer?", `Recipient: ${plain(policy.card.handle)}\nCheckout: ${plain(policy.card.worktree)}\nPolicy: ${policy.policy}; generation ${policy.generation}\nExpires: 24h`); guard();
     if (!confirmed) return;
     const result = await client.createOffer(`human-offer:${randomUUID()}`, { recipient: policy.card.id, worktree: policy.card.worktree, originalTask, generation: policy.generation, authority: "human-ui" }); guard();
-    ctx.ui.notify(`Offered ${result.id}; not accepted or started.`, "info");
+    ctx.ui.notify(`Offer ${result.id}: offered`, "info");
   } else if (request.action === "policy") {
     const policy = await client.call<OfferPolicyRecord>("offer", { op: "policy-get", recipient: r.card!.id }); guard();
-    const choices = ["manual — human acceptance; offers only while online", "queue — allow offline offers; still human acceptance/start", "off — reject offers and prevent acceptance/start"];
+    const choices = ["manual · online", "queue · online/offline", "off"]; // All enabled policies still require human acceptance and Start.
     const selected = await ctx.ui.select(`Task offer policy (currently ${policy.policy})`, choices); guard();
     if (!selected) return;
     await client.call("offer", { op: "policy-set", policy: ["manual", "queue", "off"][choices.indexOf(selected)], generation: policy.generation }); guard();
@@ -70,8 +70,8 @@ export async function actOnOffer(pi: ExtensionAPI, ctx: ExtensionContext, r: Boa
     if (request.action === "start") {
       const idle = () => { guard(); if (!ctx.isIdle() || ctx.hasPendingMessages()) throw new Error("Session has active or queued work. Start remains deferred; wait for it to settle and choose Start again."); };
       idle();
-      if (offer.state !== "accepted") throw new Error("Accept the offer first. Acceptance alone never starts a model.");
-      if (!await ctx.ui.confirm(`Start accepted task ${offer.id}?`, `Continue THIS conversation (not a new session). Existing context can influence the task.\nCheckout: ${plain(offer.worktree)}\nTask preview: ${plain(offer.originalTask).slice(0, 600)}\n\nThis explicitly starts your foreground model using its current tools/settings. No automatic commit or additional authority is implied. Delivery cannot safely be retried after an uncertain outcome.`)) return;
+      if (offer.state !== "accepted") throw new Error("Accept the offer first.");
+      if (!await ctx.ui.confirm(`Start accepted task ${offer.id}?`, `Session: current\nCheckout: ${plain(offer.worktree)}\nTask: ${plain(offer.originalTask).slice(0, 600)}`)) return;
       idle();
       const claimed = await client.call<Offer>("offer", { op: "claim-delivery", id: offer.id, generation: offer.generation });
       // Claim is durable BEFORE crossing into Pi. A crash or rejection leaves a visible
@@ -83,14 +83,14 @@ export async function actOnOffer(pi: ExtensionAPI, ctx: ExtensionContext, r: Boa
       return;
     }
     if (request.action === "resolve-unknown") {
-      if (!await ctx.ui.confirm(`Close uncertain delivery ${offer.id}?`, "First inspect this session's history and any queued prompt. This records delivery-unknown and unblocks OTHER offers; it does not replay this task, assert non-delivery, or cancel work already running.")) return;
+      if (!await ctx.ui.confirm(`Close uncertain delivery ${offer.id}?`, `State: ${offer.state} → delivery-unknown`)) return;
       guard();
       await client.call("offer", { op: "resolve-unknown", id: offer.id, generation: offer.generation }); guard();
       await r.refresh(); return;
     }
-    if (!await ctx.ui.confirm(`${request.action} offer ${offer.id}?`, request.action === "accept"
-      ? "Accept only; this does NOT start execution. Use Start separately after inspecting the original task."
-      : "This changes only the task offer, not any running model or repository.")) return;
+    // These transitions affect the offer only. Accept never starts execution;
+    // resolving uncertainty never replays or cancels already-running work.
+    if (!await ctx.ui.confirm(`${request.action} offer ${offer.id}?`, `State: ${offer.state}\nRecipient: ${plain(offer.recipient)}`)) return;
     guard();
     await client.call("offer", { op: request.action, id: offer.id, generation: offer.generation }); guard();
   }

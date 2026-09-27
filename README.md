@@ -63,7 +63,7 @@ same-project roster observations and pending-mail hints at existing model reques
 When alone it adds no roster context; incoming presence/mail never wakes an idle model. The footer
 separates other registered participants (`peers`) from direct registered children
 (`sub`), rather than counting the current session. `/switchboard` opens the
-roster/inbox, and the `switchboard` tool supports addressed correspondence
+unified Agents/Mail/Offers desk, and the `switchboard` tool supports addressed correspondence
 and interruptible `wait` for mail/user input. `/reload-all` queues a reload for every
 currently connected switchboard agent and this session; reloads are delivered
 programmatically as follow-ups, so they wait for active work to settle and require
@@ -75,9 +75,14 @@ acknowledged/expired entries (default 50), without fetch/ack receipts or model c
 A small per-user Linux helper starts
 on demand (Node 24+ and `flock`), with no systemd installation or inference.
 
-`/switchboard dashboard` or `/generalist dashboard` opens the live searchable
-roster/inbox/offers desk. Human task offers require explicit acceptance and a separate
-confirmed Start; no automatic session replacement or worker launch. See the
+`/switchboard` (also `/switchboard dashboard` or `/generalist dashboard`) opens the live searchable
+fullscreen Sessions/Agents, Mail and Offers command center: spaced columns, automatic
+selection details (right-side or stacked when narrow), and Tab to switch views.
+Agents shows registrations across projects, including
+subagents and offline sessions started within 24 hours; Mail shows pending and
+recent closed correspondence. This is not a session-file or process census.
+Human task offers require explicit acceptance and a separate confirmed Start;
+no automatic session replacement or worker launch. See the
 [dashboard and interactive-offer contract](docs/switchboard-dashboard.md).
 
 **Opt out:** `PI_SWITCHBOARD=off` before launch (no registration/storage),

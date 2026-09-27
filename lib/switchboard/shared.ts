@@ -4,8 +4,9 @@ import { lstat, mkdir, realpath, readFile, open, rename } from "node:fs/promises
 import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 
-export const VERSION = 7;
+export const VERSION = 8;
 export const LEASE_MS = 60_000;
+export const RECENT_SESSION_MS = 24 * 60 * 60_000;
 export const BODY_BYTES = 16 * 1024;
 export type Activity = "idle" | "working" | "waiting-for-user" | "unknown";
 export type Kind = "note" | "question" | "reply" | "handoff";
@@ -13,7 +14,9 @@ export interface Project { project: string; worktree: string; cwd: string }
 export interface Card extends Project {
   id: string; handle: string; name: string; summary: string; activity: Activity; updatedAt: number;
   online: boolean; type: "agent" | "human" | "observer"; model?: string; parentId?: string; runId?: string;
+  createdAt?: number; retired?: boolean;
 }
+export interface Directory { agents: Card[]; total: number; recentWindowMs: number; observedAt: number }
 export interface Mail {
   id: string; sender: string; recipient: string; kind: Kind; createdAt: number;
   senderHandle?: string; recipientHandle?: string;

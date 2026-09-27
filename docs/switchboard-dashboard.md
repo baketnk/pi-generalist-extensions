@@ -7,43 +7,72 @@ dependency groups, and integration commits are not implemented.
 
 ## Open and inspect
 
-- `/switchboard dashboard` or `/generalist dashboard` opens the same TUI overlay.
-- The `/generalist` settings list and `/switchboard` selector also link to it.
+- `/switchboard`, `/switchboard dashboard`, and `/generalist dashboard` open the
+  same fullscreen TUI overlay; the `/generalist` settings list also links to it.
+  This fills the terminal without changing Pi's global TUI mode.
 - Requires Pi TUI mode. RPC gets an explanatory notice; CLI `watch` remains available.
-- It uses the adapter's existing long-poll snapshot, not another socket/subscription.
-  A disposable local timer updates age labels only. Closing/reloading/replacing the
-  session removes UI listeners and cancels outstanding viewer reads.
+- The human-only Agents/Mail views read the same daemon through the existing
+  adapter credential, independently of its **project-scoped model-visible watch**.
+  They refresh every 15 seconds while open (and on `r`), without model calls,
+  context publication, or another watch subscription. Closing/reloading removes
+  UI listeners and cancels outstanding viewer reads.
 
 Controls:
 
 | Key | Action |
 |---|---|
-| Tab | Roster / Inbox / Offers |
-| ↑↓, PgUp/PgDn | Select or scroll inspection |
-| Enter | Inspect selected participant, mail, or offer |
+| Tab / Shift+Tab | Cycle Sessions/Agents / Mail / Offers forward/backward |
+| ↑↓, PgUp/PgDn | Move selection in the table, or scroll the focused details pane |
+| ← / → | Focus table / details (Tab always switches views) |
 | / | Edit local filter (Enter/Esc leaves filter editing) |
 | r | Explicit snapshot refresh |
 | o | Compose a human task offer |
 | p | Configure this participant's task-offer policy |
-| Esc | Back / close; during a request, cancel and close |
+| Esc | Leave filter editing, otherwise close and cancel outstanding reads |
 
-The desk is framed with a persistent control/help area. It is primarily a live,
-read-only roster, inbox, and offer inspector: **Enter only drills into the selected
-record**. Inspecting a participant does not contact it, and inspecting mail does not
-acknowledge or deliver it. Press **o** to create a task offer; the recipient must still
-inspect, accept, and separately Start it.
+The Codex-inspired command center uses a spaced-column table on the left and a
+38-column details pane on the right. Below 94 terminal columns, details stack beneath
+the table; very short terminals reduce headings before content. Columns drop by
+priority when space is tight. Project headings and indented children preserve the
+roster's grouping; Mail is a flat message table, not a conversation view.
 
-Roster inspection shows canonical checkout/cwd, service relationship links,
+UI copy is limited to headings, property labels/values, controls and operational
+status/errors. Provenance and behavioral caveats live in code comments and this
+document rather than repeated annotations in the dashboard or offer dialogs.
+
+**Details follow selection automatically; Enter is not needed.** Selection and filters
+are remembered separately for each tab while the dashboard is open. Inspecting a
+participant does not contact it, and viewing mail does not acknowledge or deliver it.
+Press **o** to create a task offer; the recipient must still accept and separately
+Start it. The **p** control changes offer policy, not automatic acceptance or worker
+availability; this UI change introduces no new offer lifecycle or terminal launcher.
+
+Agents lists registrations across **all projects**, including subagents and retired
+workers, grouped by project/parent. The daemon supplies up to 128 entries, live
+registrations first, followed by retained offline sessions **started in the last 24
+hours** (not those merely active within the last 24 hours). Retired workers are not addressable.
+This is not a census of Pi session files or processes: unregistered sessions, opt-outs,
+older offline sessions, and pruned identities are absent. The count shows omissions.
+A failed connection retains the last view with a historical label.
+
+Agent inspection shows canonical checkout/cwd, service relationship links,
 service heartbeat timestamps, declared names/summaries, and adapter-reported activity.
 **Heartbeat age is not idle duration.** Registration is partial, not a process census;
-offline peers disappear from the live roster. A failed connection retains an explicitly
-historical snapshot, not an invented pool of available workers. Counts show omitted
-registrations/mail/offers; the service supplies at most 64 of each.
+offline peers disappear from the **model-visible live roster**. Human Mail combines
+all pending incoming mail (up to 128) and the latest 50 acknowledged/expired entries.
+The table contains metadata only; selecting a message automatically loads its body
+into the details pane using `peek`, without updating fetched or acknowledgement
+receipts. Offers remain a separate tab with automatic selected-task previews. The
+model-visible roster/inbox and its cache-stable context projection are unchanged.
 
-Inbox and offer lists contain metadata only. Enter explicitly fetches one body for
-human inspection. Viewing never acknowledges mail, copies bodies to model context,
-or starts a model. External terminal controls are removed for display, not executed.
-Inspection is a timestamped snapshot; back to the list gets current subscription data.
+Only the selected mail/offer body is loaded, not every row's body. Navigation, tab
+changes, changed metadata, expiry and close cancel superseded detail reads; late
+responses cannot replace the current selection. Failed reads wait for **r** or a new
+selection rather than retrying on every render. Viewing never acknowledges mail,
+copies bodies to model context, or starts a model. External terminal controls are
+removed for display, not executed; theme styling and the filter's IME cursor remain.
+Agent details follow the latest metadata; body previews show their snapshot age and
+scroll position. Use **r** to refresh/retry the selected preview.
 
 ## Offer a task
 
@@ -123,7 +152,7 @@ new action blindly.
 
 ## Limits and authority boundary
 
-- Protocol **v4**, SQLite schema **v3**; reload participating adapters together.
+- Protocol **v8**, SQLite schema **v3**; reload participating adapters together.
   Existing daemon upgrade/reconnect machinery applies. Downgrade of schema v3 to old
   code is not supported; mixed old/new adapters are not a supported steady state.
 - Same canonical project only; recipient checkout is pinned. Candidate policy and
@@ -154,11 +183,14 @@ bun test tests/switchboard-dashboard.test.ts tests/switchboard-offers.test.ts \
 bun run typecheck
 ```
 
-Synthetic tests cover widths/resizing, controls, stable-ID selection, metadata/body
-separation, cancellation/disposal, stale coverage, policy/scope/checkout/expiry/CAS,
+Synthetic tests and layout snapshots cover fullscreen dimensions, fixed-width columns,
+wide/stacked layouts, Unicode, IME focus, per-tab stable-ID selection/filtering,
+automatic selected-body peeks, out-of-order responses, cancellation/disposal, stale
+coverage, policy/scope/checkout/expiry/CAS,
 concurrent claims, lost creation responses, restart ambiguity, and human Start guards.
 A Node/Pi SDK fixture drives the actual extension/Generalist command path through a
-scripted UI: viewer/acceptance cause no inference; explicit Start produces one task
+scripted UI: automatic mail/offer previews and acceptance cause no inference or mail
+receipt changes; explicit Start produces one task
 message and an observed delivery receipt. It checks the actual outgoing provider
 message prefix and unchanged model/thinking/tools/system prompt using a scripted
 stream with provider networking forbidden. Existing adapter tests cover ordinary

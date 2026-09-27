@@ -215,21 +215,21 @@ export default function switchboard(pi: ExtensionAPI, options: { paths?: Paths; 
     },
   });
   pi.registerCommand("switchboard", {
-    description: "Registered agents/inbox; mail [0..100]|dashboard|offer-retry OP|on|off|manual|auto|project-on|project-off|status|read [ID]|ack ID|send ID_OR_HANDLE TEXT|reply ID TEXT",
+    description: "Unified Agents/Mail/Offers desk; mail [0..100]|dashboard|offer-retry OP|on|off|manual|auto|project-on|project-off|status|read [ID]|ack ID|send ID_OR_HANDLE TEXT|reply ID TEXT",
     getArgumentCompletions: prefix => ["mail", "dashboard", "offer-retry", "status", "on", "off", "manual", "auto", "project-on", "project-off", "read", "ack", "send", "reply"]
       .filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
     handler: async (args, ctx) => {
       const [action = "", id, ...rest] = args.trim().split(/\s+/);
       try {
-        if (action === "dashboard") {
-          if (id) throw new Error("Usage: /switchboard dashboard");
+        if (!action || action === "dashboard") {
+          if (id) throw new Error("Usage: /switchboard [dashboard]");
           await dashboard(ctx); return;
         }
         if (action === "offer-retry") {
           if (!id || rest.length) throw new Error("Usage: /switchboard offer-retry OPERATION_ID");
           const r = await ready();
           const offer = await r.requireClient().retryOffer(id);
-          if (runtime === r && !r.closed) { ctx.ui.notify(`Offer ${offer.id}: ${offer.state}; retry did not start execution.`, "info"); await r.refresh(); }
+          if (runtime === r && !r.closed) { ctx.ui.notify(`Offer ${offer.id}: ${offer.state}`, "info"); await r.refresh(); }
           return;
         }
         if (["on", "off", "manual", "auto", "project-on", "project-off"].includes(action)) {
@@ -245,7 +245,7 @@ export default function switchboard(pi: ExtensionAPI, options: { paths?: Paths; 
         }
         const r = await ready(), client = r.requireClient();
         const browseMail = (recent = 50) => openMail(ctx, r, recent, () => runtime === r,
-          mail => view(ctx, "External mail — peek only; not model-delivered", "read", mail));
+          mail => view(ctx, "Mail", "read", mail));
         if (action === "mail") {
           if (rest.length || (id !== undefined && (!/^\d+$/.test(id) || Number(id) > 100))) throw new Error("Usage: /switchboard mail [0..100] (default 50 recent entries plus all pending)");
           await browseMail(id === undefined ? 50 : Number(id)); return;
@@ -256,18 +256,7 @@ export default function switchboard(pi: ExtensionAPI, options: { paths?: Paths; 
           await view(ctx, "Send receipt", action, await client.send(`human-ui:${randomUUID()}`, { recipient, body: rest.join(" "), kind: action === "reply" ? "reply" : "note", ...(action === "reply" ? { replyTo: id } : {}) })); return;
         }
         if (action === "read" || action === "ack") { if ((action === "ack" && !id) || rest.length) throw new Error("Expected one message ID (optional for read)."); await view(ctx, "Mail", action, await client.call(action, { id })); return; }
-        if (action) throw new Error("Unknown switchboard command; use /switchboard or /switchboard status.");
-        const s = await r.refresh();
-        const choices = ["Project roster", s.inbox.length ? `Pending mail (${s.inbox.length})` : "No messages", ...s.inbox.map(m => `${m.id} · ${m.kind} · from ${m.senderHandle ?? m.sender}`)];
-        choices.push("Live dashboard");
-        choices.push("Recent mail");
-        const selected = await ctx.ui.select("Switchboard — registered sessions only", choices);
-        if (runtime !== r || r.closed || selected === undefined) return;
-        if (selected === "Live dashboard") await dashboard(ctx);
-        else if (selected === "Recent mail") await browseMail();
-        else if (selected === choices[0]) await view(ctx, "Registered project agents", "roster", { self: r.card, total: s.total, peers: s.peers.map(p => shortCard(p, r.card)) });
-        else if (selected === choices[1]) await view(ctx, "Pending mail (viewing is not acknowledgement)", "inbox", { messages: s.inbox });
-        else { const message = s.inbox[choices.indexOf(selected) - 2]; if (message) await view(ctx, "External mail — not model-delivered by viewing", "read", await client.call("read", { id: message.id })); }
+        throw new Error("Unknown switchboard command; use /switchboard or /switchboard status.");
       } catch (e) { if (ctx.hasUI) ctx.ui.notify(plain(e instanceof Error ? e.message : "Switchboard error"), "error"); }
       finally { if (waitingUI && runtime) runtime.update({ activity: ctx.isIdle() ? "idle" : "working" }); }
     },

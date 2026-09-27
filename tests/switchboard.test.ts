@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { BoardStore } from "../lib/switchboard/store.ts";
 import { BoardClient, bindingAt, rpc } from "../lib/switchboard/client.ts";
-import { secret, projectAt, VERSION, type Snapshot } from "../lib/switchboard/shared.ts";
+import { secret, projectAt, VERSION, RECENT_SESSION_MS, type Directory, type Snapshot } from "../lib/switchboard/shared.ts";
 import { formatSwitchboard } from "../lib/switchboard/presentation.ts";
 
 const card = (name: string, project = "/repo/.git") => ({ name, project, cwd: "/repo", worktree: "/repo", summary: "", activity: "idle" as const, model: "fixture/alpha" });
@@ -50,6 +50,30 @@ describe("switchboard durable contract", () => {
       f.advance(61_000);
       expect(f.store.snapshot(f.a).peers).toHaveLength(0);
       expect(f.store.snapshot(f.b).pending).toBe(1);
+    } finally { f.store.close(); }
+  });
+  test("human directory spans projects, keeps recently started offline sessions and retired subagents", () => {
+    const f = fixture(); try {
+      const other = secret(), old = secret();
+      const cross = f.store.connect(other, { runtime: "cross", card: card("cross", "/elsewhere") });
+      const worker = f.store.provision(f.a, "a", "child-run");
+      f.store.connect(worker.token, { runtime: "child", card: card("child", "/elsewhere"), existingOnly: true });
+      f.store.send(f.b, "b", { recipient: f.pa.id, key: "private", body: "secret correspondence" });
+      let directory = f.store.directory(f.a, "a");
+      expect(directory.agents.map(c => c.id)).toContain(cross.id);
+      expect(directory.agents.find(c => c.id === worker.id)?.parentId).toBe(f.pa.id);
+      expect(JSON.stringify(directory)).not.toContain("secret correspondence");
+      f.store.retireWorker(f.a, "a", "child-run");
+      f.store.detach(other, "cross");
+      directory = f.store.directory(f.a, "a");
+      expect(directory.agents.find(c => c.id === worker.id)).toMatchObject({ online: false, retired: true });
+      expect(directory.agents.find(c => c.id === cross.id)?.online).toBe(false);
+      expect(() => f.store.directory(f.a, "wrong-runtime")).toThrow("Attachment");
+      f.advance(RECENT_SESSION_MS + 1);
+      f.store.connect(old, { runtime: "new", card: card("new", "/third") });
+      directory = f.store.directory(old, "new");
+      expect(directory.agents.map(c => c.name)).toEqual(["new"]);
+      expect(directory.recentWindowMs).toBe(RECENT_SESSION_MS);
     } finally { f.store.close(); }
   });
   test("idempotency precedes quotas; changed keys fail, fetched and ack differ", () => {
@@ -177,6 +201,7 @@ test("Node service: socket requests, long-poll, revoked stream, restart/offline 
     expect((await bindingAt(paths, "session-a:/copied/session.jsonl")).binding.token).not.toBe(bound.binding.token);
     const a = new BoardClient(paths, bound.binding.token), b = new BoardClient(paths, secret());
     await a.connect(card("a") as any); const pb = await b.connect(card("b") as any);
+    expect((await a.call<Directory>("directory")).agents.map(c => c.id)).toContain(pb.id);
     const initial = await b.snapshot();
     const watch = b.call<Snapshot>("watch", { since: initial.version });
     expect(await a.call("inspect", { id: pb.handle })).toMatchObject({ id: pb.id, handle: pb.handle });
@@ -187,6 +212,7 @@ test("Node service: socket requests, long-poll, revoked stream, restart/offline 
     await stop(); await start();
     expect((await a.snapshot()).peers).toHaveLength(0);
     await a.connect(card("a") as any);
+    expect((await a.call<Directory>("directory")).agents.find(c => c.id === pb.id)?.online).toBe(false);
     expect(await b.connect(card("renamed") as any)).toMatchObject({ id: pb.id, handle: pb.handle });
     expect((await b.snapshot()).pending).toBe(1);
     expect(await b.call("read")).toMatchObject({ id: result.id, body: "durable message", ackAt: null });

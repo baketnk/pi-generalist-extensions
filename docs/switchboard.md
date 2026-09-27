@@ -38,11 +38,15 @@ Do not blindly inherit that file variable into nested workers or unrelated Pi ru
 
 ## Everyday use
 
-`/switchboard` opens a project roster/inbox selector. Details are a scrollable,
-dismissible TUI overlay; no inference and no focus-stealing arrival notifications.
-`/switchboard dashboard` (also `/generalist dashboard`) opens the live searchable
-roster/inbox/offers desk. [Interactive task offers](switchboard-dashboard.md) have
-separate human acceptance and Start controls; they are not executable mail kinds.
+`/switchboard` (also `/switchboard dashboard` or `/generalist dashboard`) opens
+the fullscreen searchable Sessions/Agents, Mail and Offers command center. Tab cycles
+views; spaced columns and automatic selection details replace Enter-to-inspect. Details
+appear to the right (below on narrow terminals); ←/→ changes pane focus for scrolling.
+No inference and no focus-stealing arrival notifications. Its human-only Agents view spans registered sessions across
+projects, including subagents and offline registrations started in the last 24 hours;
+Mail combines pending and recent closed correspondence. The project-scoped model
+observation remains unchanged. [Interactive task offers](switchboard-dashboard.md)
+have separate human acceptance and Start controls; they are not executable mail kinds.
 Footer: `peers: N · sub: N · mail: M`, hidden when there are no registered
 participants or pending mail. `peers` counts other registered participants and
 excludes this session's direct children; `sub` counts those direct registered
