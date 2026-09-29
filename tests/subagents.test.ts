@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { freezeSnapshot, SnapshotShelf } from "../lib/subagents/snapshot.ts";
+import { estimateTokens, freezeSnapshot, IMAGE_TOKENS, SnapshotShelf } from "../lib/subagents/snapshot.ts";
 import { InspectFiles, outsideGrantPaths } from "../lib/subagents/files.ts";
 import { SubagentRuntime, runCard } from "../lib/subagents/runtime.ts";
 import { type Launch } from "../lib/subagents/types.ts";
@@ -29,6 +29,12 @@ async function setup(worker = "subagent-ipc.ts", maxActive = 4) {
   return { root, cwd, runtime, request };
 }
 async function until(fn: () => boolean, ms = 5000) { const end = Date.now() + ms; while (!fn()) { if (Date.now() > end) throw new Error("Fixture timed out"); await Bun.sleep(10); } }
+async function allEvents(runtime: SubagentRuntime, id: string) {
+  let page = await runtime.peek(id, 0, 100);
+  const events = [...page.events];
+  while (page.more) { page = await runtime.peek(id, page.next, 100); events.push(...page.events); }
+  return events;
+}
 
 test("fork captures final projection, isolates selected ancestry, and rejects half/orphan batches or failed latest projection", () => {
   const manager = SessionManager.inMemory("/tmp"), shelf = new SnapshotShelf();
@@ -305,6 +311,88 @@ test("real SDK worker joins only its provisioned mailbox; parent retirement foll
   } finally { await runtime.close(); unregister(); await server.close(); }
 });
 
+test("context budget stops work while a report-only synthesis still fits; images are not counted by base64 size", async () => {
+  const image = { type: "image", mimeType: "image/png", data: "A".repeat(300_000) };
+  expect(estimateTokens({ role: "toolResult", content: [image] })).toBeLessThan(IMAGE_TOKENS + 100);
+  const { runtime, request } = await setup("subagent-sdk-worker.ts");
+  const run = await runtime.start({ ...request("context-soft"), maxTurns: 8, maxTools: 8 });
+  await until(() => runtime.status(run.id).process === "exited");
+  const record = (await runtime.collect(run.id)).record;
+  const payloads = (await readFile(join(dirname(runtime.store.path(run.id, "launch.json")), "payloads.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  expect(payloads).toHaveLength(2);
+  expect(JSON.stringify(payloads[1].context.messages.at(-1))).toContain("Context budget reached");
+  expect(payloads[1].context.messages.slice(0, payloads[0].context.messages.length)).toEqual(payloads[0].context.messages);
+  expect(record.taskState).toBe("budget-exceeded");
+  expect(record.report?.summary).toBe("Synthetic final synthesis");
+  expect(record.reason).toContain("Context budget reached");
+});
+
+test("large and batched new tool results preserve synthesis capacity and every sent prefix", async () => {
+  for (const task of ["context-burst", "context-batch", "context-invalid"]) {
+    const { runtime, request, cwd } = await setup("subagent-sdk-worker.ts");
+    await writeFile(join(cwd, "BIG.txt"), ("evidence ".repeat(30) + "\n").repeat(180));
+    const run = await runtime.start({ ...request(task), permissions: "implement", maxTurns: 8, maxTools: 12, maxOutputTokens: 4096 });
+    await until(() => runtime.status(run.id).process === "exited");
+    const record = (await runtime.collect(run.id)).record;
+    const events = await allEvents(runtime, run.id);
+    const payloads = (await readFile(join(dirname(runtime.store.path(run.id, "launch.json")), "payloads.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    expect(record.taskState, JSON.stringify(record)).toBe("budget-exceeded");
+    expect(record.report?.summary).toBe("Synthetic final synthesis");
+    expect(record.reason).toContain("Context budget reached");
+    expect(payloads).toHaveLength(3);
+    expect(events.filter(e => e.kind === "budget-synthesis")).toHaveLength(1);
+    expect(events.filter(e => e.kind === "context-output-clipped").length).toBeGreaterThan(0);
+    expect(events.filter(e => e.kind === "error")).toHaveLength(0);
+    for (let i = 1; i < payloads.length; i++) {
+      const before = payloads[i - 1].context, after = payloads[i].context;
+      expect(after.messages.slice(0, before.messages.length)).toEqual(before.messages);
+      expect(after.tools).toEqual(before.tools);
+      expect(after.systemPrompt).toBe(before.systemPrompt);
+    }
+    const tail = payloads[2].context.messages.slice(payloads[1].context.messages.length);
+    const response = tail.find((m: any) => m.role === "assistant");
+    const results = tail.filter((m: any) => m.role === "toolResult");
+    expect(results.map((m: any) => m.toolCallId)).toEqual(response.content.filter((c: any) => c.type === "toolCall").map((c: any) => c.id));
+    expect(JSON.stringify(results)).toContain("Tool output clipped for final-report context reserve");
+    expect(results.at(-1).isError).toBe(true);
+    expect(JSON.stringify(results.at(-1))).toContain("remaining work is blocked");
+    if (task === "context-invalid") expect(results[0].isError).toBe(true);
+    expect(estimateTokens(tail.filter((m: any) => m.role !== "assistant")) + (task === "context-batch" ? 70004 : 90004) + 4096 + 2048).toBeLessThan(100000);
+    const entries = (await readFile(record.sessionFile!, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    const retained = entries.filter(e => e.type === "custom" && e.customType === "subagents:clipped-tool-result:v1");
+    expect(retained.length).toBeGreaterThan(0);
+    expect(JSON.stringify(retained)).not.toContain("contextClipped");
+    expect(JSON.stringify(retained).length).toBeGreaterThan(10000);
+    await expect(stat(join(cwd, "SHOULD_NOT_EXIST"))).rejects.toThrow();
+  }
+}, 15000);
+
+test("missing provider usage advances context estimates rather than reusing a stale response anchor", async () => {
+  const { runtime, request, cwd } = await setup("subagent-sdk-worker.ts");
+  await writeFile(join(cwd, "MEDIUM.txt"), ("evidence ".repeat(30) + "\n").repeat(45));
+  const run = await runtime.start({ ...request("context-zero"), permissions: "implement", maxTurns: 12, maxTools: 12, maxOutputTokens: 4096 });
+  await until(() => runtime.status(run.id).process === "exited");
+  const record = (await runtime.collect(run.id)).record;
+  expect(record.reason).toContain("Context budget reached");
+  expect(record.report?.summary).toBe("Synthetic final synthesis");
+  expect(record.turns).toBeLessThan(12);
+  expect(record.usage.input).toBe(70012); // Only first work response and synthesis report usage.
+});
+
+test("an assistant response that already fills capacity retains the hard context failure, not a generic work-budget diagnosis", async () => {
+  const { runtime, request } = await setup("subagent-sdk-worker.ts");
+  const run = await runtime.start({ ...request("context-unfit"), maxOutputTokens: 4096 });
+  await until(() => runtime.status(run.id).process === "exited");
+  const record = (await runtime.collect(run.id)).record;
+  expect(record.taskState).toBe("budget-exceeded");
+  expect(record.reason).toContain("Estimated context");
+  expect(record.reason).toContain("exceeds model capacity");
+  expect(record.report?.summary).toContain("Estimated context");
+  expect(record.report?.summary).not.toContain("Worker budget exhausted");
+  const payloads = (await readFile(join(dirname(runtime.store.path(run.id, "launch.json")), "payloads.jsonl"), "utf8")).trim().split("\n");
+  expect(payloads).toHaveLength(1);
+});
+
 test("SDK context admission makes no provider request; lost parent IPC stops parked inference", async () => {
   const { runtime, request } = await setup("subagent-sdk-worker.ts");
   await expect(runtime.start({ ...request(), instructions: [{ path: "AGENTS.md", content: "x".repeat(33000) }] })).rejects.toThrow("32 KiB");
@@ -312,6 +400,8 @@ test("SDK context admission makes no provider request; lost parent IPC stops par
   await until(() => runtime.status(oversized.id).process === "exited");
   expect(runtime.status(oversized.id).taskState).toBe("budget-exceeded");
   expect(runtime.status(oversized.id).usage.input).toBe(0);
+  expect(runtime.status(oversized.id).reason).toContain("Estimated context");
+  expect(runtime.status(oversized.id).report?.summary).toContain("Estimated context");
   await expect(readFile(join(dirname(runtime.store.path(oversized.id, "launch.json")), "payloads.jsonl"))).rejects.toThrow("ENOENT");
   const parked = await runtime.start(request("block")); await runtime.join([parked.id], 5);
   // Trusted fixture fault injection: sever only the channel of this owned ChildProcess.

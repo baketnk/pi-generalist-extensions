@@ -79,17 +79,30 @@ export class InspectFiles {
   }
 }
 /**
- * Existing absolute, ~/ or ../ paths named in task text that fall outside every granted root.
- * A heuristic warning for read-only starts, not enforcement (InspectFiles enforces).
+ * Existing task-named paths that InspectFiles cannot access via its canonical grants.
+ * Returns the blocked lexical path and, for a symlink into an ungranted tree, its
+ * canonical target so the parent can request a separate explicit read root. This is
+ * only a warning heuristic; InspectFiles still refuses to follow symlinks.
  */
 export async function outsideGrantPaths(task: string, roots: string[]): Promise<string[]> {
   const found = new Set<string>();
+  const granted = (path: string) => roots.some(root => {
+    const rel = relative(root, path);
+    return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`);
+  });
+  const warn = (path: string) => { if (found.size < 5) found.add(path); };
   for (const match of task.matchAll(/(?<![\w.~\/-])(~\/|\.\.\/|\/)[\w.@+~\/-]*/g)) {
     const token = match[0].replace(/[.,;:)\]}]+$/, "");
-    if (token === "/" || token.length < 3) continue;
+    if (token === "/" || token.length < 3 || (task[match.index - 1] === ":" && token.startsWith("//"))) continue;
     const path = token.startsWith("~/") ? join(homedir(), token.slice(2)) : resolve(roots[0]!, token);
-    if (roots.some(root => { const rel = relative(root, path); return !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`); })) continue;
-    try { await lstat(path); found.add(path); } catch { /* not a real path; likely prose or a URL fragment */ }
+    try {
+      const entry = await lstat(path);
+      let canonical: string | undefined;
+      try { canonical = await realpath(path); } catch { /* dangling symlink or inaccessible target */ }
+      // A granted lexical path can still be blocked by a symlink at any ancestor.
+      if (!granted(path) || entry.isSymbolicLink() || (canonical !== undefined && canonical !== path)) warn(path);
+      if (canonical !== undefined && canonical !== path && !granted(canonical)) warn(canonical);
+    } catch { /* not an existing path; likely prose */ }
     if (found.size >= 5) break;
   }
   return [...found];

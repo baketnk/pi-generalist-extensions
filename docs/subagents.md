@@ -210,9 +210,10 @@ exit is not proof that arbitrary shell-created descendants have exited.
 reference trees outside the checkout. This needs interactive human confirmation (the
 prompt names the provider that will see the contents), is refused for `implement`
 workers, and keeps private paths and secret-named files denied. Read-only starts also
-return `inspectRoots` and, when the task text names an existing path outside them,
-`grantWarnings`, so a doomed launch is visible immediately instead of after the worker
-stalls on "Path outside inspect grant".
+return `inspectRoots` and `grantWarnings` for existing task-named paths outside them
+or through symlink ancestors. Warnings include the blocked lexical path and, when
+outside the grant, its canonical target. Use canonical paths even for already-granted
+targets; symlink traversal remains denied. Additional roots still require confirmation.
 
 ### Parent guidance to a running worker
 
@@ -239,7 +240,7 @@ exit status, last prose), labelled as not model-authored or verified.
 | Wall clock | default 600 s; `start.seconds` 1..1800; includes clarification |
 | Responses/tools | default 24 work responses / 80 tool calls; human-configurable 1..1000 / 1..4000 for new runs; plus at most one synthesis response / report call on exhaustion |
 | Output per response | 4096 tokens, additionally capped by model maximum |
-| Context | conservative serialized-byte estimate plus output reserve before each request; provider tokenizer can differ |
+| Context | latest worker usage plus estimated appended content; initial/missing-usage requests use byte estimates; output and synthesis reserves; provider tokenizer can differ |
 | Assignment / repository instructions | 32 KiB each; overflow refused |
 | Read (read-only profile) | regular UTF-8 file <=1 MiB; line paging, <=16 KiB output |
 | Search (read-only profile) | literal query; <=2000 entries/8 MiB scanned/80 matches; large directories refuse |
@@ -266,6 +267,28 @@ work. Tool declarations and the prior system/message prefix remain unchanged; th
 execution guard enforces the restricted authority. Recorded turn/tool/usage totals
 include this reserve and can therefore exceed the configured budgets by one.
 
+Context capacity is a third budget. After each turn the worker projects the next
+request from its latest provider-reported prompt plus output usage and new tool
+results. Missing usage advances from the previous request estimate, never a stale
+response anchor. Images use an approximate 2k-token allowance rather than base64 size
+(not a provider-specific upper bound). Normal work stops when the estimate approaches
+the window minus output reserve, estimation margin, synthesis instruction allowance,
+and max(8k, 10% of the window) work headroom.
+
+Large **new** tool results are bounded before persistence and before any provider
+request. This includes validation errors and blocked calls. The worker reserves space
+for the synthesis instruction, output, and every remaining sibling result; clipping
+stops further sibling work and triggers the single report-only response. A clipped
+result is labelled, preserves its success/error status, and retains its original in a
+private `subagents:clipped-tool-result:v1` session entry for parent inspection. Older
+messages, system instructions and tool declarations are never rewritten or removed.
+
+These are estimates, not a promise that every handoff fits. Oversized initial history,
+an assistant response that itself fills the window, or provider/tokenizer differences
+can still fail the hard admission check. The terminal reason and host activity summary
+retain that specific context-capacity failure rather than calling it generic work
+budget exhaustion. There is no compaction, provider retry, or model fallback.
+
 The terminal state remains `budget-exceeded`, even with a completed/partial report.
 If synthesis returns prose instead of a structured report, a bounded, explicitly
 labelled `partial` report retains that prose without inventing verification. If a
@@ -280,7 +303,7 @@ An existing valid report never triggers synthesis. Cancellation, parent loss,
 deadlines, provider/extension errors, context admission and log/storage failures do
 not grant it; a synthesis already running remains subject to those same hard stops,
 original deadline, context check and per-response output limit. No extra wall-clock
-allowance, context truncation or fallback model is used.
+allowance, truncation of already-recorded history or fallback model is used.
 
 SDK automatic retry and compaction are disabled. Context overflow does not silently
 summarize, switch models, or truncate the inherited history. Provider transport may
@@ -350,7 +373,9 @@ refusal, and stable worker system/tool/message prefixes across tool follow-ups.
 Budget regressions cover turn/tool/exact/batched exhaustion, a single synthesis
 response, retained structured/prose findings, blocked synthesis/sibling work,
 oversized and malformed reporting, provider errors, cancellation and deadlines during
-synthesis, and unchanged provider-bound prefixes at the synthesis transition.
+synthesis, large/batched/invalid tool output, missing usage, and unchanged provider-bound
+prefixes across ordinary work and the synthesis transition. Path-warning regressions
+cover symlink ancestors, already-granted canonical targets and unchanged read denial.
 
 The first live `openai-codex/gpt-5.6-sol` fresh-worker smoke test found the synthetic
 boundary bug and correctly reported inspection rather than test execution. It also

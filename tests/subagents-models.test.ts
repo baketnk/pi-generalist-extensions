@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { mkdtemp, rm, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, readFile, readdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -73,6 +73,29 @@ test("tool and human ladder command resolve concrete models, expose availability
     expect((await h.execute({ ...start, operation: "explicit", model: "other-synthetic/small" })).id).toBe(explicit.id);
     await expect(h.execute({ ...start, operation: "new-unavailable", model: "other-synthetic/small" })).rejects.toThrow("unavailable");
     await expect(h.execute({ action: "list", model: "self" })).rejects.toThrow("not valid");
+  } finally { await h.clean(); }
+});
+
+test("start warns about symlink ancestors and never silently grants the canonical target", async () => {
+  const h = await harness();
+  try {
+    const home = join(h.root, "home"), mount = join(h.root, "mount"), repo = join(mount, "repo");
+    await mkdir(home); await mkdir(repo, { recursive: true });
+    await symlink(mount, join(home, "workspace"));
+    h.ctx.cwd = home;
+    const lexical = join(home, "workspace", "repo");
+    const start = { action: "start", mode: "fresh", task: `Review ${lexical}`, label: "symlink-warning" };
+    const run = await h.execute(start);
+    expect(run.inspectRoots).toEqual([home]);
+    expect(run.grantWarnings.paths).toEqual([lexical, repo]);
+    expect(run.grantWarnings.note).toContain("canonical paths");
+    await expect(h.execute({ ...start, roots: [repo] })).rejects.toThrow("confirmation");
+    h.ctx.hasUI = true;
+    const granted = await h.execute({ ...start, roots: [repo] });
+    expect(granted.inspectRoots).toEqual([home, repo]);
+    expect(granted.grantWarnings.paths).toEqual([lexical]);
+    const canonical = await h.execute({ ...start, task: `Review ${repo}`, roots: [repo] });
+    expect(canonical.grantWarnings).toBeUndefined();
   } finally { await h.clean(); }
 });
 

@@ -25,6 +25,10 @@ const providerConfig: Parameters<ModelRuntime["registerProvider"]>[1] = { api: "
       : launch.task === "budget-invalid" ? [tool("report", { outcome: "completed", summary: "Read-only audit: fixture evidence; no tests run.", findings: "README.md:1 contains fixture evidence. " + "界".repeat(5000), verification: "Only source inspection; no tests run." }), report()]
       : launch.task === "budget-invalid-empty" ? [tool("report", { outcome: "partial" }), report()]
       : [...forbidden(), report(), tool("report", { outcome: "completed", summary: "Must not overwrite" }, "-duplicate"), ...forbidden().map(t => ({ ...t, id: t.id + "-after" }))]
+      : !first && launch.task === "context-burst" ? [tool("read", { path: "BIG.txt" }), tool("write", { path: "SHOULD_NOT_EXIST", content: "blocked after clipping" }, "-sibling")]
+      : !first && launch.task === "context-batch" ? [tool("read", { path: "BIG.txt" }), tool("read", { path: "BIG.txt" }, "-second"), tool("write", { path: "SHOULD_NOT_EXIST", content: "blocked after clipping" }, "-sibling")]
+      : !first && launch.task === "context-invalid" ? [tool("read", { path: { invalid: "x".repeat(50000) } }), tool("write", { path: "SHOULD_NOT_EXIST", content: "blocked after invalid output" }, "-sibling")]
+      : launch.task === "context-zero" ? [tool("read", { path: "MEDIUM.txt" })]
       : launch.task === "budget-batch" ? [tool("read", { path: "README.md" }), ...forbidden()]
       : launch.task === "silent" ? [{ type: "text" as const, text: "No structured report." }]
       : launch.task === "implement" && turns === 1 ? [tool("write", { path: "implemented.txt", content: "before\n" })]
@@ -35,9 +39,11 @@ const providerConfig: Parameters<ModelRuntime["registerProvider"]>[1] = { api: "
       : first && launch.task === "forbidden" ? [tool("bash", { command: "touch SHOULD_NOT_EXIST" })]
       : first ? [tool("read", { path: "README.md" })]
       : [tool("report", { outcome: "completed", summary: "Synthetic SDK report", verification: "Read a fixture file, did not run its tests." }), tool(launch.task === "implement" ? "write" : "read", { path: "SHOULD_NOT_EXIST", ...(launch.task === "implement" ? { content: "unauthorized post-report edit" } : {}) }, "-sibling")];
+    const input = synthesis ? 12 : launch.task === "context-unfit" ? 99000 : launch.task === "context-soft" || !first && ["context-burst", "context-invalid"].includes(launch.task) ? 90000
+      : !first && launch.task === "context-batch" || first && launch.task === "context-zero" ? 70000 : launch.task === "context-zero" ? 0 : 12;
     const message: AssistantMessage = { role: "assistant", provider: model.provider, api: model.api, model: model.id, timestamp: Date.now(), content,
       stopReason: launch.task === "provider-error" || synthesis && launch.task === "budget-error" ? "error"
-        : launch.task === "provider-aborted" ? "aborted" : launch.task === "silent" || synthesis && launch.task.startsWith("budget-text") ? "stop" : "toolUse", usage: { input: 12, output: 3, cacheRead: 1, cacheWrite: 0, totalTokens: 16, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+        : launch.task === "provider-aborted" ? "aborted" : launch.task === "silent" || synthesis && launch.task.startsWith("budget-text") ? "stop" : "toolUse", usage: { input, output: input ? 3 : 0, cacheRead: input ? 1 : 0, cacheWrite: 0, totalTokens: input ? input + 4 : 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
     const stream = createAssistantMessageEventStream();
     void saved.then(() => {
       const finish = () => {

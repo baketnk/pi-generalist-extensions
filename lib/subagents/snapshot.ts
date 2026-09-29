@@ -5,6 +5,15 @@ import { LIMITS, type ContextSnapshotEvent, type ForkSnapshot } from "./types.ts
 
 export const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
+/** Approximate per-image allowance, not a tokenizer or upper bound; base64 length is not image token cost. */
+export const IMAGE_TOKENS = 2000;
+/** Byte-based token estimate (not a tokenizer). Images count as IMAGE_TOKENS, not their base64 payload. */
+export function estimateTokens(value: unknown): number {
+  let images = 0;
+  const json = JSON.stringify(value, (_key, v) => v && typeof v === "object" && v.type === "image" && typeof v.data === "string" ? (images++, { type: "image" }) : v) ?? "";
+  return Math.ceil(Buffer.byteLength(json) / 3) + images * IMAGE_TOKENS;
+}
+
 /** Never repair a half tool batch by fabricating results. */
 export function completeMessages(messages: AgentMessage[]): void {
   const pending = new Map<string, string>();
