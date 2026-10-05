@@ -1,7 +1,7 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionContext, type TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { BackgroundJobRuntime, shouldNotifyCompletion, type JobNotify, type JobRecord, type StopReason, type WaitFor } from "../lib/bg-tasks/runtime.ts";
+import { BackgroundJobRuntime, shouldNotifyCompletion, type JobNotify, type JobRecord, type WaitFor } from "../lib/bg-tasks/runtime.ts";
 import { CompletionQueue, COMPLETION_DELAY_MS, COMPLETION_BATCH_SIZE, completionPacket, formatCompletions, type CompletionPacket } from "../lib/bg-tasks/completion.ts";
 
 const Actions = ["start", "list", "status", "output", "cancel", "ignore", "wait"] as const;
@@ -14,9 +14,8 @@ const ToolSchema = Type.Object({
   all: Type.Optional(Type.Boolean({ description: "Apply cancel or ignore to every currently running job." })),
   waitFor: Type.Optional(StringEnum(["next", "all"] as const, { description: "Wait for the next currently running job to settle, or for all jobs running at call time." })),
   seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 300 })),
-  reason: Type.Optional(StringEnum(["user_cancel"] as const, { description: "Only for cancel. Omit or pass user_cancel; every explicit cancellation records user_cancel. This is a fixed stop code, not a free-text explanation." })),
 }, { additionalProperties: false });
-type Params = { action: Action; command?: string; cwd?: string; label?: string; timeoutSeconds?: number; notify?: JobNotify; id?: string; cursor?: string; limit?: number; tail?: boolean; all?: boolean; waitFor?: WaitFor; seconds?: number; reason?: "user_cancel" };
+type Params = { action: Action; command?: string; cwd?: string; label?: string; timeoutSeconds?: number; notify?: JobNotify; id?: string; cursor?: string; limit?: number; tail?: boolean; all?: boolean; waitFor?: WaitFor; seconds?: number };
 
 function requireOnly(params: Params, action: Action, allowed: readonly (keyof Params)[]): void {
   for (const [key, value] of Object.entries(params)) if (key !== "action" && value !== undefined && !allowed.includes(key as keyof Params)) throw new Error(`${key} is not valid for bg_tasks ${action}.`);
@@ -147,8 +146,8 @@ export default function bgTasks(pi: ExtensionAPI) {
         case "status": { requireOnly(params, "status", ["id"]); const job = jobs.status(requireId(params)); return { content: [{ type: "text", text: formatStatus(job) }], details: { job } }; }
         case "output": { requireOnly(params, "output", ["id", "cursor", "limit", "tail"]); const output = await jobs.output(requireId(params), params.cursor, params.limit, params.tail); return { content: [{ type: "text", text: output.text || "(no retained output)" }], details: output }; }
         case "cancel": {
-          requireOnly(params, "cancel", ["id", "all", "reason"]); const ids = selectedRunning(jobs, params);
-          const cancelled = await Promise.all(ids.map(id => jobs.cancel(id, "user_cancel" as StopReason)));
+          requireOnly(params, "cancel", ["id", "all"]); const ids = selectedRunning(jobs, params);
+          const cancelled = await Promise.all(ids.map(id => jobs.cancel(id)));
           completions.acknowledge(ids);
           return { content: [{ type: "text", text: cancelled.map(formatJob).join("\n") || "No running background jobs." }], details: { jobs: cancelled } };
         }

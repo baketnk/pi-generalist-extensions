@@ -67,7 +67,7 @@ Use one model tool, `bg_tasks`, with action-specific validation. This keeps the 
 | `list` | Optional state filter and pagination cursor | Bounded current-session records; running jobs first |
 | `status` | `id` | Execution and cleanup state, timestamps, exit facts, stop reason, output counts |
 | `output` | `id`, optional cursor and byte limit; explicit tail mode | Bounded text, consumed byte range, next cursor, truncation/gap metadata |
-| `cancel` | Exactly one of `id` or `all: true`, optional short reason | Stop requested or confirmed, escalation/cleanup outcome, final facts when known |
+| `cancel` | Exactly one of `id` or `all: true` | Stop requested or confirmed, escalation/cleanup outcome, final facts when known; stop reason recorded internally as `user_cancel` |
 | `ignore` | Exactly one of `id` or `all: true` | Leave active work running, persist `notify: off`, and suppress its eventual completion wake regardless of outcome |
 | `wait` | `waitFor: next` or `waitFor: all`, optional `seconds` (default 60, maximum 300) | Wait for the next completion or all jobs active at call time; return completed and still-running records |
 

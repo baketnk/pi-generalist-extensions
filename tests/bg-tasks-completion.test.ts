@@ -81,15 +81,15 @@ async function fixture(run: (h: any) => Promise<void>) {
   }
 }
 
-test("cancel reason is optional, fixed, and documented as cancel-only", async () => fixture(async h => {
+test("cancel has no reason input and retains the runtime stop reason", async () => fixture(async h => {
   const schema = h.tool.parameters;
-  expect(schema.properties.reason.enum).toEqual(["user_cancel"]);
-  expect(schema.required).not.toContain("reason");
-  expect(schema.properties.reason.description).toContain("Only for cancel");
-  expect(schema.properties.reason.description).toContain("Omit or pass user_cancel");
-  for (const reason of [undefined, "user_cancel"]) {
+  expect(schema.properties).not.toHaveProperty("reason");
+  expect(schema.additionalProperties).toBe(false);
+  for (const all of [false, true]) {
     const started = await h.call({ action: "start", command: "sleep 30", notify: "off" });
-    const cancelled = await h.call({ action: "cancel", id: started.details.job.id, ...(reason ? { reason } : {}) });
+    const selector = all ? { all: true } : { id: started.details.job.id };
+    await expect(h.call({ action: "cancel", ...selector, reason: "user_cancel" })).rejects.toThrow("reason is not valid for bg_tasks cancel");
+    const cancelled = await h.call({ action: "cancel", ...selector });
     expect(cancelled.details.jobs[0].stopReason).toBe("user_cancel");
   }
   await expect(h.call({ action: "list", reason: "user_cancel" })).rejects.toThrow("reason is not valid for bg_tasks list");
