@@ -73,13 +73,27 @@ async function fixture(run: (h: any) => Promise<void>) {
   };
   try {
     await events.session_start({}, ctx);
-    await run({ root, events, sent, records, call, settled, ctx, idle: (value: boolean) => { idle = value; } });
+    await run({ root, events, sent, records, tool, call, settled, ctx, idle: (value: boolean) => { idle = value; } });
   } finally {
     await events.session_shutdown({}, ctx);
     if (old === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = old;
     await rm(root, { recursive: true, force: true });
   }
 }
+
+test("cancel reason is optional, fixed, and documented as cancel-only", async () => fixture(async h => {
+  const schema = h.tool.parameters;
+  expect(schema.properties.reason.enum).toEqual(["user_cancel"]);
+  expect(schema.required).not.toContain("reason");
+  expect(schema.properties.reason.description).toContain("Only for cancel");
+  expect(schema.properties.reason.description).toContain("Omit or pass user_cancel");
+  for (const reason of [undefined, "user_cancel"]) {
+    const started = await h.call({ action: "start", command: "sleep 30", notify: "off" });
+    const cancelled = await h.call({ action: "cancel", id: started.details.job.id, ...(reason ? { reason } : {}) });
+    expect(cancelled.details.jobs[0].stopReason).toBe("user_cancel");
+  }
+  await expect(h.call({ action: "list", reason: "user_cancel" })).rejects.toThrow("reason is not valid for bg_tasks list");
+}));
 
 test("busy completions share one append-only boundary, not a late follow-up wake", async () => fixture(async h => {
   await h.events.before_agent_start({}, h.ctx); h.idle(false);

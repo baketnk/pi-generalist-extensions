@@ -14,7 +14,7 @@ const ToolSchema = Type.Object({
   all: Type.Optional(Type.Boolean({ description: "Apply cancel or ignore to every currently running job." })),
   waitFor: Type.Optional(StringEnum(["next", "all"] as const, { description: "Wait for the next currently running job to settle, or for all jobs running at call time." })),
   seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 300 })),
-  reason: Type.Optional(StringEnum(["user_cancel"] as const)),
+  reason: Type.Optional(StringEnum(["user_cancel"] as const, { description: "Only for cancel. Omit or pass user_cancel; every explicit cancellation records user_cancel. This is a fixed stop code, not a free-text explanation." })),
 }, { additionalProperties: false });
 type Params = { action: Action; command?: string; cwd?: string; label?: string; timeoutSeconds?: number; notify?: JobNotify; id?: string; cursor?: string; limit?: number; tail?: boolean; all?: boolean; waitFor?: WaitFor; seconds?: number; reason?: "user_cancel" };
 
