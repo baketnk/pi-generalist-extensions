@@ -14,18 +14,42 @@ import { provisionWorker, registerActiveRuns, retireWorker } from "../lib/subage
 import { loadModelConfig, modelKey, resolveWorkerModel, saveModelConfig } from "../lib/subagents/models.ts";
 import { forcedSubagentModel, normalizeForcedSubagentModel, setForcedSubagentModel } from "../lib/subagents/model-policy.ts";
 
+const actionUsage: Record<string, string> = {
+  start: 'pass mode:"fresh"|"fork", task, label; optionally permissions, model, operation, seconds, roots, and from (fork only). Do not pass id: the host generates and returns the new worker run ID',
+  list: 'pass only {"action":"list"}',
+  models: 'pass only {"action":"models"}',
+  checkpoints: 'pass only {"action":"checkpoints"}',
+  status: 'pass {"action":"status","id":"RUN_ID"}',
+  peek: 'pass id; optionally after (default 0) and limit (default 40, max 100)',
+  join: 'pass optional ids:["RUN_ID"], seconds (default 60, max 300), all (default false); use ids, not id',
+  input: 'pass id, question (pending question ID), text (answer)',
+  guide: 'pass id, text (advice, max 4 KiB UTF-8)',
+  collect: 'pass {"action":"collect","id":"RUN_ID"}',
+  cancel: 'pass {"action":"cancel","id":"RUN_ID"} OR {"action":"cancel","all":true}',
+};
+const actionHelp = "Call one action at a time; omit unrelated fields.\n" + Object.entries(actionUsage).map(([action, usage]) => `${action}: ${usage}.`).join("\n")
+  + '\nExamples: {"action":"start","mode":"fresh","task":"Review src/validation.ts; cite findings","label":"validation-review"}; {"action":"join","ids":["RUN_ID"],"seconds":60}; {"action":"collect","id":"RUN_ID"}.\n';
+
+// Keep a flat object + StringEnum: action unions/conditional schemas are not
+// supported consistently by providers. Required fields are action-specific below.
 const schema = Type.Object({
-  action: StringEnum(["start", "list", "status", "peek", "join", "input", "guide", "collect", "cancel", "checkpoints", "models"] as const),
-  id: Type.Optional(Type.String({ maxLength: 64 })), ids: Type.Optional(Type.Array(Type.String({ maxLength: 64 }), { maxItems: 16 })),
-  mode: Type.Optional(StringEnum(["fresh", "fork"] as const)), task: Type.Optional(Type.String({ maxLength: LIMITS.taskBytes })),
-  permissions: Type.Optional(StringEnum(["read-only", "implement"] as const, { description: "read-only (default): scoped inspection, no shell or edits. implement: normal coding tools including shell, edits and writes in the shared checkout; not sandboxed. Independent of fresh/fork origin; task text alone cannot grant tools." })),
-  label: Type.Optional(Type.String({ maxLength: 160 })), from: Type.Optional(Type.String({ maxLength: 64 })),
-  operation: Type.Optional(Type.String({ maxLength: 128 })),
-  model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "self (default; same is an alias), next-smaller (immediate configured ladder successor), or exact provider/model ID. No fallback. A human-configured model lock cannot be overridden." })),
+  action: StringEnum(["start", "list", "status", "peek", "join", "input", "guide", "collect", "cancel", "checkpoints", "models"] as const, { description: "Operation to perform. start requires mode/task/label; status/peek/collect require id; input requires id/question/text; guide requires id/text; cancel requires id OR all:true. list/checkpoints/models take no other fields. join optionally takes ids/seconds/all. Omit fields that do not apply to the selected action." }),
+  id: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: "Do NOT supply id for start/new workers: the host generates and returns it. Only use an existing worker run ID returned by start/list for status, peek, input, guide, collect, or cancel (required unless all:true). Not a label, checkpoint, or operation key. For join use ids instead." })),
+  ids: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 64 }), { maxItems: 16, description: "join only: worker run IDs to wait for. Omit to select the latest 16 uncollected runs; [] selects none. Use this array even for one worker." })),
+  mode: Type.Optional(StringEnum(["fresh", "fork"] as const, { description: "Required for start. fresh receives only the assignment and repository instructions; fork also receives a captured parent-history checkpoint and needs human history-sharing consent. No default or fallback." })),
+  task: Type.Optional(Type.String({ minLength: 1, maxLength: LIMITS.taskBytes, description: "Required for start: self-contained worker assignment (<=32 KiB UTF-8). Include constraints, expected output, and disjoint file ownership for implement workers. Does not grant permissions." })),
+  permissions: Type.Optional(StringEnum(["read-only", "implement"] as const, { description: "start only: read-only (default): scoped inspection, no shell or edits. implement: normal coding tools including shell, edits and writes in the shared checkout; not sandboxed. Independent of fresh/fork origin; task text alone cannot grant tools." })),
+  label: Type.Optional(Type.String({ minLength: 1, maxLength: 160, description: "Required for start: short human-readable worker name. Later actions use the returned run id, not this label." })),
+  from: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: "start with mode:fork only: exact anchor from checkpoints on the current branch. Omit to use the latest safe captured checkpoint. Not a worker run ID or arbitrary session/file path; forbidden for fresh." })),
+  operation: Type.Optional(Type.String({ minLength: 1, maxLength: 128, description: "start only: optional retry/idempotency key; defaults to this tool-call ID. Reuse only for identical launch intent to retrieve the existing run, including failures. Changed intent is rejected; later actions use run id instead." })),
+  model: Type.Optional(Type.String({ minLength: 1, maxLength: 256, description: "start only: self (default; same is an alias), next-smaller (immediate configured ladder successor), or exact provider/model ID. No fallback. A human-configured model lock cannot be overridden." })),
   roots: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 1024 }), { maxItems: 4, description: "read-only start only: extra absolute directories the worker may read/ls/grep, beyond the checkout. Needs interactive human confirmation; private paths stay denied." })),
-  seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: LIMITS.secondsMax })), all: Type.Optional(Type.Boolean()),
-  after: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
-  question: Type.Optional(Type.String({ maxLength: 64 })), text: Type.Optional(Type.String({ maxLength: LIMITS.taskBytes })),
+  seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: LIMITS.secondsMax, description: "start: worker wall-clock deadline, 1..1800 seconds (default 600), including clarification time. join: wait timeout, 1..300 seconds (default 60); does not change worker deadlines. No other action accepts seconds." })),
+  all: Type.Optional(Type.Boolean({ description: "join: wait for all selected runs (default false/wait-any); still yields for blockers, failure or user input. cancel: all:true cancels every owned worker; omit id. Does not collect reports. No other action accepts all." })),
+  after: Type.Optional(Type.Integer({ minimum: 0, description: "peek only: public-event cursor (default 0). For the next page pass the previous peek result's next value." })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, description: "peek only: maximum events per page, 1..100 (default 40); output is also byte-bounded." })),
+  question: Type.Optional(Type.String({ minLength: 1, maxLength: 64, description: "Required for input: exact pending clarification question ID from status/peek/join. Not the question text or worker ID. Use guide for unsolicited advice." })),
+  text: Type.Optional(Type.String({ minLength: 1, maxLength: LIMITS.taskBytes, description: "Required for input or guide only. input: answer to the pending question (<=32 KiB UTF-8). guide: advice to a running worker (<=4 KiB UTF-8, at most 8/run), delivered at its next model boundary; does not change permissions, ownership, scope or budget." })),
 }, { additionalProperties: false });
 const allowed: Record<string, string[]> = {
   start: ["mode", "permissions", "task", "label", "from", "operation", "seconds", "model", "roots"], models: [], list: [], status: ["id"], peek: ["id", "after", "limit"],
@@ -89,17 +113,34 @@ export default function subagents(pi: ExtensionAPI, options: { workerEntry?: str
     return { message: { customType: "subagents:observation:v1", content, display: false }, ...(systemPrompt ? { systemPrompt } : {}) };
   });
   pi.registerTool({ name: "subagents", label: "Subagents", parameters: schema, executionMode: "sequential",
-    description: "Owned SDK workers; permissions read-only (default) or implement (explicit opt-in). Choose zero/one/several based on independent work; ceilings are not team-size targets. start(mode fresh|fork,task,label,permissions?,model?,operation?,from?,seconds<=1800) returns immediately. model is self (default), next-smaller (immediate configured ladder successor), or exact provider/model; no fallback or skipped rungs. A human model lock, when enabled, cannot be overridden. models inspects the configured ladder and lock. Thinking inherits the parent; model choice adds no permissions. Fork needs a captured checkpoint plus human history-sharing grant, excludes the entire delegating tool batch, and never inherits permissions. Read-only has scoped read/ls/grep, no shell/edits. Implement has normal coding tools including bash/edit/write: shared live checkout, unsandboxed host access, no rollback. Assign disjoint file ownership; review changes and checks. No recursive delegation or personal memory/history tools in either profile. Prefer doing useful parent work before join. list/status(id)/peek(id,after=0,limit<=100) inspect without inference or acknowledgement; checkpoints lists captured fork origins. join(ids?,seconds<=300=60,all=false) waits for any result/blocker/failure/user input, not collection. input(id,question,text) answers only a pending clarification. guide(id,text<=4KiB) sends parent advice to a running worker (max 8/run), appended at its next model boundary without rewriting its context; receipt is a guidance-delivered event in peek. It is not user authority and grants no permissions, ownership, scope or budget. Read-only starts return inspectRoots and grantWarnings for task-named paths outside the grant or through symlinks; roots[] (<=4 absolute dirs, read-only only) requests extra read roots with human confirmation. collect(id) returns a report claim, not proof or transcript merge. cancel(id) or cancel(all=true) stops owned processes; cleanup is observed separately. Parent turn-end/closing peek leaves workers running; global stop/reload/session change/quit cancels. No idle-parent model wake. Linux/Node24+; default 24 work turns/80 tool calls (human-configurable via /subagents limits), plus one report-only synthesis response/call on turn/tool exhaustion; collect retains findings with budget-exceeded status. Cancellation/deadlines/hard failures do not grant synthesis. 4096 output tokens per request/8MiB public log. Private host artifacts persist.",
+    description: "Delegate independent work to owned SDK workers. Choose zero, one or several; concurrency ceilings are not staffing targets.\n\n" + actionHelp
+      + "\nStart returns immediately. Do useful parent work before join. Workflow: start -> status/peek or join -> answer blockers with input -> collect -> verify findings and changes. join waits without collecting; collect returns an unverified report claim, not a transcript merge. list/status/peek/models/checkpoints inspect without inference or acknowledgement."
+      + "\n\nPermissions: read-only (default) has scoped read/ls/grep, no shell or edits. implement is explicit unsandboxed host access with normal coding tools including bash/edit/write in the shared live checkout; no rollback. Assign disjoint files and review actual diffs/checks. Neither profile can recursively delegate or use personal memory/history tools. Extra roots need interactive human confirmation and apply only to read-only; start returns inspectRoots and any grantWarnings for outside/symlink task paths."
+      + "\n\nModels/history: model defaults to self; next-smaller uses exactly the next configured ladder rung; provider/model selects an exact identity. No fallback or skipped rung. Human model locks cannot be overridden; models reports the ladder/lock. Thinking inherits the parent; model choice grants no permissions. fork requires a captured checkpoint plus human history-sharing grant, excludes the whole delegating tool batch, and never inherits permissions. checkpoints lists available anchors for from; fresh needs no history grant."
+      + "\n\nGuidance: guide sends parent advice to a running worker (max 8/run), appended at its next model boundary without rewriting context; peek shows guidance-delivered. It is not user authority and grants no permissions, ownership, scope or budget. Use input instead when the worker has a pending clarification."
+      + "\n\nLifetime/limits: cancel requests process shutdown; cleanup is observed separately. Parent turn-end and closing peek leave workers running; global stop/reload/session change/quit cancels them. No idle-parent model wake. Linux/Node24+. Default 24 work turns/80 tool calls (human /subagents limits), plus one report-only synthesis on turn/tool exhaustion; collect retains findings with budget-exceeded status. Cancellation, deadlines and hard failures do not grant synthesis. 4096 output tokens/request; 8 MiB public log. Private host artifacts persist.",
     async execute(callId, params, signal, _update, ctx) {
       signal?.throwIfAborted();
-      for (const [key, value] of Object.entries(params)) if (key !== "action" && value !== undefined && !allowed[params.action]!.includes(key)) throw new Error(`${key} is not valid for ${params.action}.`);
+      const fields = allowed[params.action];
+      if (!fields) throw new Error(`Unknown subagents action: ${params.action}. Choose ${Object.keys(allowed).join(", ")}.`);
+      const usage = `For ${params.action}, ${actionUsage[params.action]}. Omit unrelated fields.`;
+      for (const [key, value] of Object.entries(params)) if (key !== "action" && value !== undefined && !fields.includes(key)) throw new Error(`${key} is not valid for ${params.action}. ${usage}`);
+      const required = params.action === "start" ? ["mode", "task", "label"]
+        : params.action === "input" ? ["id", "question", "text"]
+        : params.action === "guide" ? ["id", "text"]
+        : ["status", "peek", "collect"].includes(params.action) || (params.action === "cancel" && params.all !== true) ? ["id"] : [];
+      const missing = required.filter(key => !params[key as keyof typeof params]);
+      if (missing.length) throw new Error(`Missing required ${missing.join(", ")}. ${usage}`);
+      if (params.action === "cancel" && params.all === true && params.id) throw new Error(`Choose id or all, not both. ${usage}`);
+      if (params.action === "start" && params.mode === "fresh" && params.from !== undefined) throw new Error("Fresh workers cannot specify a fork checkpoint. Omit from, or use mode:fork with an anchor returned by checkpoints.");
+      if (params.action === "join" && params.seconds !== undefined && params.seconds > 300) throw new Error(`Join timeout must be 1–300 seconds (default 60). ${usage}`);
+      if (params.action === "guide" && params.text && Buffer.byteLength(params.text) > LIMITS.guidanceBytes) throw new Error(`guide text must be at most ${LIMITS.guidanceBytes} UTF-8 bytes; input answers allow ${LIMITS.taskBytes} bytes.`);
       const r = await ready(ctx);
-      const id = () => { if (!params.id) throw new Error("id required."); return params.id; };
+      const id = () => params.id!;
       let result: unknown;
       switch (params.action) {
         case "start": {
           if (!params.mode || !params.task || !params.label) throw new Error("Explicit mode, task, and label required.");
-          if (params.mode === "fresh" && params.from) throw new Error("Fresh workers cannot specify a fork checkpoint.");
           const launchEpoch = branchEpoch, agentDir = options.agentDir ?? getAgentDir();
           const forcedModel = forcedSubagentModel(ctx);
           const requestedModel = params.model === "same" ? "self" : params.model;

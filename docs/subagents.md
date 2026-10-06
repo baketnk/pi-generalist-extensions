@@ -30,6 +30,34 @@ continuity, Code Mode, and the task checklist. Nothing launches at registration.
 {"action":"cancel","all":true}
 ```
 
+### Action arguments
+
+Call one action at a time and omit unrelated fields. The provider-facing schema
+stays a flat object for compatibility; required fields depend on `action` and are
+checked before runtime initialization. Every field describes its applicable actions.
+
+| Action | Required fields (besides `action`) | Optional fields |
+|---|---|---|
+| `start` | `mode`, `task`, `label` | `permissions`, `model`, `operation`, `seconds`, `roots`, `from` (fork only) |
+| `list`, `models`, `checkpoints` | none | none |
+| `status`, `collect` | `id` | none |
+| `peek` | `id` | `after`, `limit` |
+| `join` | none | `ids`, `seconds`, `all` |
+| `input` | `id`, `question`, `text` | none |
+| `guide` | `id`, `text` | none |
+| `cancel` | `id` OR `all:true` (never both) | none |
+
+Do **not** pass `id` to `start`: the host generates the new worker run ID and returns it.
+For later actions, `id` is that run ID returned by `start`/`list`, not its label or operation key.
+`join` uses an `ids` array even for one worker. `question` is the exact pending
+clarification ID, not its prose. `from` is a captured checkpoint's `anchor`, not a
+worker ID; omit it for the latest safe checkpoint. `seconds` means a worker deadline
+for `start` (default 600, max 1800), but a wait timeout for `join` (default 60, max 300).
+`text` allows 32 KiB UTF-8 for `input` answers and only 4 KiB for `guide` advice.
+Invalid action combinations return the expected call shape instead of silently
+ignoring arguments or guessing intent. Tool definitions remain static across turns
+and model-lock changes; no context projection or existing prefix is rewritten.
+
 - **Start** persists intent before effects and returns while the task is starting.
   `mode`, `task`, and `label` are required. Optional `operation` is an idempotency key;
   otherwise Pi's tool-call ID is used. Same key/same intent returns the existing run,
