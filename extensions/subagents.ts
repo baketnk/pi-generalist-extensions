@@ -15,17 +15,17 @@ import { loadModelConfig, modelKey, resolveWorkerModel, saveModelConfig } from "
 import { forcedSubagentModel, normalizeForcedSubagentModel, setForcedSubagentModel } from "../lib/subagents/model-policy.ts";
 
 const actionUsage: Record<string, string> = {
-  start: 'pass mode:"fresh"|"fork", task, label; optionally permissions, model, operation, seconds, roots, and from (fork only). Do not pass id: the host generates and returns the new worker run ID',
+  start: 'pass mode:"fresh"|"fork", task, label; optionally permissions, model, operation, seconds; roots only for read-only permissions, from only for mode:fork (forbidden for fresh). No other fields. Do not pass id: the host generates and returns the new worker run ID',
   list: 'pass only {"action":"list"}',
   models: 'pass only {"action":"models"}',
   checkpoints: 'pass only {"action":"checkpoints"}',
-  status: 'pass {"action":"status","id":"RUN_ID"}',
-  peek: 'pass id; optionally after (default 0) and limit (default 40, max 100)',
-  join: 'pass optional ids:["RUN_ID"], seconds (default 60, max 300), all (default false); use ids, not id',
-  input: 'pass id, question (pending question ID), text (answer)',
-  guide: 'pass id, text (advice, max 4 KiB UTF-8)',
-  collect: 'pass {"action":"collect","id":"RUN_ID"}',
-  cancel: 'pass {"action":"cancel","id":"RUN_ID"} OR {"action":"cancel","all":true}',
+  status: 'pass {"action":"status","id":"RUN_ID"}; id required, no other fields',
+  peek: 'pass required id; optionally after (default 0) and limit (default 40, max 100); no other fields. Example: {"action":"peek","id":"RUN_ID","after":0,"limit":40}',
+  join: 'pass optional ids:["RUN_ID"], seconds (default 60, max 300), all (default false); use ids, not id; no other fields. Omitted ids selects latest 16 uncollected runs; [] selects none. Example: {"action":"join","ids":["RUN_ID"],"seconds":60,"all":true}',
+  input: 'pass required id, question (pending question ID), text (answer); no other fields. Example: {"action":"input","id":"RUN_ID","question":"QUESTION_ID","text":"Answer"}',
+  guide: 'pass required id, text (advice, max 4 KiB UTF-8); no question or other fields. Example: {"action":"guide","id":"RUN_ID","text":"Advice"}',
+  collect: 'pass {"action":"collect","id":"RUN_ID"}; id required, no other fields',
+  cancel: 'pass {"action":"cancel","id":"RUN_ID"} OR {"action":"cancel","all":true}; exactly one of id or all:true, no other fields',
 };
 const actionHelp = "Call one action at a time; omit unrelated fields.\n" + Object.entries(actionUsage).map(([action, usage]) => `${action}: ${usage}.`).join("\n")
   + '\nExamples: {"action":"start","mode":"fresh","task":"Review src/validation.ts; cite findings","label":"validation-review"}; {"action":"join","ids":["RUN_ID"],"seconds":60}; {"action":"collect","id":"RUN_ID"}.\n';

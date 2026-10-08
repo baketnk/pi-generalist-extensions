@@ -6,24 +6,39 @@ import { CompletionQueue, COMPLETION_DELAY_MS, COMPLETION_BATCH_SIZE, completion
 
 const Actions = ["start", "list", "status", "output", "cancel", "ignore", "wait"] as const;
 type Action = (typeof Actions)[number];
+const actionUsage: Record<Action, string> = {
+  start: 'command required; optional cwd, label, timeoutSeconds, notify. Do NOT supply id on start. Omit id; the runtime generates and returns it. Use label to name the job. Example: {"action":"start","command":"bun test","label":"tests"}',
+  list: 'action only; no other fields. Example: {"action":"list"}',
+  status: 'id required (existing job ID from start/list); no other fields. Example: {"action":"status","id":"JOB_ID"}',
+  output: 'id required (existing job ID); optional cursor, limit, tail; no other fields. Example: {"action":"output","id":"JOB_ID","tail":true}',
+  cancel: 'exactly one of id (existing job ID) or all:true; no other fields. Example: {"action":"cancel","id":"JOB_ID"} OR {"action":"cancel","all":true}',
+  ignore: 'exactly one of id (existing job ID) or all:true; no other fields. Example: {"action":"ignore","id":"JOB_ID"} OR {"action":"ignore","all":true}',
+  wait: 'waitFor required; optional seconds; no id or other fields. Example: {"action":"wait","waitFor":"all","seconds":60}',
+};
+const actionHelp = "Call one action at a time; omit unrelated fields.\n" + Actions.map(action => `${action}: ${actionUsage[action]}.`).join("\n");
 const ToolSchema = Type.Object({
-  action: StringEnum(Actions), command: Type.Optional(Type.String({ maxLength: 16_384 })), cwd: Type.Optional(Type.String({ maxLength: 4_096 })),
-  label: Type.Optional(Type.String({ maxLength: 200 })), timeoutSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 14_400 })),
-  notify: Type.Optional(StringEnum(["always", "errors", "off"] as const, { description: "Completion wake policy: always (default), errors (quiet on clean exit 0), or off (never wake; result remains inspectable)." })),
-  id: Type.Optional(Type.String({ maxLength: 128 })), cursor: Type.Optional(Type.String({ maxLength: 256 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 32 * 1024 })), tail: Type.Optional(Type.Boolean()),
-  all: Type.Optional(Type.Boolean({ description: "Apply cancel or ignore to every currently running job." })),
-  waitFor: Type.Optional(StringEnum(["next", "all"] as const, { description: "Wait for the next currently running job to settle, or for all jobs running at call time." })),
-  seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 300 })),
+  action: StringEnum(Actions, { description: actionHelp }),
+  command: Type.Optional(Type.String({ maxLength: 16_384, description: "start only: required finite shell command. No other action accepts command." })),
+  cwd: Type.Optional(Type.String({ maxLength: 4_096, description: "start only: working directory; defaults to the current session cwd." })),
+  label: Type.Optional(Type.String({ maxLength: 200, description: "start only: optional human-readable job name, not an ID. Later actions use the returned job ID." })),
+  timeoutSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 14_400, description: "start only: job execution timeout in seconds (1..14400); not the wait timeout." })),
+  notify: Type.Optional(StringEnum(["always", "errors", "off"] as const, { description: "start only: completion wake policy: always (default), errors (quiet on clean exit 0), or off (never wake; result remains inspectable)." })),
+  id: Type.Optional(Type.String({ maxLength: 128, description: "Do NOT supply id on start: the runtime generates and returns the job ID. Use an existing job ID returned by start/list for status, output, cancel, or ignore only. wait uses waitFor, not id. Use label to name a new job." })), cursor: Type.Optional(Type.String({ maxLength: 256, description: "output only: opaque cursor returned by a previous output read for this job." })),
+  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 32 * 1024, description: "output only: maximum output page bytes (1..32768)." })),
+  tail: Type.Optional(Type.Boolean({ description: "output only: read the retained output tail instead of starting at the beginning." })),
+  all: Type.Optional(Type.Boolean({ description: "cancel/ignore only: all:true selects every currently running job; omit id. Otherwise supply id. No other action accepts all." })),
+  waitFor: Type.Optional(StringEnum(["next", "all"] as const, { description: "wait only, required: next waits for the next currently running job to settle; all waits for jobs running at call time. Do not supply id." })),
+  seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 300, description: "wait only: bounded wait timeout (1..300 seconds, default 60); does not change job execution deadlines." })),
 }, { additionalProperties: false });
 type Params = { action: Action; command?: string; cwd?: string; label?: string; timeoutSeconds?: number; notify?: JobNotify; id?: string; cursor?: string; limit?: number; tail?: boolean; all?: boolean; waitFor?: WaitFor; seconds?: number };
 
 function requireOnly(params: Params, action: Action, allowed: readonly (keyof Params)[]): void {
-  for (const [key, value] of Object.entries(params)) if (key !== "action" && value !== undefined && !allowed.includes(key as keyof Params)) throw new Error(`${key} is not valid for bg_tasks ${action}.`);
+  for (const [key, value] of Object.entries(params)) if (key !== "action" && value !== undefined && !allowed.includes(key as keyof Params)) throw new Error(`${key} is not valid for bg_tasks ${action}. For ${action}, ${actionUsage[action]}. Omit unrelated fields.`);
 }
-function requireId(params: Params): string { if (!params.id) throw new Error("id is required for this action."); return params.id; }
+function requireId(params: Params): string { if (!params.id) throw new Error(`id is required for bg_tasks ${params.action}. For ${params.action}, ${actionUsage[params.action]}.`); return params.id; }
 function running(jobs: BackgroundJobRuntime): JobRecord[] { return jobs.pending(); }
 function selectedRunning(jobs: BackgroundJobRuntime, params: Params): string[] {
-  if (!!params.id === (params.all === true)) throw new Error("Specify exactly one of id or all=true.");
+  if (!!params.id === (params.all === true)) throw new Error(`Specify exactly one of id or all=true. For ${params.action}, ${actionUsage[params.action]}.`);
   return params.id ? [params.id] : running(jobs).map(job => job.id);
 }
 function formatJob(job: JobRecord): string {
@@ -127,7 +142,7 @@ export default function bgTasks(pi: ExtensionAPI) {
 
   pi.registerTool({
     name: "bg_tasks", label: "Background tasks",
-    description: "Start, inspect, wait for, ignore completion notifications from, or cancel finite Linux commands owned by this Pi session runtime. wait waitFor=next/all observes jobs active at call time. ignore leaves work running and permanently sets notify=off. start notify=errors suppresses clean exit-0 completions; notify=off suppresses every completion wake while retaining status/output. Completions are coalesced at model boundaries or a short idle debounce and include bounded output tails; wait also returns already-queued completions. An attended running job must be cancelled, ignored, or waited for before ending a turn. Jobs stop on reload, branch/session replacement, and graceful exit; they do not survive a crash. No services, interactive stdin, schedules, remote execution, or automatic retries.",
+    description: "Start, inspect, wait for, ignore completion notifications from, or cancel finite Linux commands owned by this Pi session runtime.\n\n" + actionHelp + "\n\nwait waitFor=next/all observes jobs active at call time. ignore leaves work running and permanently sets notify=off. start notify=errors suppresses clean exit-0 completions; notify=off suppresses every completion wake while retaining status/output. Completions are coalesced at model boundaries or a short idle debounce and include bounded output tails; wait also returns already-queued completions. An attended running job must be cancelled, ignored, or waited for before ending a turn. Jobs stop on reload, branch/session replacement, and graceful exit; they do not survive a crash. No services, interactive stdin, schedules, remote execution, or automatic retries.",
     promptSnippet: "Run a finite local command in the background and inspect it with bounded output cursors.",
     promptGuidelines: ["Use bg_tasks only for authorized finite work. Start independent long jobs together, continue useful work, then wait when blocked instead of polling. Inspect completion evidence before dependent operations; fetch output when its bounded tail is insufficient. Completion is not permission for more work."],
     parameters: ToolSchema, executionMode: "sequential",
@@ -138,7 +153,7 @@ export default function bgTasks(pi: ExtensionAPI) {
         case "start": {
           if (ctx.mode === "print" || ctx.mode === "json") throw new Error("bg_tasks start is unavailable in print and JSON mode.");
           requireOnly(params, "start", ["command", "cwd", "label", "timeoutSeconds", "notify"]);
-          if (!params.command) throw new Error("command is required for bg_tasks start.");
+          if (!params.command) throw new Error(`command is required for bg_tasks start. For start, ${actionUsage.start}.`);
           const job = await jobs.start({ command: params.command, cwd: params.cwd ?? ctx.cwd, label: params.label, timeoutSeconds: params.timeoutSeconds, notify: params.notify }, signal);
           return { content: [{ type: "text", text: `Started background job.\n${formatJob(job)}` }], details: { job } };
         }
@@ -159,7 +174,7 @@ export default function bgTasks(pi: ExtensionAPI) {
         }
         case "wait": {
           requireOnly(params, "wait", ["waitFor", "seconds"]);
-          if (!params.waitFor) throw new Error("waitFor is required for bg_tasks wait.");
+          if (!params.waitFor) throw new Error(`waitFor is required for bg_tasks wait. For wait, ${actionUsage.wait}.`);
           // Also return eligible completions already queued when wait began.
           // Interrupted waits leave their observations queued, rather than losing them.
           const queued = completions.records();

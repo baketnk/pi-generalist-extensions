@@ -6,9 +6,10 @@ import { join } from "node:path";
 import { convertToLlm, SessionManager } from "@earendil-works/pi-coding-agent";
 import bgTasks from "../extensions/bg-tasks.ts";
 
-// Intentional v2 contract change: completion tails/coalescing guidance. This
-// baseline still guards the complete static contract against per-job mutation.
-const COMPLETION_V2_TOOL_SHA256 = "57e03b6972c9ee081f663310ac26a2bb5dd6f6b6f5984d4c47869186d68ca33e";
+// Intentional static contract change: explicit per-action fields, generated IDs,
+// and repair guidance. Completion v2 is unchanged. This baseline still guards
+// the complete static contract against per-job mutation.
+const COMPLETION_V2_TOOL_SHA256 = "ae95a6390e42c056049a3f2acc6ab6a7fd9b034005f46b2b38a2e5b4e847ca10";
 function harness(manager: SessionManager, cwd: string) {
   const events: Record<string, Function> = {}, messages: unknown[] = [];
   let tool: any, complete!: () => void;

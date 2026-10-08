@@ -81,6 +81,45 @@ async function fixture(run: (h: any) => Promise<void>) {
   }
 }
 
+test("every bg_tasks action and parameter exposes its contract and repair guidance", async () => fixture(async h => {
+  const schema = h.tool.parameters;
+  expect(schema.additionalProperties).toBe(false);
+  for (const property of Object.values(schema.properties) as any[]) expect(property.description.length).toBeGreaterThan(20);
+  const shapes: Record<string, any> = {
+    start: { command: "true" }, list: {}, status: { id: "JOB_ID" }, output: { id: "JOB_ID" },
+    cancel: { all: true }, ignore: { all: true }, wait: { waitFor: "all" },
+  };
+  for (const action of schema.properties.action.enum) {
+    expect(h.tool.description).toContain(`${action}:`);
+    expect(h.tool.description).toContain(`"action":"${action}"`);
+    await expect(h.call({ action, ...shapes[action], unrelated: true })).rejects.toThrow(`For ${action},`);
+  }
+  for (const action of ["start", "status", "output", "cancel", "ignore", "wait"]) {
+    await expect(h.call({ action })).rejects.toThrow(`For ${action},`);
+  }
+  for (const action of ["cancel", "ignore"]) {
+    await expect(h.call({ action, id: "JOB_ID", all: true })).rejects.toThrow("Specify exactly one");
+  }
+}));
+
+test("start documents generated IDs and rejects caller IDs before launching", async () => fixture(async h => {
+  expect(h.tool.parameters.properties.id.description).toContain("Do NOT supply id on start");
+  expect(h.tool.description).toContain("Do NOT supply id on start");
+  expect(h.tool.description).toContain('{"action":"start","command":"bun test","label":"tests"}');
+  expect(h.tool.description).toContain("wait: waitFor required; optional seconds; no id");
+  await expect(h.call({ action: "start", id: "tests", command: "printf should-not-run" })).rejects.toThrow("Omit id; the runtime generates and returns it. Use label");
+  expect((await h.call({ action: "list" })).details.jobs).toEqual([]);
+  const started = await h.call({ action: "start", label: "tests", command: "printf ok", notify: "off" });
+  const id = started.details.job.id;
+  expect(id).toBeString();
+  expect(id).not.toBe("tests");
+  expect(started.details.job.label).toBe("tests");
+  expect((await h.call({ action: "status", id })).details.job.id).toBe(id);
+  await h.call({ action: "wait", waitFor: "all", seconds: 2 });
+  expect((await h.call({ action: "output", id })).content[0].text).toBe("ok");
+  await expect(h.call({ action: "wait", id, waitFor: "all" })).rejects.toThrow("id is not valid for bg_tasks wait");
+}));
+
 test("cancel has no reason input and retains the runtime stop reason", async () => fixture(async h => {
   const schema = h.tool.parameters;
   expect(schema.properties).not.toHaveProperty("reason");

@@ -29,7 +29,10 @@ test("schema stays flat, describes every field, and exposes each action's call s
   expect(schema.required).toEqual(["action"]);
   expect(schema.additionalProperties).toBe(false);
   for (const property of Object.values(schema.properties) as any[]) expect(property.description.length).toBeGreaterThan(20);
-  for (const action of schema.properties.action.enum) expect(tool.description).toContain(`${action}:`);
+  for (const action of schema.properties.action.enum) {
+    expect(tool.description).toContain(`${action}:`);
+    expect(tool.description).toContain(`"action":"${action}"`);
+  }
   for (const keyword of ["anyOf", "oneOf", "allOf", "$ref"]) expect(JSON.stringify(schema)).not.toContain(`"${keyword}"`);
   expect(schema.properties.seconds.description).toContain("1..300");
   expect(schema.properties.text.description).toContain("4 KiB");
@@ -72,6 +75,13 @@ test("invalid combinations give repairable errors before runtime initialization"
     [{ action: "guide", id: "RUN_ID", text: "é".repeat(2049) }, "4096 UTF-8 bytes"],
   ] as const) await expect(h.execute(args)).rejects.toThrow(message);
   await expect(h.tool.execute("test", { action: "spawn" }, undefined, undefined, {})).rejects.toThrow("Unknown subagents action");
+});
+
+test("every action rejects unrelated fields with action-specific repair guidance", async () => {
+  const h = harness();
+  for (const args of calls) {
+    await expect(h.tool.execute("test", { ...args, unrelated: true }, undefined, undefined, {})).rejects.toThrow(`For ${args.action},`);
+  }
 });
 
 test("SDK schema validation rejects unknown keys, empty identifiers and out-of-range values", () => {
