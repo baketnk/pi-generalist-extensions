@@ -20,6 +20,7 @@ export type GeneralistDefaults = {
   output: boolean;
   patch?: boolean;
   icons?: boolean;
+  websearch?: boolean;
   backgroundModel?: BackgroundModel | null;
   forcedSubagentModel?: string | null;
   loopLimit?: number;
@@ -39,10 +40,11 @@ function valid(value: unknown): value is GeneralistDefaults {
   return v.version === 1 && typeof v.meitan === "boolean" && typeof v.output === "boolean"
     && (v.memory === undefined || typeof v.memory === "boolean")
     && (v.patch === undefined || typeof v.patch === "boolean") && (v.icons === undefined || typeof v.icons === "boolean")
+    && (v.websearch === undefined || typeof v.websearch === "boolean")
     && (v.backgroundModel === undefined || v.backgroundModel === null || validBackgroundModel(v.backgroundModel))
     && (v.forcedSubagentModel === undefined || validForcedSubagentModel(v.forcedSubagentModel))
     && (v.loopLimit === undefined || validLoopLimit(v.loopLimit))
-    && Object.keys(v).every(key => ["version", "meitan", "memory", "output", "patch", "icons", "backgroundModel", "forcedSubagentModel", "loopLimit"].includes(key));
+    && Object.keys(v).every(key => ["version", "meitan", "memory", "output", "patch", "icons", "websearch", "backgroundModel", "forcedSubagentModel", "loopLimit"].includes(key));
 }
 
 /** Global defaults explicitly saved from the Generalist TUI; branch entries still take precedence. */

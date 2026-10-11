@@ -9,10 +9,11 @@ import { configureForcedSubagentModel, forcedSubagentModel, forcedSubagentModelL
 import { loadWorkerLimits, saveWorkerLimits, validateWorkerLimits, RESOURCE_CEILINGS } from "../lib/subagents/limits.ts";
 import { LOOP_LIMIT_ENTRY, loopLimit, validLoopLimit } from "../lib/loop-config.ts";
 
-type FeatureId = "meitan" | "memory" | "output" | "patch" | "icons";
+type FeatureId = "meitan" | "memory" | "output" | "patch" | "icons" | "websearch";
 type Features = Record<"meitan" | "memory", ToggleController> & {
   patch?: ToggleController;
   icons?: ToggleController;
+  websearch?: ToggleController;
   memory: ToggleController & {
     configurePersonal?: (ctx: ExtensionContext) => Promise<void>;
     configurePairing?: (ctx: ExtensionContext) => Promise<void>;
@@ -26,6 +27,7 @@ const labels: Record<FeatureId, string> = {
   output: "Raw JSON debug output",
   patch: "Apply patch tool (local project files)",
   icons: "Emoji footer status icons",
+  websearch: "Web search",
 };
 
 // Every selectable setting has a description so SettingsList reserves the same area on selection changes.
@@ -35,10 +37,11 @@ const descriptions: Record<FeatureId, string> = {
   output: "Readable text or raw JSON.",
   patch: "Optional local apply_patch tool.",
   icons: "Labelled footer booleans.",
+  websearch: "Find current information and source links.",
 };
 
 const featureIds = (features: Features) => (Object.keys(labels) as FeatureId[]).filter(id =>
-  (id !== "patch" || features.patch) && (id !== "icons" || features.icons));
+  (id !== "patch" || features.patch) && (id !== "icons" || features.icons) && (id !== "websearch" || features.websearch));
 
 function status(features: Features, ctx: ExtensionContext) {
   return featureIds(features)
@@ -101,6 +104,7 @@ export function generalistDefaults(features: Features, ctx: ExtensionContext): G
     loopLimit: loopLimit(ctx),
     ...(features.patch ? { patch: features.patch() } : {}),
     ...(features.icons ? { icons: features.icons() } : {}),
+    ...(features.websearch ? { websearch: features.websearch() } : {}),
   };
 }
 
@@ -124,7 +128,7 @@ export function registerGeneralistSettings(pi: ExtensionAPI, features: Features,
     if (defaults && !hasBranchSetting(ctx, OUTPUT_CONFIG_ENTRY)) pi.appendEntry(OUTPUT_CONFIG_ENTRY, { rawJson: defaults.output });
   });
   pi.registerCommand("generalist", {
-    description: "Configure Generalist features and output: /generalist [status|meitan|memory|output|patch|icons] [on|off|toggle]; personal|pairing|companion|background|subagents|subagent-limits|loop|dashboard",
+    description: "Configure Generalist features and output: /generalist [status|meitan|memory|output|patch|icons|websearch] [on|off|toggle]; personal|pairing|companion|background|subagents|subagent-limits|loop|dashboard",
     getArgumentCompletions: prefix => ["status", ...featureIds(features), "personal", "pairing", "companion", "background", "subagents", "subagent-limits", "loop", "dashboard", "on", "off", "toggle"]
       .filter(value => value.startsWith(prefix)).map(value => ({ value, label: value })),
     handler: async (args, ctx) => {

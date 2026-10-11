@@ -72,3 +72,14 @@ test("forced subagent model defaults accept named and exact specifiers only", ()
     expect(() => saveGeneralistDefaults({ ...base, forcedSubagentModel } as any, path)).toThrow();
   }
 });
+test("websearch default is backward compatible and strictly boolean", () => {
+  const path = generalistConfigPath(root());
+  const base = { version: 1 as const, meitan: false, output: false };
+  for (const websearch of [undefined, false, true]) {
+    saveGeneralistDefaults({ ...base, websearch }, path);
+    expect(loadGeneralistDefaults(path)?.websearch).toBe(websearch);
+  }
+  for (const websearch of ["on", 1, null]) {
+    expect(() => saveGeneralistDefaults({ ...base, websearch } as any, path)).toThrow();
+  }
+});

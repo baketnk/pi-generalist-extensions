@@ -14,6 +14,7 @@ import { registerSessionSetup } from "../lib/session-setup.ts";
 import { registerStatusIcons } from "../lib/status-icons.ts";
 import { loadGeneralistDefaults } from "../lib/generalist-config.ts";
 import loop from "./loop.ts";
+import webSearch from "./web-search.ts";
 
 /** One entrypoint guarantees toggles restore before the startup picker runs. */
 export default function generalist(pi: ExtensionAPI) {
@@ -23,6 +24,7 @@ export default function generalist(pi: ExtensionAPI) {
     meitan: meitan(pi, icons, () => defaults?.meitan),
     memory: memory(pi, icons, () => defaults?.memory),
     patch: applyPatch(pi, icons, () => defaults?.patch),
+    websearch: webSearch(pi, icons, () => defaults?.websearch),
     icons,
   };
   registerSessionSetup(pi, toggles);
