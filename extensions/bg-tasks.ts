@@ -7,7 +7,7 @@ import { CompletionQueue, COMPLETION_DELAY_MS, COMPLETION_BATCH_SIZE, completion
 const Actions = ["start", "list", "status", "output", "cancel", "ignore", "wait"] as const;
 type Action = (typeof Actions)[number];
 const actionUsage: Record<Action, string> = {
-  start: 'command required; optional cwd, label, timeoutSeconds, notify. Do NOT supply id on start. Omit id; the runtime generates and returns it. Use label to name the job. Example: {"action":"start","command":"bun test","label":"tests"}',
+  start: 'command required; optional cwd, label, timeoutSeconds, notify. Do NOT supply id on start. Omit id; the runtime generates and returns it. Use label to name the job. An empty id ("") is also accepted as omitted. Example: {"action":"start","command":"bun test","label":"tests"}',
   list: 'action only; no other fields. Example: {"action":"list"}',
   status: 'id required (existing job ID from start/list); no other fields. Example: {"action":"status","id":"JOB_ID"}',
   output: 'id required (existing job ID); optional cursor, limit, tail; no other fields. Example: {"action":"output","id":"JOB_ID","tail":true}',
@@ -23,7 +23,7 @@ const ToolSchema = Type.Object({
   label: Type.Optional(Type.String({ maxLength: 200, description: "start only: optional human-readable job name, not an ID. Later actions use the returned job ID." })),
   timeoutSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 14_400, description: "start only: job execution timeout in seconds (1..14400); not the wait timeout." })),
   notify: Type.Optional(StringEnum(["always", "errors", "off"] as const, { description: "start only: completion wake policy: always (default), errors (quiet on clean exit 0), or off (never wake; result remains inspectable)." })),
-  id: Type.Optional(Type.String({ maxLength: 128, description: "Do NOT supply id on start: the runtime generates and returns the job ID. Use an existing job ID returned by start/list for status, output, cancel, or ignore only. wait uses waitFor, not id. Use label to name a new job." })), cursor: Type.Optional(Type.String({ maxLength: 256, description: "output only: opaque cursor returned by a previous output read for this job." })),
+  id: Type.Optional(Type.String({ maxLength: 128, description: "Do NOT supply id on start: the runtime generates and returns the job ID. An empty id (\"\") on start is treated as omitted. Use an existing job ID returned by start/list for status, output, cancel, or ignore only. wait uses waitFor, not id. Use label to name a new job." })), cursor: Type.Optional(Type.String({ maxLength: 256, description: "output only: opaque cursor returned by a previous output read for this job." })),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 32 * 1024, description: "output only: maximum output page bytes (1..32768)." })),
   tail: Type.Optional(Type.Boolean({ description: "output only: read the retained output tail instead of starting at the beginning." })),
   all: Type.Optional(Type.Boolean({ description: "cancel/ignore only: all:true selects every currently running job; omit id. Otherwise supply id. No other action accepts all." })),
@@ -147,7 +147,8 @@ export default function bgTasks(pi: ExtensionAPI) {
     promptGuidelines: ["Use bg_tasks only for authorized finite work. Start independent long jobs together, continue useful work, then wait when blocked instead of polling. Inspect completion evidence before dependent operations; fetch output when its bounded tail is insufficient. Completion is not permission for more work."],
     parameters: ToolSchema, executionMode: "sequential",
     async execute(_call, raw, signal, _update, ctx) {
-      const params = raw as Params;
+      const input = raw as Params;
+      const params = input.action === "start" && input.id === "" ? { ...input, id: undefined } : input;
       const jobs = getRuntime(ctx);
       switch (params.action) {
         case "start": {

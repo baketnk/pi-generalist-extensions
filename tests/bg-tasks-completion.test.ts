@@ -120,6 +120,25 @@ test("start documents generated IDs and rejects caller IDs before launching", as
   await expect(h.call({ action: "wait", id, waitFor: "all" })).rejects.toThrow("id is not valid for bg_tasks wait");
 }));
 
+test("start treats an empty id as omitted without relaxing other actions or fields", async () => fixture(async h => {
+  expect(h.tool.parameters.properties.id.description).toContain('An empty id ("") on start is treated as omitted');
+  for (const id of ["tests", " "]) {
+    await expect(h.call({ action: "start", id, command: "true" })).rejects.toThrow("id is not valid");
+  }
+  await expect(h.call({ action: "start", id: "", command: "true", all: true })).rejects.toThrow("all is not valid");
+  expect((await h.call({ action: "list" })).details.jobs).toEqual([]);
+  const args = { action: "start", id: "", command: "printf empty-id", notify: "off" };
+  const started = await h.call(args);
+  expect(started.details.job.id.length).toBeGreaterThan(0);
+  expect(args.id).toBe("");
+  await h.call({ action: "wait", waitFor: "all", seconds: 2 });
+  expect((await h.call({ action: "output", id: started.details.job.id })).content[0].text).toBe("empty-id");
+  for (const action of ["status", "output", "cancel", "ignore"]) {
+    await expect(h.call({ action, id: "" })).rejects.toThrow(action === "cancel" || action === "ignore" ? "Specify exactly one" : "id is required");
+  }
+  await expect(h.call({ action: "wait", id: "", waitFor: "all" })).rejects.toThrow("id is not valid");
+}));
+
 test("cancel has no reason input and retains the runtime stop reason", async () => fixture(async h => {
   const schema = h.tool.parameters;
   expect(schema.properties).not.toHaveProperty("reason");
