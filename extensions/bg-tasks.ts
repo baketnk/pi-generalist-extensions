@@ -1,6 +1,6 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionContext, type TurnEndEvent } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
+import { Type, type TSchema } from "typebox";
 import { BackgroundJobRuntime, shouldNotifyCompletion, type JobNotify, type JobRecord, type WaitFor } from "../lib/bg-tasks/runtime.ts";
 import { CompletionQueue, COMPLETION_DELAY_MS, COMPLETION_BATCH_SIZE, completionPacket, formatCompletions, type CompletionPacket } from "../lib/bg-tasks/completion.ts";
 
@@ -15,23 +15,37 @@ const actionUsage: Record<Action, string> = {
   ignore: 'exactly one of id (existing job ID) or all:true; no other fields. Example: {"action":"ignore","id":"JOB_ID"} OR {"action":"ignore","all":true}',
   wait: 'waitFor required; optional seconds; no id or other fields. Example: {"action":"wait","waitFor":"all","seconds":60}',
 };
-const actionHelp = "Call one action at a time; omit unrelated fields.\n" + Actions.map(action => `${action}: ${actionUsage[action]}.`).join("\n");
+const actionHelp = 'Call one action at a time; omit unrelated fields. Known optional fields set to "" or null are treated as omitted; all:false and tail:false are also treated as omitted. Required action inputs must still be supplied.\n' + Actions.map(action => `${action}: ${actionUsage[action]}.`).join("\n");
+// Accept absent-value placeholders at the schema boundary as well as execution.
+function optionalInput(schema: TSchema & { description?: string }) {
+  return Type.Optional(Type.Union([schema, Type.Literal(""), Type.Null()], { description: schema.description }));
+}
 const ToolSchema = Type.Object({
   action: StringEnum(Actions, { description: actionHelp }),
-  command: Type.Optional(Type.String({ maxLength: 16_384, description: "start only: required finite shell command. No other action accepts command." })),
-  cwd: Type.Optional(Type.String({ maxLength: 4_096, description: "start only: working directory; defaults to the current session cwd." })),
-  label: Type.Optional(Type.String({ maxLength: 200, description: "start only: optional human-readable job name, not an ID. Later actions use the returned job ID." })),
-  timeoutSeconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 14_400, description: "start only: job execution timeout in seconds (1..14400); not the wait timeout." })),
-  notify: Type.Optional(StringEnum(["always", "errors", "off"] as const, { description: "start only: completion wake policy: always (default), errors (quiet on clean exit 0), or off (never wake; result remains inspectable)." })),
-  id: Type.Optional(Type.String({ maxLength: 128, description: "Do NOT supply id on start: the runtime generates and returns the job ID. An empty id (\"\") on start is treated as omitted. Use an existing job ID returned by start/list for status, output, cancel, or ignore only. wait uses waitFor, not id. Use label to name a new job." })), cursor: Type.Optional(Type.String({ maxLength: 256, description: "output only: opaque cursor returned by a previous output read for this job." })),
-  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 32 * 1024, description: "output only: maximum output page bytes (1..32768)." })),
-  tail: Type.Optional(Type.Boolean({ description: "output only: read the retained output tail instead of starting at the beginning." })),
-  all: Type.Optional(Type.Boolean({ description: "cancel/ignore only: all:true selects every currently running job; omit id. Otherwise supply id. No other action accepts all." })),
-  waitFor: Type.Optional(StringEnum(["next", "all"] as const, { description: "wait only, required: next waits for the next currently running job to settle; all waits for jobs running at call time. Do not supply id." })),
-  seconds: Type.Optional(Type.Integer({ minimum: 1, maximum: 300, description: "wait only: bounded wait timeout (1..300 seconds, default 60); does not change job execution deadlines." })),
+  command: optionalInput(Type.String({ maxLength: 16_384, description: "start only: required finite shell command. No other action accepts command." })),
+  cwd: optionalInput(Type.String({ maxLength: 4_096, description: "start only: working directory; defaults to the current session cwd." })),
+  label: optionalInput(Type.String({ maxLength: 200, description: "start only: optional human-readable job name, not an ID. Later actions use the returned job ID." })),
+  timeoutSeconds: optionalInput(Type.Integer({ minimum: 1, maximum: 14_400, description: "start only: job execution timeout in seconds (1..14400); not the wait timeout." })),
+  notify: optionalInput(StringEnum(["always", "errors", "off"] as const, { description: "start only: completion wake policy: always (default), errors (quiet on clean exit 0), or off (never wake; result remains inspectable)." })),
+  id: optionalInput(Type.String({ maxLength: 128, description: "Do NOT supply id on start: the runtime generates and returns the job ID. An empty id (\"\") on start is treated as omitted. Use an existing job ID returned by start/list for status, output, cancel, or ignore only. wait uses waitFor, not id. Use label to name a new job." })), cursor: optionalInput(Type.String({ maxLength: 256, description: "output only: opaque cursor returned by a previous output read for this job. An empty cursor (\"\") on start is treated as omitted." })),
+  limit: optionalInput(Type.Integer({ minimum: 1, maximum: 32 * 1024, description: "output only: maximum output page bytes (1..32768)." })),
+  tail: optionalInput(Type.Boolean({ description: "output only: read the retained output tail instead of starting at the beginning." })),
+  all: optionalInput(Type.Boolean({ description: "cancel/ignore only: all:true selects every currently running job; omit id. Otherwise supply id. No other action accepts all." })),
+  waitFor: optionalInput(StringEnum(["next", "all"] as const, { description: "wait only, required: next waits for the next currently running job to settle; all waits for jobs running at call time. Do not supply id." })),
+  seconds: optionalInput(Type.Integer({ minimum: 1, maximum: 300, description: "wait only: bounded wait timeout (1..300 seconds, default 60); does not change job execution deadlines." })),
 }, { additionalProperties: false });
 type Params = { action: Action; command?: string; cwd?: string; label?: string; timeoutSeconds?: number; notify?: JobNotify; id?: string; cursor?: string; limit?: number; tail?: boolean; all?: boolean; waitFor?: WaitFor; seconds?: number };
 
+function normalizeParams(raw: Record<string, unknown>): Params {
+  // Copy, never mutate provider arguments. Only schema-known optional fields
+  // normalize; unknown keys, whitespace, zero, and meaningful values still fail.
+  const params = { ...raw };
+  for (const key of Object.keys(ToolSchema.properties)) {
+    if (key === "action") continue;
+    if (params[key] === "" || params[key] === null || ((key === "all" || key === "tail") && params[key] === false)) delete params[key];
+  }
+  return params as Params;
+}
 function requireOnly(params: Params, action: Action, allowed: readonly (keyof Params)[]): void {
   for (const [key, value] of Object.entries(params)) if (key !== "action" && value !== undefined && !allowed.includes(key as keyof Params)) throw new Error(`${key} is not valid for bg_tasks ${action}. For ${action}, ${actionUsage[action]}. Omit unrelated fields.`);
 }
@@ -147,8 +161,7 @@ export default function bgTasks(pi: ExtensionAPI) {
     promptGuidelines: ["Use bg_tasks only for authorized finite work. Start independent long jobs together, continue useful work, then wait when blocked instead of polling. Inspect completion evidence before dependent operations; fetch output when its bounded tail is insufficient. Completion is not permission for more work."],
     parameters: ToolSchema, executionMode: "sequential",
     async execute(_call, raw, signal, _update, ctx) {
-      const input = raw as Params;
-      const params = input.action === "start" && input.id === "" ? { ...input, id: undefined } : input;
+      const params = normalizeParams(raw as Record<string, unknown>);
       const jobs = getRuntime(ctx);
       switch (params.action) {
         case "start": {

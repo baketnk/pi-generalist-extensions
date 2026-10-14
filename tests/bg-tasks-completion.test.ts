@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import { Check } from "typebox/value";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -120,7 +122,7 @@ test("start documents generated IDs and rejects caller IDs before launching", as
   await expect(h.call({ action: "wait", id, waitFor: "all" })).rejects.toThrow("id is not valid for bg_tasks wait");
 }));
 
-test("start treats an empty id as omitted without relaxing other actions or fields", async () => fixture(async h => {
+test("start treats an empty id as omitted without accepting meaningful wrong-action fields", async () => fixture(async h => {
   expect(h.tool.parameters.properties.id.description).toContain('An empty id ("") on start is treated as omitted');
   for (const id of ["tests", " "]) {
     await expect(h.call({ action: "start", id, command: "true" })).rejects.toThrow("id is not valid");
@@ -136,7 +138,113 @@ test("start treats an empty id as omitted without relaxing other actions or fiel
   for (const action of ["status", "output", "cancel", "ignore"]) {
     await expect(h.call({ action, id: "" })).rejects.toThrow(action === "cancel" || action === "ignore" ? "Specify exactly one" : "id is required");
   }
-  await expect(h.call({ action: "wait", id: "", waitFor: "all" })).rejects.toThrow("id is not valid");
+  expect((await h.call({ action: "wait", id: "", waitFor: "all" })).details.waitFor).toBe("all");
+}));
+
+test("start treats an empty cursor as omitted but rejects meaningful cursors", async () => fixture(async h => {
+  expect(h.tool.parameters.properties.cursor.description).toContain('An empty cursor ("") on start is treated as omitted');
+  for (const cursor of ["JOB_ID:0", " "]) {
+    await expect(h.call({ action: "start", command: "true", cursor })).rejects.toThrow("cursor is not valid for bg_tasks start");
+  }
+  expect((await h.call({ action: "list" })).details.jobs).toEqual([]);
+  for (const extra of [{ cursor: "" }, { cursor: "", id: "" }]) {
+    const args = { action: "start", command: "printf empty-cursor", notify: "off", ...extra };
+    const started = await h.call(args);
+    expect(args.cursor).toBe("");
+    await h.call({ action: "wait", waitFor: "all", seconds: 2 });
+    expect((await h.call({ action: "output", id: started.details.job.id })).content[0].text).toBe("empty-cursor");
+  }
+  expect((await h.call({ action: "wait", waitFor: "all", cursor: "" })).details.waitFor).toBe("all");
+  await expect(h.call({ action: "start", command: "true", cursor: "", all: true })).rejects.toThrow("all is not valid");
+}));
+
+test("every optional field accepts empty placeholders through schema validation on every action", async () => fixture(async h => {
+  const schema = h.tool.parameters;
+  const fields = Object.keys(schema.properties).filter(key => key !== "action");
+  expect(fields).toHaveLength(12);
+  for (const action of schema.properties.action.enum) {
+    for (const field of fields) {
+      for (const value of ["", null]) expect(Check(schema, { action, [field]: value })).toBe(true);
+    }
+    for (const field of ["all", "tail"]) expect(Check(schema, { action, [field]: false })).toBe(true);
+  }
+  for (const action of ["", null, "unknown"]) expect(Check(schema, { action })).toBe(false);
+  expect(Check(schema, {})).toBe(false);
+  for (const value of ["", null, false, 0]) expect(Check(schema, { action: "list", unknown: value })).toBe(false);
+  for (const field of ["timeoutSeconds", "limit", "seconds"]) {
+    for (const value of [0, -1, 1.5, false, "0", {}, []]) expect(Check(schema, { action: "list", [field]: value })).toBe(false);
+  }
+  for (const field of ["notify", "waitFor"]) expect(Check(schema, { action: "list", [field]: " " })).toBe(false);
+  for (const field of ["all", "tail"]) expect(Check(schema, { action: "list", [field]: 0 })).toBe(false);
+}));
+
+test("fully populated placeholder calls work on all actions without mutating arguments", async () => fixture(async h => {
+  const fields = Object.keys(h.tool.parameters.properties).filter(key => key !== "action");
+  for (const { value, booleanValue, useSdk } of [
+    { value: "", booleanValue: "" }, { value: null, booleanValue: null },
+    { value: undefined, booleanValue: undefined }, { value: "", booleanValue: false },
+  ].flatMap(config => [false, true].map(useSdk => ({ ...config, useSdk })))) {
+    const placeholders: Record<string, unknown> = Object.fromEntries(fields.map(key => [key, value]));
+    // Exercise empty, null, omitted, and false booleans on unrelated actions too.
+    placeholders.all = booleanValue; placeholders.tail = booleanValue;
+    const call = async (shape: any) => {
+      const args = { ...placeholders, ...shape };
+      const before = { ...args };
+      expect(Check(h.tool.parameters, args)).toBe(true);
+      const frozen = Object.freeze(args);
+      const validated = useSdk ? validateToolArguments(h.tool, { type: "toolCall", id: "placeholder-test", name: "bg_tasks", arguments: frozen }) : frozen;
+      const result = await h.call(validated);
+      expect(args).toEqual(before);
+      return result;
+    };
+    const started = await call({ action: "start", command: "printf placeholders" });
+    const id = started.details.job.id;
+    expect(started.details.job.cwd).toBe(h.root);
+    expect(started.details.job.label).toBeUndefined();
+    expect(started.details.job.notify).toBe("always");
+    expect(started.details.job.limits.timeoutSeconds).toBeGreaterThan(0);
+    expect((await call({ action: "list" })).details.jobs.some((job: any) => job.id === id)).toBe(true);
+    expect((await call({ action: "status", id })).details.job.id).toBe(id);
+    await call({ action: "wait", waitFor: "all" });
+    expect((await call({ action: "output", id })).content[0].text).toBe("placeholders");
+    for (const action of ["cancel", "ignore"]) {
+      expect((await call({ action, id })).details.jobs[0].id).toBe(id);
+      expect((await call({ action, all: true })).details.jobs).toEqual([]);
+    }
+  }
+}));
+
+test("empty required inputs never launch jobs or imply bulk selection", async () => fixture(async h => {
+  for (const value of ["", null, undefined]) {
+    await expect(h.call({ action: "start", command: value })).rejects.toThrow("command is required");
+    await expect(h.call({ action: "wait", waitFor: value })).rejects.toThrow("waitFor is required");
+    for (const action of ["status", "output"]) await expect(h.call({ action, id: value })).rejects.toThrow("id is required");
+    for (const action of ["cancel", "ignore"]) {
+      for (const all of ["", null, false, undefined]) await expect(h.call({ action, id: value, all })).rejects.toThrow("Specify exactly one");
+    }
+  }
+  expect((await h.call({ action: "list" })).details.jobs).toEqual([]);
+}));
+
+test("meaningful wrong-action values and unknown empty fields remain rejected", async () => fixture(async h => {
+  const values: Record<string, any> = {
+    command: "true", cwd: h.root, label: "test", timeoutSeconds: 1, notify: "off",
+    id: "job", cursor: "job:0", limit: 1, tail: true, all: true, waitFor: "all", seconds: 1,
+  };
+  const allowed: Record<string, string[]> = {
+    start: ["command", "cwd", "label", "timeoutSeconds", "notify"], list: [], status: ["id"],
+    output: ["id", "cursor", "limit", "tail"], cancel: ["id", "all"], ignore: ["id", "all"], wait: ["waitFor", "seconds"],
+  };
+  for (const action of Object.keys(allowed)) {
+    for (const [key, value] of Object.entries(values)) {
+      if (!allowed[action].includes(key)) await expect(h.call({ action, [key]: value })).rejects.toThrow(`${key} is not valid for bg_tasks ${action}`);
+    }
+    for (const value of ["", null, false, 0]) await expect(h.call({ action, unknown: value })).rejects.toThrow("unknown is not valid");
+  }
+  for (const key of ["id", "cursor", "label", "command", "cwd"]) {
+    await expect(h.call({ action: "list", [key]: " " })).rejects.toThrow(`${key} is not valid`);
+  }
+  expect((await h.call({ action: "list" })).details.jobs).toEqual([]);
 }));
 
 test("cancel has no reason input and retains the runtime stop reason", async () => fixture(async h => {
