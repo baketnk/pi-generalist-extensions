@@ -25,6 +25,8 @@ const event = (kind: string, fields: { text?: string; toolId?: string; tool?: st
 };
 let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
 let cancelled = false, report: WorkerReport | undefined, pending: { id: string; resolve: (text: string) => void; reject: (e: Error) => void } | undefined;
+// Only newly answered calls are tracked. Never reinsert answers or mutate sent context.
+const answers = new Map<string, { id: string; text: string }>();
 let terminal: TaskState | undefined;
 let synthesizing = false, contextStopped = false;
 let finishing = false;
@@ -76,8 +78,10 @@ function hostHandoff(reason: string): WorkerReport {
   ].filter(Boolean);
   let findings = parts.join("\n\n");
   while (Buffer.byteLength(JSON.stringify(findings)) > 3900) findings = findings.slice(0, Math.floor(findings.length * 0.85));
-  return { outcome: "partial", summary: `Host-generated activity summary: ${tidy(reason, 300)} The worker produced no usable report; nothing here is model-authored or verified.`,
-    findings, ...(commands.length ? { verification: `Commands run (outcomes are tool exit status only, not test verdicts):\n${commands.join("\n")}`.slice(0, 1400) } : {}),
+  let verification = `Commands run (outcomes are tool exit status only, not test verdicts):\n${commands.join("\n")}`.slice(0, 1400);
+  while (Buffer.byteLength(JSON.stringify(verification)) > 1500) verification = verification.slice(0, Math.floor(verification.length * 0.85));
+  return { outcome: "partial", summary: `Host-generated activity summary: ${tidy(reason, 300)} No structured report was produced. Activity metadata is host-observed; quoted worker prose is unverified.`,
+    findings, ...(commands.length ? { verification } : {}),
     uncertainties: "Inspect changed files and rerun checks before trusting any of this work; unfinished integration is unknown." };
 }
 // Parent guidance is appended as a steering message at the next model boundary: append-only, so the
@@ -173,6 +177,8 @@ async function main() {
       const bounded = boundToolResult(original, available);
       toolResultTokens += estimateTokens(bounded);
       if (bounded !== original) {
+        const answer = answers.get(original.toolCallId);
+        if (answer) { event("input-clipped", { toolId: original.toolCallId, data: { id: answer.id } }); answers.delete(original.toolCallId); }
         contextStopped = true;
         budgetReason ??= `Context budget reached; tool output bounded to preserve final-report capacity (${model.contextWindow} tokens).`;
         session!.sessionManager.appendCustomEntry("subagents:clipped-tool-result:v1", structuredClone(original));
@@ -187,13 +193,17 @@ async function main() {
       verification: Type.Optional(Type.String({ maxLength: 1500 })), uncertainties: Type.Optional(Type.String({ maxLength: 1500 })) }, { additionalProperties: false }),
     async execute(_id, args) { if (Buffer.byteLength(JSON.stringify(args)) > LIMITS.reportBytes) throw new Error("Report exceeds 8 KiB.");
       if (report || cancelled) throw new Error("Worker already stopped."); report = args;
+      // Steering can outlive terminate/shouldStopAfterTurn in the SDK's outer loop.
+      // Drop only unsent guidance; never rewrite messages already in context.
+      session?.clearQueue();
+      for (const guidance of guidanceQueue.splice(0)) event("guidance-dropped", { text: "Worker reported before queued guidance was delivered.", data: { id: guidance.id } });
       return { content: [{ type: "text" as const, text: "Report recorded; worker stopping." }], details: {}, terminate: true }; } });
   const progressTool = defineTool({ name: "progress", label: "Progress", description: "Publish bounded progress without asking the parent model to wake.",
     parameters: Type.Object({ text: Type.String({ minLength: 1, maxLength: 2000 }) }, { additionalProperties: false }),
     async execute(_id, args) { event("progress", { text: args.text }); return { content: [{ type: "text" as const, text: "Recorded." }], details: {} }; } });
   const questionTool = defineTool({ name: "needs_input", label: "Clarification", description: "Ask a blocking clarification. Inference parks here until the parent supplies input or cancellation/deadline ends the run. Do not ask merely for encouragement.",
     parameters: Type.Object({ question: Type.String({ minLength: 1, maxLength: 2000 }) }, { additionalProperties: false }),
-    async execute(_id, args, signal) {
+    async execute(toolCallId, args, signal) {
       if (pending || cancelled || report) throw new Error("Worker cannot ask now.");
       const id = randomUUID();
       const reply = await new Promise<string>((resolve, reject) => {
@@ -203,8 +213,11 @@ async function main() {
         if (signal?.aborted) { abort(); return; }
         send({ version: 1, type: "needs-input", id, text: args.question });
       });
-      event("input", { text: reply });
-      return { content: [{ type: "text" as const, text: reply }], details: {} };
+      if (cancelled) throw new Error("Clarification cancelled.");
+      const text = `PARENT CLARIFICATION ANSWER [${id}]\nQuestion: ${args.question}\n\n${reply}\n\nContinue the assigned task using this answer. If a blocker remains, ask a specific follow-up with needs_input.`;
+      answers.set(toolCallId, { id, text });
+      event("input-received", { toolId: toolCallId, data: { id } });
+      return { content: [{ type: "text" as const, text }], details: { questionId: id } };
     } });
   const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false }, steeringMode: "one-at-a-time", packages: [] });
   const loader = new DefaultResourceLoader({ cwd: launch.cwd, agentDir: launch.agentDir, settingsManager,
@@ -228,7 +241,7 @@ async function main() {
     tools: [...(implementing ? ["read", "ls", "grep", "find", "bash", "edit", "write"] : ["read", "ls", "grep"]), "progress", "needs_input", "report"],
     customTools: [...(implementing ? [] : inspectTools(launch.cwd, privatePaths, launch.readRoots)), progressTool, questionTool, reportTool] });
   session = created.session;
-  await session.bindExtensions({ mode: "print", onError: e => { terminal = "failed"; event("error", { text: e.error }); void session?.abort(); } });
+  await session.bindExtensions({ mode: "print", onError: e => { terminal = "failed"; terminalReason = `Extension ${e.event} error: ${e.error}`; event("error", { text: terminalReason }); void session?.abort(); } });
   session.agent.toolExecution = "sequential";
   const previousStop = session.agent.shouldStopAfterTurn;
   session.agent.shouldStopAfterTurn = async (context, signal) => {
@@ -255,6 +268,15 @@ async function main() {
       throw new Error(terminalReason);
     }
     requestTokens = estimate;
+    // This is model-request context, not a claim of provider acceptance or understanding.
+    // Match the full result, so a clipped/missing answer cannot receive a false receipt.
+    for (const [toolCallId, answer] of answers) {
+      if (context.messages.some(message => message.role === "toolResult" && message.toolCallId === toolCallId
+        && !message.isError && message.content.some(part => part.type === "text" && part.text === answer.text))) {
+        event("input-in-context", { toolId: toolCallId, data: { id: answer.id } });
+        answers.delete(toolCallId);
+      }
+    }
     return originalStream(m, context, { ...options, maxTokens: reserve });
   };
   session.subscribe(e => {
@@ -283,8 +305,11 @@ async function main() {
       }
       const prose = e.message.content.filter(c => c.type === "text").map(c => c.text).join("\n").trim();
       if (prose) activity.lastProse = prose;
-      if (e.message.stopReason === "error") { terminal ??= "failed"; event("error", { text: e.message.errorMessage ?? "Provider error." }); }
-      else if (e.message.stopReason === "aborted") terminal ??= "cancelled";
+      if (e.message.stopReason === "error") {
+        terminal ??= "failed"; terminalReason ??= e.message.errorMessage || "Provider error.";
+        event("error", { text: terminalReason });
+      }
+      else if (e.message.stopReason === "aborted") { terminal ??= "cancelled"; terminalReason ??= "Provider response aborted."; }
       else if (synthesizing) {
         synthesisText = e.message.content.filter(c => c.type === "text").map(c => c.text).join("\n").trim();
         const firstReport = e.message.content.find(c => c.type === "toolCall" && c.name === "report");
@@ -322,6 +347,11 @@ async function main() {
     synthesisDisposition ||= synthesisCandidate ? "Final report call rejected without usable fields; no synthesis retry."
       : "Final synthesis returned no usable report; no synthesis retry.";
     synthesisDisposition += " Host activity summary attached (not model-authored).";
+  }
+  if (!report && !cancelled && !terminal && !budgetReason) {
+    terminal = "incomplete";
+    terminalReason = "Model stopped without a structured report. No automatic formatting retry.";
+    report = hostHandoff(terminalReason);
   }
   send({ version: 1, type: "terminal", state: cancelled ? "cancelled" : terminal ?? (budgetReason ? "budget-exceeded" : report ? "reported" : "incomplete"), report,
     reason: budgetReason && !terminal && !cancelled ? `${budgetReason} ${synthesisDisposition || (report ? "Final report retained." : synthesisCandidate

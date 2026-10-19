@@ -20,12 +20,12 @@ export interface RuntimeOptions {
 interface Live {
   child: ChildProcess; done: Promise<void>; resolve: () => void; tail: Promise<void>;
   timer?: ReturnType<typeof setTimeout>; killTimer?: ReturnType<typeof setTimeout>;
-  logBytes: number; seq: number; terminal: boolean; guidance: number;
+  logBytes: number; seq: number; terminal: boolean; guidance: number; lastError?: string;
 }
 const finished = (record: RunRecord) => !["starting", "running", "needs-input"].includes(record.taskState);
 const intentHash = ({ id: _id, workerFile: _worker, permissions, ...launch }: Launch) => hash({ ...launch, permissions: workerPermissions(permissions) });
 const safeRecord = (record: RunRecord) => structuredClone({ ...record, permissions: workerPermissions(record.permissions) });
-export const runCard = ({ report, question, ...record }: RunRecord) => ({ ...record, permissions: workerPermissions(record.permissions), reportAvailable: !!report, questionId: question?.id });
+export const runCard = ({ report, question, ...record }: RunRecord) => ({ ...record, permissions: workerPermissions(record.permissions), reportAvailable: !!report, reportOutcome: report?.outcome, questionId: question?.id });
 const taskSummary = (task: string) => plain(task).replace(/\s+/g, " ").trim().slice(0, 240);
 
 export class SubagentRuntime {
@@ -158,6 +158,16 @@ export class SubagentRuntime {
       if (!event || typeof event.kind !== "string" || (event.text !== undefined && typeof event.text !== "string")) throw new Error("Invalid worker event.");
       if (event.kind === "turn-start") record.turns++;
       if (event.kind === "tool-start") record.tools++;
+      if (event.kind === "error" && event.text) live.lastError = plain(event.text).slice(0, 2000);
+      const clarification = record.clarification;
+      const answerId = event.data && typeof event.data === "object" ? (event.data as { id?: unknown }).id : undefined;
+      if (clarification && answerId === clarification.id) {
+        if (event.kind === "input-received" && clarification.state === "sent") {
+          clarification.state = "received"; clarification.receivedAt = event.at;
+        } else if (event.kind === "input-in-context" && clarification.state === "received") {
+          clarification.state = "in-context"; clarification.contextAt = event.at;
+        } else if (event.kind === "input-clipped" && clarification.state === "received") clarification.state = "clipped";
+      }
       if (event.kind === "usage" && event.data && typeof event.data === "object") for (const key of Object.keys(record.usage) as (keyof RunRecord["usage"])[]) {
         const value = (event.data as Record<string, unknown>)[key];
         if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new Error("Invalid usage event.");
@@ -171,7 +181,9 @@ export class SubagentRuntime {
         if (!["reported", "incomplete", "failed", "cancelled", "budget-exceeded"].includes(packet.state)) throw new Error("Invalid terminal state.");
         if (packet.report && (Buffer.byteLength(JSON.stringify(packet.report)) > LIMITS.reportBytes || !["completed", "partial", "blocked", "inconclusive"].includes(packet.report.outcome) || typeof packet.report.summary !== "string")) throw new Error("Invalid worker report.");
         if (packet.state === "reported" && !packet.report) throw new Error("Reported run lacks report.");
-        record.taskState = packet.state; record.report = packet.report; record.reason = packet.reason; record.question = undefined; live.terminal = true;
+        record.taskState = packet.state; record.report = packet.report;
+        record.reason = packet.reason || (packet.state === "failed" ? live.lastError || "Worker reported failure without a reason; inspect peek events and the private session artifact." : undefined);
+        record.question = undefined; live.terminal = true;
         // A report is not process exit. Bound post-report cleanup independently.
         live.killTimer = setTimeout(() => { if (childAlive(live.child)) live.child.kill("SIGKILL"); }, 2000);
       } else throw new Error("Unknown worker IPC packet.");
@@ -197,8 +209,31 @@ export class SubagentRuntime {
     if (typeof text !== "string" || !text.trim() || Buffer.byteLength(text) > LIMITS.taskBytes) throw new Error("Invalid clarification answer.");
     const record = this.records.get(id), live = this.live.get(id);
     if (!record || !live || record.taskState !== "needs-input" || record.question?.id !== question || !live.child.connected) throw new Error("No matching live clarification. Input is not a new worker task.");
-    await new Promise<void>((resolve, reject) => live.child.send({ version: 1, type: "input", id: question, text }, error => error ? reject(error) : resolve()));
-    if (record.taskState === "needs-input" && record.question?.id === question) { record.question = undefined; record.taskState = "running"; this.persist(record, live); }
+    // Reserve synchronously: a second concurrent input must not overwrite the first.
+    const pendingQuestion = record.question;
+    record.taskState = "running"; record.question = undefined;
+    const clarification: NonNullable<RunRecord["clarification"]> = { id: question, state: "sent", sentAt: Date.now() };
+    record.clarification = clarification;
+    live.tail = live.tail.then(async () => {
+      await this.store.append(id, { seq: ++live.seq, at: clarification.sentAt, kind: "input-sent", data: { id: question } });
+      await this.store.save(record);
+    }).catch(e => this.storageFailure(record, e));
+    await live.tail;
+    try {
+      if (finished(record)) throw new Error("Worker stopped before clarification send.");
+      await new Promise<void>((resolve, reject) => live.child.send({ version: 1, type: "input", id: question, text }, error => error ? reject(error) : resolve()));
+    } catch (error) {
+      // A receipt is stronger evidence than a late transport callback error.
+      if (clarification.state === "sent") {
+        clarification.state = "send-failed";
+        if (!finished(record) && record.clarification === clarification && !record.question) { record.question = pendingQuestion; record.taskState = "needs-input"; }
+        live.tail = live.tail.then(() => this.store.append(id, { seq: ++live.seq, at: Date.now(), kind: "input-send-failed", data: { id: question } }))
+          .catch(e => this.storageFailure(record, e));
+      }
+      this.persist(record, live);
+      throw error;
+    }
+    this.changed();
     return this.status(id);
   }
   /**

@@ -43,6 +43,8 @@ export interface RunRecord {
   taskState: TaskState; process: "starting" | "live" | "exited" | "unknown"; cleanup: "pending" | "observed" | "unknown";
   pid?: number; exitCode?: number | null; signal?: string | null; reason?: string;
   sessionFile?: string; report?: WorkerReport; question?: { id: string; text: string };
+  /** Latest answer only; full correlated history lives in peek events. No answer prose in status. */
+  clarification?: { id: string; state: "sent" | "received" | "in-context" | "clipped" | "send-failed"; sentAt: number; receivedAt?: number; contextAt?: number };
   turns: number; tools: number; usage: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number };
   collectedAt?: number; participant?: string; persistenceError?: string;
   coordinationError?: string;

@@ -30,20 +30,23 @@ const providerConfig: Parameters<ModelRuntime["registerProvider"]>[1] = { api: "
       : !first && launch.task === "context-invalid" ? [tool("read", { path: { invalid: "x".repeat(50000) } }), tool("write", { path: "SHOULD_NOT_EXIST", content: "blocked after invalid output" }, "-sibling")]
       : launch.task === "context-zero" ? [tool("read", { path: "MEDIUM.txt" })]
       : launch.task === "budget-batch" ? [tool("read", { path: "README.md" }), ...forbidden()]
-      : launch.task === "silent" ? [{ type: "text" as const, text: "No structured report." }]
+      : launch.task === "silent" || !first && launch.task === "silent-implement" ? [{ type: "text" as const, text: "No structured report." }]
+      : first && launch.task === "silent-implement" ? [tool("write", { path: "partial.txt", content: "partial work\n" }), tool("bash", { command: "test -f partial.txt" }, "-check")]
+      : launch.task === "late-guidance-report" ? [tool("report", { outcome: "completed", summary: "Report before queued guidance" })]
       : launch.task === "implement" && turns === 1 ? [tool("write", { path: "implemented.txt", content: "before\n" })]
       : launch.task === "implement" && turns === 2 ? [tool("edit", { path: "implemented.txt", edits: [{ oldText: "before", newText: "after" }] })]
       : launch.task === "implement" && turns === 3 ? [tool("bash", { command: "test \"$(cat implemented.txt)\" = after && printf 'CHECK_PASSED'" })]
       : launch.task === "budget" ? [tool("progress", { text: "more inspection" })]
-      : first && launch.task === "block" ? [tool("needs_input", { question: "Which scope?" })]
+      : first && launch.task.startsWith("block") ? [tool("needs_input", { question: "Which scope?" })]
+      : turns === 2 && launch.task === "block-followup" ? [tool("needs_input", { question: "Which check?" })]
       : first && launch.task === "forbidden" ? [tool("bash", { command: "touch SHOULD_NOT_EXIST" })]
       : first ? [tool("read", { path: "README.md" })]
       : [tool("report", { outcome: "completed", summary: "Synthetic SDK report", verification: "Read a fixture file, did not run its tests." }), tool(launch.task === "implement" ? "write" : "read", { path: "SHOULD_NOT_EXIST", ...(launch.task === "implement" ? { content: "unauthorized post-report edit" } : {}) }, "-sibling")];
-    const input = synthesis ? 12 : launch.task === "context-unfit" ? 99000 : launch.task === "context-soft" || !first && ["context-burst", "context-invalid"].includes(launch.task) ? 90000
+    const input = synthesis ? 12 : launch.task === "context-unfit" ? 99000 : launch.task === "context-soft" || first && launch.task === "block-clipped" || !first && ["context-burst", "context-invalid"].includes(launch.task) ? 90000
       : !first && launch.task === "context-batch" || first && launch.task === "context-zero" ? 70000 : launch.task === "context-zero" ? 0 : 12;
     const message: AssistantMessage = { role: "assistant", provider: model.provider, api: model.api, model: model.id, timestamp: Date.now(), content,
       stopReason: launch.task === "provider-error" || synthesis && launch.task === "budget-error" ? "error"
-        : launch.task === "provider-aborted" ? "aborted" : launch.task === "silent" || synthesis && launch.task.startsWith("budget-text") ? "stop" : "toolUse", usage: { input, output: input ? 3 : 0, cacheRead: input ? 1 : 0, cacheWrite: 0, totalTokens: input ? input + 4 : 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+        : launch.task === "provider-aborted" ? "aborted" : launch.task === "silent" || !first && launch.task === "silent-implement" || synthesis && launch.task.startsWith("budget-text") ? "stop" : "toolUse", usage: { input, output: input ? 3 : 0, cacheRead: input ? 1 : 0, cacheWrite: 0, totalTokens: input ? input + 4 : 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
     const stream = createAssistantMessageEventStream();
     void saved.then(() => {
       const finish = () => {
@@ -54,7 +57,7 @@ const providerConfig: Parameters<ModelRuntime["registerProvider"]>[1] = { api: "
       if (synthesis && launch.task === "budget-hold") {
         const abort = () => { message.stopReason = "aborted"; finish(); };
         if (options?.signal?.aborted) abort(); else options?.signal?.addEventListener("abort", abort, { once: true });
-      } else if (launch.task === "guided" && first) setTimeout(finish, 600); // Leave a window for parent guidance.
+      } else if (["guided", "late-guidance-report"].includes(launch.task) && first) setTimeout(finish, 600); // Leave a window for parent guidance.
       else finish();
     });
     return stream;

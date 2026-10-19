@@ -108,7 +108,7 @@ test("progress peeking, parked clarification, join wake, report collection and o
   expect((await runtime.collect(run.id)).record.report?.summary).toBe("Synthetic result");
   const collected = runtime.status(run.id).collectedAt;
   expect((await runtime.collect(run.id)).record.collectedAt).toBe(collected);
-  expect((await runtime.peek(run.id, page.next)).events).toEqual([]);
+  expect((await runtime.peek(run.id, page.next)).events.map(e => e.kind)).toEqual(["input-sent"]);
   expect((await stat(runtime.store.path(run.id, "record.json"))).mode & 0o077).toBe(0);
   await expect(runtime.start({ ...request("block"), task: "changed" })).rejects.toThrow("different intent");
   const hold = await runtime.start(request("hold")); const joining = runtime.join([hold.id], 3); runtime.interruptJoin();
@@ -165,6 +165,162 @@ test("actual SDK child: fork payload fidelity, explicit tools, fresh usage, park
   }
 }, 20000);
 
+test("clean exit with a failed task retains report outcome and always explains the failure", async () => {
+  const { runtime, request } = await setup();
+  for (const task of ["failed-report", "failed-report-error"]) {
+    const run = await runtime.start(request(task));
+    await until(() => runtime.status(run.id).process === "exited");
+    const { record } = await runtime.collect(run.id);
+    expect(record.taskState).toBe("failed"); expect(record.exitCode).toBe(0);
+    expect(record.report?.outcome).toBe("completed");
+    expect(record.reason).toContain(task.endsWith("error") ? "Synthetic failure after report" : "Worker reported failure without a reason");
+    expect(runCard(record).reportOutcome).toBe("completed");
+  }
+});
+
+test("missing structured report retains bounded activity and final prose without promoting completion", async () => {
+  const { runtime, request } = await setup("subagent-sdk-worker.ts");
+  for (const task of ["silent", "silent-implement"]) {
+    const run = await runtime.start({ ...request(task), permissions: "implement" });
+    await until(() => runtime.status(run.id).process === "exited");
+    const { record } = await runtime.collect(run.id);
+    expect(record.taskState).toBe("incomplete"); expect(record.exitCode).toBe(0);
+    expect(record.report?.outcome).toBe("partial");
+    expect(record.report?.summary).toContain("Host-generated activity summary");
+    expect(record.report?.findings).toContain("No structured report.");
+    expect(record.reason).toContain("without a structured report");
+    if (task === "silent-implement") {
+      expect(record.report?.findings).toContain("partial.txt");
+      expect(record.report?.verification).toContain("test -f partial.txt");
+    }
+    expect(Buffer.byteLength(JSON.stringify(record.report))).toBeLessThanOrEqual(8192);
+    const payloads = (await readFile(join(dirname(runtime.store.path(run.id, "launch.json")), "payloads.jsonl"), "utf8")).trim().split("\n");
+    expect(payloads).toHaveLength(task === "silent" ? 1 : 2);
+  }
+});
+
+test("queued late guidance cannot turn a completed report into a failed provider continuation", async () => {
+  const { runtime, request } = await setup("subagent-sdk-worker.ts");
+  const run = await runtime.start(request("late-guidance-report"));
+  await until(() => runtime.status(run.id).taskState === "running");
+  const sent = await runtime.guide(run.id, "Advice arriving while the final response is in flight.");
+  await until(() => runtime.status(run.id).process === "exited");
+  const record = (await runtime.collect(run.id)).record;
+  expect(record.taskState).toBe("reported"); expect(record.report?.outcome).toBe("completed");
+  expect(record.reason).toBeUndefined(); expect(record.exitCode).toBe(0);
+  const events = await allEvents(runtime, run.id);
+  expect(events.filter(e => e.kind === "error")).toHaveLength(0);
+  expect(events.filter(e => e.kind === "guidance-dropped").map(e => (e.data as { id: string }).id)).toEqual([sent.guidanceId]);
+  const payloads = (await readFile(join(dirname(runtime.store.path(run.id, "launch.json")), "payloads.jsonl"), "utf8")).trim().split("\n");
+  expect(payloads).toHaveLength(1);
+});
+
+test("clarification answers reach provider context once, correlate follow-ups, and preserve every sent prefix", async () => {
+  const { runtime, request } = await setup("subagent-sdk-worker.ts");
+  const run = await runtime.start(request("block-followup"));
+  expect((await runtime.join([run.id], 5)).reason).toBe("needs-input");
+  const first = runtime.status(run.id).question!.id;
+  await expect(runtime.input(run.id, "stale-id", "wrong answer")).rejects.toThrow("matching");
+  const sending = runtime.input(run.id, first, "SYNTHETIC_SCOPE_ANSWER");
+  await expect(runtime.input(run.id, first, "duplicate answer")).rejects.toThrow("matching");
+  await sending;
+  expect((await runtime.join([run.id], 5)).reason).toBe("needs-input");
+  const second = runtime.status(run.id).question!.id;
+  expect(second).not.toBe(first);
+  expect(runtime.status(run.id).clarification).toMatchObject({ id: first, state: "in-context" });
+  await expect(runtime.input(run.id, first, "stale answer")).rejects.toThrow("matching");
+  await runtime.input(run.id, second, "SYNTHETIC_CHECK_ANSWER");
+  await until(() => runtime.status(run.id).process === "exited");
+  const record = runtime.status(run.id);
+  expect(record.persistenceError).toBeUndefined();
+  expect(record.clarification).toMatchObject({ id: second, state: "in-context" });
+  expect(record.clarification!.receivedAt).toBeGreaterThanOrEqual(record.clarification!.sentAt);
+  expect(record.clarification!.contextAt).toBeGreaterThanOrEqual(record.clarification!.receivedAt!);
+  expect((await runtime.collect(run.id)).record.clarification).toEqual(record.clarification);
+  expect(JSON.parse(await readFile(runtime.store.path(run.id, "record.json"), "utf8")).clarification).toEqual(record.clarification);
+  const events = await allEvents(runtime, run.id);
+  for (const id of [first, second]) {
+    expect(events.filter(e => (e.data as any)?.id === id).map(e => e.kind)).toEqual(["input-sent", "input-received", "input-in-context"]);
+  }
+  const payloads = (await readFile(join(dirname(runtime.store.path(run.id, "launch.json")), "payloads.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  expect(payloads).toHaveLength(3);
+  for (let i = 1; i < payloads.length; i++) {
+    expect(payloads[i].context.messages.slice(0, payloads[i - 1].context.messages.length)).toEqual(payloads[i - 1].context.messages);
+    expect(payloads[i].context.tools).toEqual(payloads[0].context.tools);
+    expect(payloads[i].context.systemPrompt).toEqual(payloads[0].context.systemPrompt);
+  }
+  const results = payloads[2].context.messages.filter((m: any) => m.role === "toolResult" && m.toolName === "needs_input");
+  expect(results).toHaveLength(2);
+  for (const [i, marker] of ["SYNTHETIC_SCOPE_ANSWER", "SYNTHETIC_CHECK_ANSWER"].entries()) {
+    expect(results[i].isError).toBe(false);
+    expect(results[i].content[0].text).toContain(`PARENT CLARIFICATION ANSWER [${[first, second][i]}]`);
+    expect(results[i].content[0].text).toContain(marker);
+  }
+  expect(JSON.stringify(payloads)).not.toContain("duplicate answer");
+}, 15000);
+
+test("clipped clarification is not falsely acknowledged as fully in context", async () => {
+  const { runtime, request } = await setup("subagent-sdk-worker.ts");
+  const run = await runtime.start(request("block-clipped"));
+  expect((await runtime.join([run.id], 5)).reason).toBe("needs-input");
+  const id = runtime.status(run.id).question!.id;
+  await runtime.input(run.id, id, "X".repeat(32768));
+  await until(() => runtime.status(run.id).process === "exited");
+  expect(runtime.status(run.id).clarification).toMatchObject({ id, state: "clipped" });
+  const events = await allEvents(runtime, run.id);
+  expect(events.filter(e => (e.data as any)?.id === id).map(e => e.kind)).toEqual(["input-sent", "input-received", "input-clipped"]);
+  expect(runtime.status(run.id).clarification!.contextAt).toBeUndefined();
+}, 10000);
+
+test("cancellation between reserving and sending an answer never revives the worker", async () => {
+  const { runtime, request } = await setup();
+  const run = await runtime.start(request("block"));
+  await runtime.join([run.id], 3);
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const ready = new Promise<void>(resolve => { entered = resolve; });
+  const append = runtime.store.append.bind(runtime.store);
+  runtime.store.append = async (id, event) => { if (event.kind === "input-sent") { entered(); await gate; } await append(id, event); };
+  const sending = runtime.input(run.id, "question-1", "scope");
+  const result = sending.then(() => undefined, error => error as Error);
+  await ready;
+  const cancelling = runtime.cancel(run.id);
+  release();
+  expect((await result)?.message).toContain("stopped");
+  await cancelling;
+  expect(runtime.status(run.id).taskState).toBe("cancelled");
+  expect(runtime.status(run.id).question).toBeUndefined();
+  expect(runtime.status(run.id).clarification).toMatchObject({ id: "question-1", state: "send-failed" });
+  await expect(runtime.input(run.id, "question-1", "retry")).rejects.toThrow("matching");
+});
+
+test("failed input transport restores only a live question; accepted transport without receipt stays sent", async () => {
+  const { runtime, request } = await setup();
+  const run = await runtime.start(request("block"));
+  await runtime.join([run.id], 3);
+  const child = (runtime as unknown as { live: Map<string, { child: ChildProcess }> }).live.get(run.id)!.child;
+  const originalSend = child.send.bind(child);
+  child.send = ((packet: any, callback: (error: Error | null) => void) => {
+    if (packet.type !== "input") return originalSend(packet, callback);
+    callback(new Error("synthetic IPC failure")); return false;
+  }) as typeof child.send;
+  await expect(runtime.input(run.id, "question-1", "scope")).rejects.toThrow("synthetic IPC failure");
+  expect(runtime.status(run.id).taskState).toBe("needs-input");
+  expect(runtime.status(run.id).question?.id).toBe("question-1");
+  expect(runtime.status(run.id).clarification?.state).toBe("send-failed");
+  child.send = ((packet: any, callback: (error: Error | null) => void) => {
+    if (packet.type !== "input") return originalSend(packet, callback);
+    // Transport accepts but the child never processes this packet.
+    callback(null); return true;
+  }) as typeof child.send;
+  await runtime.input(run.id, "question-1", "scope");
+  await runtime.cancel(run.id);
+  expect(runtime.status(run.id).taskState).toBe("cancelled");
+  expect(runtime.status(run.id).clarification).toMatchObject({ state: "sent", id: "question-1" });
+  const events = await allEvents(runtime, run.id);
+  expect(events.filter(e => (e.data as any)?.id === "question-1").map(e => e.kind)).toEqual(["input-sent", "input-send-failed", "input-sent"]);
+});
+
 test("SDK exhaustion reserves one synthesis response/report, blocks sibling work, and preserves provider prefixes", async () => {
   const { runtime, request, cwd } = await setup("subagent-sdk-worker.ts");
   const cases = [
@@ -197,6 +353,8 @@ test("SDK exhaustion reserves one synthesis response/report, blocks sibling work
     expect(record.usage.output).toBe(payloads.length * 3);
     expect(record.tools).toBeLessThanOrEqual(spec.maxTools + 1);
     expect(record.exitCode).toBe(0); expect(record.cleanup).toBe("observed");
+    if (spec.task.endsWith("error")) expect(record.reason).toContain("Provider error");
+    if (spec.task === "provider-aborted") expect(record.reason).toContain("aborted");
     expect(events.filter(e => e.kind === "budget-synthesis")).toHaveLength(earlyFailure || normal ? 0 : 1);
     expect(events.filter(e => e.kind === "tool-start" && /SHOULD_NOT_EXIST|unauthorized progress|More time/.test(e.text ?? ""))).toHaveLength(0);
     if (!earlyFailure) {

@@ -85,6 +85,15 @@ and model-lock changes; no context projection or existing prefix is rewritten.
   input. It does not collect reports or acknowledge mail. Default selection is the
   latest 16 uncollected runs; specify IDs when older work matters. Answer a blocker
   using its exact question ID. Input is not permission to reopen a finished worker.
+  `input` reserves that question and sends the answer; `running` alone is not a delivery
+  receipt. `status`/`collect` retain the latest `clarification` ID and state: `sent`,
+  `received`, `in-context`, `clipped`, or `send-failed`. `peek` retains correlated
+  `input-sent`, `input-send-failed`, `input-received`, `input-in-context`, and `input-clipped` events for all
+  answers. `in-context` means the full labelled tool result was present at the worker's
+  next model-request boundary, not provider acceptance or model understanding. A clipped
+  answer never gets that receipt. Answers are appended only as their tool results; earlier
+  context is never rewritten or automatically retransmitted. Concurrent duplicate input
+  and stale question IDs are refused; cancellation does not reopen a run.
 - **Peek** returns public text/progress/tool events, not private reasoning. `next` is
   the next `after` cursor; `more` signals remaining events. Inspection has no inference,
   input, collection, or session-navigation side effects. The new worker transcript
@@ -95,7 +104,9 @@ and model-lock changes; no context projection or existing prefix is rewritten.
   or inconclusive. Turn/tool exhaustion gets one reserved synthesis response; the run
   remains `budget-exceeded`, with any resulting report available to collect. A model
   stopping without a report before exhaustion is `incomplete`, not an invitation
-  for hidden formatting retries.
+  for hidden formatting retries. Collection includes a bounded host-generated activity
+  summary (edit/write calls, inspected paths, command outcomes and last worker prose).
+  It does not infer changes from the shared checkout or claim integration is finished.
 
 ## Model ladder
 
@@ -251,14 +262,18 @@ worker appends it as a steering message at its next model boundary, so the exist
 provider prefix is untouched. The message is marked `PARENT GUIDANCE`, states that it is
 not the human user and not a new task, and grants no permissions, file ownership, scope
 or budget. Receipt is explicit: `peek` shows `guidance-sent` and then `guidance-delivered`
-(or `guidance-dropped` if the worker was already finishing). It is not a substitute for
-correcting a wrong assignment: cancel and restart for that.
+(or `guidance-dropped` if the worker was already finishing). Submitting a report clears
+unsent guidance from the SDK queue and records it as dropped, preventing another
+provider turn after completion. Already-sent context is untouched. It is not a substitute
+for correcting a wrong assignment: cancel and restart for that.
 
 ### Budget exhaustion handoff
 
 If the worker's own synthesis yields no usable report, the worker attaches a host-built
 partial report from tool metadata (edit/write paths, inspected paths, bash commands with
-exit status, last prose), labelled as not model-authored or verified.
+exit status, last prose). Activity metadata is host-observed, quoted prose remains
+worker-authored, and neither is verification. The same fallback is attached when a model
+stops normally without reporting; that run remains `incomplete`.
 
 ### Common resource bounds
 
@@ -345,7 +360,11 @@ closes the view **without stopping workers**. `/subagents stop` cancels all owne
 The separate footer reports live/blocked/uncollected counts.
 
 Task state, process state, cleanup observation, report presence, and collection are
-separate facts. A report can exist alongside a later process failure. A signal request
+separate facts. Run cards expose `reportOutcome` separately from `taskState`; a completed
+report can exist alongside a failed task and a clean process exit. Failed terminal packets
+retain their reason or last error event, with an explicit diagnostic if neither was supplied.
+Provider/extension failures retain reasons even when process cleanup exits with code 0.
+A signal request
 is not an observed exit. Aborting gracefully escalates to SIGTERM/SIGKILL with bounded
 waiting; status remains explicit if cleanup has not been observed.
 

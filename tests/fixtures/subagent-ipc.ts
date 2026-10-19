@@ -13,3 +13,8 @@ if (launch.task === "ignore") process.on("SIGTERM", () => {});
 if (launch.task === "report") setTimeout(finish, 40);
 else if (launch.task === "block") send({ type: "needs-input", id: "question-1", text: "Which scope?" });
 else if (launch.task === "crash") process.exit(7);
+else if (launch.task.startsWith("failed-report")) {
+  if (launch.task.endsWith("error")) send({ type: "event", event: { seq: 2, at: Date.now(), kind: "error", text: "Synthetic failure after report" } });
+  send({ type: "terminal", state: "failed", report: { outcome: "completed", summary: "Retained report is not execution success" } });
+  process.disconnect();
+}
