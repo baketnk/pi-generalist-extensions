@@ -37,6 +37,19 @@ test("bg_tasks registers independently with a session-shutdown lifecycle hook", 
   expect(events.session_shutdown).toHaveLength(1);
 });
 
+test("four active background jobs are admitted, the fifth is rejected, and settling frees a slot", async () => {
+  const jobs = await runtime();
+  try {
+    const runs = [];
+    for (let i = 0; i < 4; i++) runs.push(await jobs.start({ command: "sleep 30", cwd: process.cwd(), notify: "off" }));
+    await expect(jobs.start({ command: "true", cwd: process.cwd() })).rejects.toThrow("At most four background jobs");
+    expect(jobs.list()).toHaveLength(4);
+    await jobs.cancel(runs[0]!.id);
+    const replacement = await jobs.start({ command: "true", cwd: process.cwd(), notify: "off" });
+    expect((await settle(jobs, replacement.id)).exitCode).toBe(0);
+  } finally { await jobs.shutdown(); }
+});
+
 test("completion policy can ignore clean success or every result without losing records", async () => {
   const jobs = await runtime();
   const success = await jobs.start({ command: "exit 0", cwd: process.cwd(), notify: "errors" });

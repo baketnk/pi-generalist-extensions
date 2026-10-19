@@ -6,11 +6,11 @@ import { join } from "node:path";
 import { convertToLlm, SessionManager } from "@earendil-works/pi-coding-agent";
 import bgTasks from "../extensions/bg-tasks.ts";
 
-// Intentional static contract change: all known optional inputs now accept
-// empty/null placeholders, and false booleans normalize to omission. Completion
-// v2 is unchanged. This baseline still guards the complete static contract
-// against per-job mutation; this is not preservation across a schema upgrade.
-const COMPLETION_V2_TOOL_SHA256 = "251a3440a51256ed45a5187b667001e45e0173952256399174909310ca86d8e3";
+// Intentional static contract change: the description now exposes the existing
+// four-active-job limit, including settling jobs. Completion v2 is unchanged.
+// This baseline still guards the complete static contract against per-job
+// mutation; this is not preservation across a static contract upgrade.
+const COMPLETION_V2_TOOL_SHA256 = "9af483c15b33a504f79dc5d700cb63fbe415e2c6d00be8e4b61465c0137e3a54";
 function harness(manager: SessionManager, cwd: string) {
   const events: Record<string, Function> = {}, messages: unknown[] = [];
   let tool: any, complete!: () => void;

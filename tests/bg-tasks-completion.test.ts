@@ -86,6 +86,9 @@ async function fixture(run: (h: any) => Promise<void>) {
 test("every bg_tasks action and parameter exposes its contract and repair guidance", async () => fixture(async h => {
   const schema = h.tool.parameters;
   expect(schema.additionalProperties).toBe(false);
+  expect(h.tool.description).toContain("At most four jobs may be active at once");
+  expect(h.tool.description).toContain("including exited jobs still settling output/receipts");
+  expect(h.tool.description).toContain("excess starts are rejected, not queued");
   for (const property of Object.values(schema.properties) as any[]) expect(property.description.length).toBeGreaterThan(20);
   const shapes: Record<string, any> = {
     start: { command: "true" }, list: {}, status: { id: "JOB_ID" }, output: { id: "JOB_ID" },
