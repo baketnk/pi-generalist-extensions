@@ -34,18 +34,33 @@ async function harness() {
   const old = { agent: process.env.PI_CODING_AGENT_DIR, config: process.env.PI_SUBAGENTS_CONFIG };
   process.env.PI_CODING_AGENT_DIR = join(root, "agent"); process.env.PI_SUBAGENTS_CONFIG = join(root, "models.json");
   const manager = SessionManager.inMemory(root); manager.appendMessage({ role: "user", content: "synthetic history", timestamp: 1 });
-  const handlers = new Map<string, Function>(), commands = new Map<string, any>(); let tool: any;
+  const handlers = new Map<string, Function>(), commands = new Map<string, any>(), tools = new Map<string, any>();
   const refs = ["synthetic/inspect", "synthetic/small", "other-synthetic/small"];
   const ctx: any = { cwd: root, mode: "print", hasUI: false, model: modelRef("synthetic/inspect"), sessionManager: manager,
     modelRegistry: { find: (p: string, id: string) => refs.includes(`${p}/${id}`) ? { provider: p, id } : undefined, hasConfiguredAuth: () => true },
     ui: { setStatus() {}, notify() {}, confirm: async () => true } };
   subagents({ on: (event: string, fn: Function) => handlers.set(event, fn), registerCommand: (name: string, cmd: any) => commands.set(name, cmd),
-    registerTool: (t: any) => tool = t, appendEntry: (type: string, data: unknown) => manager.appendCustomEntry(type, data),
+    registerTool: (t: any) => tools.set(t.name, t), appendEntry: (type: string, data: unknown) => manager.appendCustomEntry(type, data),
     registerFlag() {}, getFlag: (flag: string) => flag === "subagent-forks" ? true : "4", getThinkingLevel: () => "off", events: createEventBus() } as any,
     { home: join(root, "runs"), workerEntry: fileURLToPath(new URL("./fixtures/subagent-ipc.ts", import.meta.url)) });
   await handlers.get("session_start")!({}, ctx);
-  const execute = async (params: any) => JSON.parse((await tool.execute(`call-${Math.random()}`, params, undefined, undefined, ctx)).content[0].text);
-  return { root, ctx, manager, handlers, tool, execute, command: (args: string) => commands.get("subagents").handler(args, ctx),
+  // Local migration adapter only: preserve unrelated/unknown fields so negative
+  // tests still exercise the public validator rather than silently dropping them.
+  const execute = async (params: any) => {
+    const { action, ...args } = params;
+    let name = action;
+    if (action === "start") {
+      name = args.mode === "fork" ? "fork" : "start";
+      delete args.mode;
+      args.launchKey = args.operation ?? `launch-${Math.random()}`;
+      delete args.operation;
+    }
+    if (Object.hasOwn(args, "id")) { args.runId = args.id; delete args.id; }
+    const tool = tools.get(`subagent_${name}`);
+    if (!tool) throw new Error(`Missing public tool subagent_${name}`);
+    return JSON.parse((await tool.execute(`call-${Math.random()}`, args, undefined, undefined, ctx)).content[0].text);
+  };
+  return { root, ctx, manager, handlers, tools, execute, command: (args: string) => commands.get("subagents").handler(args, ctx),
     clean: async () => {
       await handlers.get("session_shutdown")!({}, ctx);
       for (const [key, value] of [["PI_CODING_AGENT_DIR", old.agent], ["PI_SUBAGENTS_CONFIG", old.config]] as const)
@@ -72,7 +87,7 @@ test("tool and human ladder command resolve concrete models, expose availability
     h.ctx.modelRegistry.find = () => undefined;
     expect((await h.execute({ ...start, operation: "explicit", model: "other-synthetic/small" })).id).toBe(explicit.id);
     await expect(h.execute({ ...start, operation: "new-unavailable", model: "other-synthetic/small" })).rejects.toThrow("unavailable");
-    await expect(h.execute({ action: "list", model: "self" })).rejects.toThrow("not valid");
+    await expect(h.execute({ action: "list", model: "self" })).rejects.toThrow('"code":"invalid_arguments"');
   } finally { await h.clean(); }
 });
 
@@ -163,7 +178,10 @@ test("fork grant is provider-scoped; explicit other-provider fork requires desti
   try {
     h.handlers.get("context_snapshot")!({ type: "context_snapshot", messages: [{ role: "user", content: "synthetic history", timestamp: 1 }],
       leafId: h.manager.getLeafId(), contextErrors: 0, providerRequestHooks: false }, h.ctx);
-    const start = { action: "start", mode: "fork", task: "hold", label: "fixture", model: "other-synthetic/small" };
+    const checkpoints = await h.execute({ action: "checkpoints" });
+    expect(checkpoints.checkpoints).toHaveLength(1);
+    const start = { action: "start", mode: "fork", checkpointId: checkpoints.checkpoints[0].anchor,
+      task: "hold", label: "fixture", model: "other-synthetic/small", operation: "fork-model" };
     await expect(h.execute(start)).rejects.toThrow("not authorized for the selected provider");
     let title = ""; h.ctx.hasUI = true; h.ctx.ui.confirm = async (text: string) => { title = text; return false; };
     await expect(h.execute(start)).rejects.toThrow("not authorized"); expect(title).toContain("other-synthetic/small");
@@ -181,18 +199,48 @@ test("branch change during destination consent neither launches nor carries the 
       leafId: h.manager.getLeafId(), contextErrors: 0, providerRequestHooks: false }, h.ctx);
     h.ctx.hasUI = true;
     h.ctx.ui.confirm = async () => { await h.handlers.get("session_tree")!({}, h.ctx); return true; };
-    const start = { action: "start", mode: "fork", task: "hold", label: "fixture", model: "other-synthetic/small" };
+    const checkpoints = await h.execute({ action: "checkpoints" });
+    expect(checkpoints.checkpoints).toHaveLength(1);
+    const start = { action: "start", mode: "fork", checkpointId: checkpoints.checkpoints[0].anchor,
+      task: "hold", label: "fixture", model: "other-synthetic/small", operation: "fork-model" };
     await expect(h.execute(start)).rejects.toThrow("changed during consent");
     expect((await h.execute({ action: "list" })).runs).toEqual([]);
     h.ctx.hasUI = false;
-    await expect(h.execute(start)).rejects.toThrow("not authorized for the selected provider");
+    h.handlers.get("context_snapshot")!({ type: "context_snapshot", messages: [{ role: "user", content: "synthetic history", timestamp: 1 }],
+      leafId: h.manager.getLeafId(), contextErrors: 0, providerRequestHooks: false }, h.ctx);
+    const current = await h.execute({ action: "checkpoints" });
+    await expect(h.execute({ ...start, checkpointId: current.checkpoints[0].anchor })).rejects.toThrow("not authorized for the selected provider");
+  } finally { await h.clean(); }
+});
+
+test("public next calls take a blocked worker through answer, wait, and collection without a loop", async () => {
+  const h = await harness();
+  const call = async (name: string, args: any) => JSON.parse((await h.tools.get(name).execute("flow", args, undefined, undefined, h.ctx)).content[0].text);
+  try {
+    const start = await call("subagent_start", { launchKey: "blocked-flow", task: "block", label: "blocked" });
+    expect(start.launchKey).toBe("blocked-flow");
+    const next = start.nextCalls[0];
+    expect(next.tool).toBe("subagent_wait");
+    const blocked = await call(next.tool, next.arguments);
+    expect(blocked.reason).toBe("needs-input");
+    const answer = blocked.nextCalls[0];
+    expect(answer.tool).toBe("subagent_answer");
+    expect(answer.arguments).toEqual({ runId: start.runId, questionId: "question-1" });
+    expect(answer.requiredInput).toEqual({ text: "Which scope?" });
+    await call(answer.tool, { ...answer.arguments, text: "Only synthetic scope." });
+    const finished = await call("subagent_wait", { runIds: [start.runId], waitMode: "all", waitTimeoutSeconds: 5 });
+    expect(finished.nextCalls[0]).toEqual({ tool: "subagent_collect", arguments: { runId: start.runId } });
+    const collected = await call(finished.nextCalls[0].tool, finished.nextCalls[0].arguments);
+    expect(collected.record.runId).toBe(start.runId);
+    expect(collected.record.report.summary).toBe("Synthetic result");
+    expect(collected.nextCalls).toEqual([]);
   } finally { await h.clean(); }
 });
 
 test("start tool exposes permissions independent of origin/model and rejects them on other actions", async () => {
   const h = await harness();
   try {
-    expect(h.tool.parameters.properties.permissions.enum).toEqual(["read-only", "implement"]);
+    expect(h.tools.get("subagent_start").parameters.properties.permissions.enum).toEqual(["read-only", "implement"]);
     const start = { action: "start", mode: "fresh", task: "hold", label: "fixture", operation: "permissions" };
     const run = await h.execute(start);
     expect(run.permissions).toBe("read-only");
@@ -201,6 +249,6 @@ test("start tool exposes permissions independent of origin/model and rejects the
     const implementation = await h.execute({ ...start, operation: "implementation", permissions: "implement" });
     expect(implementation.permissions).toBe("implement");
     expect((await h.execute({ action: "status", id: implementation.id })).permissions).toBe("implement");
-    await expect(h.execute({ action: "list", permissions: "implement" })).rejects.toThrow("not valid");
+    await expect(h.execute({ action: "list", permissions: "implement" })).rejects.toThrow('"code":"invalid_arguments"');
   } finally { await h.clean(); }
 });

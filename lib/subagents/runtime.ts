@@ -286,7 +286,7 @@ export class SubagentRuntime {
       const cleanup = () => { clearInterval(timer); unsubscribe(); signal?.removeEventListener("abort", abort); };
       signal?.addEventListener("abort", abort, { once: true }); if (signal?.aborted) abort(); else finish();
     });
-    return { reason, runs: selected.map(id => runCard(this.status(id))), note: "Join does not collect reports or acknowledge mail; default scope is latest 16 uncollected runs." };
+    return { reason, runs: selected.map(id => runCard(this.status(id))), note: "Waiting does not collect reports or acknowledge mail." };
   }
   async close() { if (this.stopping) return; this.stopping = true; this.interruptJoin(); await this.control; await this.cancelAll("Parent runtime shutdown/reload/session change."); if (this.initial) { await this.initial; if (!this.live.size) await this.store.release(); } this.listeners.clear(); }
 }

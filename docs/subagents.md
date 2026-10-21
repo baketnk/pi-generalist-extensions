@@ -10,63 +10,119 @@ concurrency ceiling is not a staffing target. Prefer a distinct investigation an
 useful parent work over delegating one task and immediately waiting. One independent
 review can still be valuable. You remain responsible for synthesis and verification.
 
-The stable `subagents` tool is loaded independently of personality, memory,
+The stable action-specific tools load independently of personality, memory,
 continuity, Code Mode, and the task checklist. Nothing launches at registration.
 
+### Working recipe
+
+1. Choose an independent task and assign disjoint file ownership for implementation.
+   Call `subagent_start` with a fresh, stable `launchKey`, `task`, and `label`:
+
+   ```json
+   {"launchKey":"boundary-review-1","task":"Independently inspect the cache expiration boundary; cite lines. Do not claim tests ran.","label":"boundary-review","runTimeoutSeconds":120}
+   ```
+
+   Optional `permissions:"implement"` enables unsandboxed coding tools; otherwise
+   the worker is read-only. Optional `model:"next-smaller"` uses the configured ladder;
+   exact `provider/id` and `self` are also supported.
+2. Do useful parent work while it runs. Save the returned `runId`; use
+   `subagent_status` or `subagent_peek` with `{"runId":"FULL_RUN_UUID"}` to inspect.
+3. When ready, call `subagent_wait` with explicit selection and semantics:
+
+   ```json
+   {"runIds":["FULL_RUN_UUID"],"waitMode":"all","waitTimeoutSeconds":60}
+   ```
+
+   Answer blockers using `subagent_answer` with `runId`, the exact pending
+   `questionId`, and `text`. Guidance instead uses `subagent_guide` with `runId` and `text`.
+4. Call `subagent_collect` with `{"runId":"FULL_RUN_UUID"}`. Verify the report's
+   claims and actual diff; collection does not merge or validate anything.
+   Cancel one run with `subagent_cancel` and the same explicit `runId`.
+
+For a fork, first call `subagent_checkpoints` with `{}` and select an entry's
+`anchor` from its `checkpoints` array. Only then call `subagent_fork`:
+
 ```json
-{"action":"start","mode":"fresh","task":"Independently inspect the cache expiration boundary; cite lines. Do not claim tests ran.","label":"boundary-review","seconds":120}
-{"action":"start","mode":"fork","task":"Trace the lifecycle assumption discussed above.","label":"lifecycle-review","model":"next-smaller"}
-{"action":"start","mode":"fresh","task":"Inspect input validation.","label":"validation","model":"openai-codex/gpt-5.6-luna"}
-{"action":"start","mode":"fresh","permissions":"implement","task":"Implement the input-validation fix in src/validation.ts and its tests. Preserve unrelated changes; run the focused tests and report changed files/results.","label":"validation-fix"}
-{"action":"models"}
-{"action":"checkpoints"}
-{"action":"list"}
-{"action":"status","id":"FULL_RUN_UUID"}
-{"action":"peek","id":"FULL_RUN_UUID","after":0,"limit":40}
-{"action":"join","ids":["FULL_RUN_UUID"],"seconds":60}
-{"action":"input","id":"FULL_RUN_UUID","question":"QUESTION_UUID","text":"Assume cancellation is required on reload."}
-{"action":"collect","id":"FULL_RUN_UUID"}
-{"action":"cancel","id":"FULL_RUN_UUID"}
-{"action":"cancel","all":true}
+{"launchKey":"lifecycle-review-1","checkpointId":"ANCHOR_FROM_CHECKPOINTS","task":"Trace the lifecycle assumption discussed above.","label":"lifecycle-review","model":"next-smaller"}
 ```
 
-### Action arguments
+No checkpoint means no fork: explicitly choose fresh delegation or arrange the
+required observation hook. Do not invent a checkpoint ID or silently use “latest.”
+`subagent_list` and `subagent_models` each take `{}` for discovery.
 
-Call one action at a time and omit unrelated fields. The provider-facing schema
-stays a flat object for compatibility; required fields depend on `action` and are
-checked before runtime initialization. Every field describes its applicable actions.
+### Tool reference and breaking migration
 
-| Action | Required fields (besides `action`) | Optional fields |
+The former multiplexed `subagents` tool is removed, not an alias. Integrations must
+change both the tool name and argument object. There is no public `action`, `mode`,
+`id`, `ids`, `seconds`, `all`, `operation`, or `from` argument. These are not accepted
+as compatibility fields. Runtime results retain existing fields (including `id`)
+and additionally expose `runId`, `launchKey`, and actionable `nextCalls`; pass `runId` in later calls.
+A model identity's provider/id components are not worker selectors.
+
+| Tool | Required fields | Optional fields |
 |---|---|---|
-| `start` | `mode`, `task`, `label` | `permissions`, `model`, `operation`, `seconds`, `roots`, `from` (fork only) |
-| `list`, `models`, `checkpoints` | none | none |
-| `status`, `collect` | `id` | none |
-| `peek` | `id` | `after`, `limit` |
-| `join` | none | `ids`, `seconds`, `all` |
-| `input` | `id`, `question`, `text` | none |
-| `guide` | `id`, `text` | none |
-| `cancel` | `id` OR `all:true` (never both) | none |
+| `subagent_start` | `launchKey`, `task`, `label` | `permissions`, `model`, `roots`, `runTimeoutSeconds` |
+| `subagent_fork` | `launchKey`, `checkpointId`, `task`, `label` | `permissions`, `model`, `roots`, `runTimeoutSeconds` |
+| `subagent_list`, `subagent_models`, `subagent_checkpoints` | none | none |
+| `subagent_status`, `subagent_collect`, `subagent_cancel` | `runId` | none |
+| `subagent_peek` | `runId` | `after`, `limit` |
+| `subagent_wait` | `runIds` (nonempty), `waitMode` (`any` or `all`) | `waitTimeoutSeconds` |
+| `subagent_answer` | `runId`, `questionId`, `text` | none |
+| `subagent_guide` | `runId`, `text` | none |
 
-Do **not** pass `id` to `start`: the host generates the new worker run ID and returns it.
-For later actions, `id` is that run ID returned by `start`/`list`, not its label or operation key.
-`join` uses an `ids` array even for one worker. `question` is the exact pending
-clarification ID, not its prose. `from` is a captured checkpoint's `anchor`, not a
-worker ID; omit it for the latest safe checkpoint. `seconds` means a worker deadline
-for `start` (default 600, max 1800), but a wait timeout for `join` (default 60, max 300).
-`text` allows 32 KiB UTF-8 for `input` answers and only 4 KiB for `guide` advice.
-Invalid action combinations return the expected call shape instead of silently
-ignoring arguments or guessing intent. Tool definitions remain static across turns
-and model-lock changes; no context projection or existing prefix is rewritten.
+`subagent_start` always creates fresh origin; `subagent_fork` always requires an
+explicit checkpoint. Neither accepts `mode`. `launchKey` replaces the old operation
+key and is required: same key/same intent returns the existing run, including failures;
+changed intent refuses. Persist and reuse it for retries rather than accidentally
+launching duplicates. A deliberately new assignment needs a new key. The host still
+generates the run ID; a label or launch key is never a `runId`.
 
-- **Start** persists intent before effects and returns while the task is starting.
-  `mode`, `task`, and `label` are required. Optional `operation` is an idempotency key;
-  otherwise Pi's tool-call ID is used. Same key/same intent returns the existing run,
-  including failures; changed intent refuses. It never silently starts a replacement.
+`checkpointId` replaces `from` and is a captured checkpoint's `anchor`, not a run ID.
+`runTimeoutSeconds` replaces start's `seconds` (default 600, max 1800).
+`waitTimeoutSeconds` replaces join's `seconds` (default 60, max 300).
+`subagent_wait` replaces join; it never implicitly selects the latest runs.
+`waitMode` is required even for a single run. `subagent_answer` replaces input;
+`questionId` replaces `question` and is an exact pending ID, not question prose.
+There is no model-facing cancel-all: cancel each selected run individually. Human
+`/subagents stop` remains available. Answer `text` allows 32 KiB UTF-8; guidance
+`text` allows 4 KiB.
+
+Each tool has its own static schema and description, unchanged across ordinary turns,
+same-version reload, model locks and runtime state. Omit unrelated fields. Available
+runs and choices come through results, not dynamically rewritten definitions or old
+messages. Human policy changes can change prompt guidance. Deploying this breaking
+contract revision changes tool declarations once; prefix tests do not claim cache
+preservation across that upgrade.
+
+### Structured error repair
+
+Execution failures are thrown as JSON error text, not returned as successful result
+objects. Parse the thrown text (the SDK presents it in an error tool result). Inspect
+`retryUnchanged:false`, `effect`, `repair`, and `nextCalls`. Do not retry the identical
+invalid call. Host schema validation can reject arguments before extension execution;
+those failures use Pi's validation error rather than this JSON envelope. `effect`
+describes whether effects occurred or need reconciliation;
+`repair` explains the required correction; `nextCalls` supplies concrete follow-up
+calls. Follow that guidance using explicit selectors, preserving a launch key when
+reconciling the same launch intent. Do not treat an error as proof that no worker
+exists, invent IDs, or silently downgrade a fork to fresh. Validation errors should
+be repaired before further effects, not interpreted as launch receipts.
+
+`nextCalls` are optional continuations, not authorization for more work. A blocked
+worker provides `subagent_answer` with real run/question IDs and a separate
+`requiredInput.text` containing the question: supply your answer as `arguments.text`
+before calling. Never execute an incomplete recommendation or invent answer prose.
+Running workers recommend waiting; finished workers recommend collection; collected
+workers have no automatic follow-up.
+
+- **Start/fork** persist intent before effects and return while the task is starting.
+  Launch keys preserve the existing runtime idempotency policy and never silently
+  start replacements.
 - **Permissions** default to `"read-only"`. Explicit `permissions:"implement"` grants
   normal coding tools including shell, edits and writes. This is independent of
   fresh/fork origin and model choice. Task text alone never enables tools. Permissions
   are fixed for the run, persisted in intent/status, and included in retry identity;
-  changing permissions with the same operation key refuses rather than escalating.
+  changing permissions with the same launch key refuses rather than escalating.
   Old records/intents with no permissions mean read-only.
 - **Model/provider** defaults to the parent's launch-time model. `model:"self"`
   (alias `"same"`) makes that explicit. `model:"next-smaller"` selects exactly the
@@ -76,24 +132,24 @@ and model-lock changes; no context projection or existing prefix is rewritten.
   The parent's thinking preference is inherited; the SDK may clamp unsupported levels
   for the selected model. Worker tools/permissions are unchanged.
   Parent-side catalog/auth availability is checked for new launches after idempotency
-  reconciliation (an existing matching operation remains readable if auth disappears),
+  reconciliation (an existing matching launch remains readable if auth disappears),
   then the worker independently checks its own ModelRuntime. Parent-only custom provider extensions
   are not inherited. Unavailable worker models/auth fail explicitly before inference.
   Actual provider-reported usage is recorded separately from inherited history. Cost
   is an SDK-reported estimate, not a billing receipt or hard spending guarantee.
-- **Join** defaults to wait-any; `all:true` still yields for blockers/failure/user
-  input. It does not collect reports or acknowledge mail. Default selection is the
-  latest 16 uncollected runs; specify IDs when older work matters. Answer a blocker
-  using its exact question ID. Input is not permission to reopen a finished worker.
-  `input` reserves that question and sends the answer; `running` alone is not a delivery
-  receipt. `status`/`collect` retain the latest `clarification` ID and state: `sent`,
-  `received`, `in-context`, `clipped`, or `send-failed`. `peek` retains correlated
-  `input-sent`, `input-send-failed`, `input-received`, `input-in-context`, and `input-clipped` events for all
-  answers. `in-context` means the full labelled tool result was present at the worker's
-  next model-request boundary, not provider acceptance or model understanding. A clipped
-  answer never gets that receipt. Answers are appended only as their tool results; earlier
-  context is never rewritten or automatically retransmitted. Concurrent duplicate input
-  and stale question IDs are refused; cancellation does not reopen a run.
+- **Wait** requires explicit nonempty `runIds` and `waitMode:"any"` or `"all"`;
+  all-mode still yields for blockers/failure/user input. It does not collect reports
+  or acknowledge mail. Answer a blocker using its exact question ID. An answer is
+  not permission to reopen a finished worker. `subagent_answer` reserves that question
+  and sends the answer; `running` alone is not a delivery receipt. Status/collection
+  retain the latest `clarification` ID and state: `sent`, `received`, `in-context`,
+  `clipped`, or `send-failed`. Peek retains correlated `input-sent`, `input-send-failed`,
+  `input-received`, `input-in-context`, and `input-clipped` events for all answers.
+  `in-context` means the full labelled tool result was present at the worker's next
+  model-request boundary, not provider acceptance or understanding. A clipped answer
+  never gets that receipt. Answers append only as tool results; earlier context is
+  never rewritten or automatically retransmitted. Concurrent duplicate answers and
+  stale question IDs are refused; cancellation does not reopen a run.
 - **Peek** returns public text/progress/tool events, not private reasoning. `next` is
   the next `after` cursor; `more` signals remaining events. Inspection has no inference,
   input, collection, or session-navigation side effects. The new worker transcript
@@ -119,7 +175,7 @@ human `/subagents ladder` with exact Pi provider/model IDs in largest-to-smalles
 
 This is an example of the requested Astra → Sol → Terra → Luna order, not a claim that
 every installed Pi/provider exposes those IDs. Use your catalog's actual identities.
-`/subagents ladder` without arguments displays the saved order. Tool action `models`
+`/subagents ladder` without arguments displays the saved order. `subagent_models`
 reports the current parent, configured ladder and parent-side availability without
 inference; worker-side availability is checked separately at launch.
 
@@ -151,7 +207,7 @@ provider/id` to place a human model lock on the current branch; `/subagents mode
 clears it and `/subagents model` reports it. While enabled, every new worker uses that
 specifier and a conflicting tool argument is rejected rather than ignored or silently
 rewritten. The active lock is stated concisely in the model prompt and reported by the
-`models` action. It is also available in the Generalist settings window; `Ctrl+S` there
+`subagent_models` tool. It is also available in the Generalist settings window; `Ctrl+S` there
 saves the current lock as the default for branches without an explicit choice. Exact
 saved identities remain configured even if temporarily unavailable, and launch still
 fails without fallback. The lock is routing policy only: it grants neither fork sharing
@@ -177,9 +233,9 @@ live sources. It does not follow subsequent parent turns or rewind source files.
 
 Fork requires the separate [Pi observation hook](pi-context-snapshot.md). On an unpatched
 Pi build it fails explicitly. There is **no silent fresh fallback** or best-effort JSONL
-tail reconstruction. `checkpoints` offers only observed checkpoints retained in this
-runtime, not every historical tree entry. `from` may select one of those anchors on the
-current branch. Shelf limits: eight snapshots/8 MiB total, 2 MiB per snapshot. Reload
+tail reconstruction. `subagent_checkpoints` offers only observed checkpoints retained in this
+runtime, not every historical tree entry. `subagent_fork.checkpointId` must select one of those anchors on the
+current branch, obtained explicitly from `subagent_checkpoints`. Shelf limits: eight snapshots/8 MiB total, 2 MiB per snapshot. Reload
 clears this observation shelf; it does not automatically reconstruct historical exports.
 Failed transformations prevent default forking; later provider-payload hooks cause
 rejection because fidelity past that boundary is not established.
@@ -245,7 +301,7 @@ roll back completed or partial changes. Review the actual diff and test results.
 Workers must not launch services or detached background commands; observed worker
 exit is not proof that arbitrary shell-created descendants have exited.
 
-**Extra read roots.** A read-only `start` may pass `roots` (<=4 absolute directories) for
+**Extra read roots.** A read-only start or fork may pass `roots` (<=4 absolute directories) for
 reference trees outside the checkout. This needs interactive human confirmation (the
 prompt names the provider that will see the contents), is refused for `implement`
 workers, and keeps private paths and secret-named files denied. Read-only starts also
@@ -256,8 +312,8 @@ targets; symlink traversal remains denied. Additional roots still require confir
 
 ### Parent guidance to a running worker
 
-`guide(id, text)` (<=4 KiB, at most 8 per run, only while the worker is running; a
-pending clarification is answered with `input` instead) sends advice to the worker. The
+`subagent_guide({runId, text})` (<=4 KiB, at most 8 per run, only while the worker is running; a
+pending clarification is answered with `subagent_answer` instead) sends advice to the worker. The
 worker appends it as a steering message at its next model boundary, so the existing
 provider prefix is untouched. The message is marked `PARENT GUIDANCE`, states that it is
 not the human user and not a new task, and grants no permissions, file ownership, scope
@@ -280,7 +336,7 @@ stops normally without reporting; that run remains `incomplete`.
 | Resource | Bound |
 |---|---|
 | Concurrent processes | default 4; human `--subagent-limit 0..16` |
-| Wall clock | default 600 s; `start.seconds` 1..1800; includes clarification |
+| Wall clock | default 600 s; `runTimeoutSeconds` 1..1800; includes clarification |
 | Responses/tools | default 24 work responses / 80 tool calls; human-configurable 1..1000 / 1..4000 for new runs; plus at most one synthesis response / report call on exhaustion |
 | Output per response | 4096 tokens, additionally capped by model maximum |
 | Context | latest worker usage plus estimated appended content; initial/missing-usage requests use byte estimates; output and synthesis reserves; provider tokenizer can differ |
@@ -295,7 +351,7 @@ Use `/subagents limits` to inspect the saved limits or `/subagents limits 48 160
 to change both. The **Subagent turn/tool limits** row in `/generalist` offers the
 same setting; it saves immediately, without Ctrl+S. Values are stored in
 `<Pi agent directory>/subagent-limits.json` and read at each new launch. Existing
-runs keep their frozen budgets; reusing an operation ID after changing limits
+runs keep their frozen budgets; reusing a launch key after changing limits
 cannot silently change that run (the intent must still match). No model tool
 argument can override the human setting. Delete the file to restore 24/80.
 Invalid or unsafe config files refuse new launches rather than falling back.
@@ -376,7 +432,7 @@ waiting; status remains explicit if cleanup has not been observed.
   deliberately; provider keepalive sockets do not extend the task's lifetime.
 - No completion-triggered idle parent model wake. Coalesced status hints are appended
   at new ordinary parent user turns, not periodically reinjected into old context or
-  every tool follow-up. `join` supplies the usual tool-result continuation.
+  every tool follow-up. `subagent_wait` supplies the usual tool-result continuation.
 
 Artifacts live under `PI_SUBAGENTS_HOME`, or
 `$XDG_STATE_HOME/pi-subagents` (default `~/.local/state/pi-subagents`), grouped by a hash
@@ -397,7 +453,7 @@ parent/run links. Capabilities are generated and persisted before provisioning;
 protocol 6 permits exact parent/run/capability recovery before quotas and parent-scoped
 retirement without resurrecting archived workers. Tokens never enter tool results.
 
-The current worker mailbox is **presence only**. Use runner `input`, not ordinary mail
+The current worker mailbox is **presence only**. Use `subagent_answer`, not ordinary mail
 or task offers, for clarification. Worker/sibling mail tools, dashboard Runs tabs, and
 full investigation-tree navigation remain later work. Switchboard opt-out is preserved;
 standalone runner inspection works without registration. Human offer acceptance is
@@ -411,8 +467,9 @@ projection preservation, fresh usage, parked clarification, post-report sibling
 blocking, keepalive shutdown, incomplete reports, zero/one/two/four workers and ceiling
 rejection, deadlines, escalation, idempotency, owner locking, mailbox provisioning/
 retirement, and model-free bounded UI. A real parent SDK fixture checks provider-bound
-message-prefix preservation across ordinary turns, tools and reload, missing-hook
-refusal, and no idle wake. These are not measurements of provider cache hits or a
+message-prefix preservation across ordinary turns, tools, identical-launch retries,
+error repair and reload, missing-hook
+checkpoint diagnostics, and no idle wake. These are not measurements of provider cache hits or a
 physical-terminal ergonomics trial. Permissions regressions exercise fresh and fork
 workers with omitted/explicit read-only and implementation grants, actual write/edit
 and shell checks, post-report write blocking, persisted permissions, retry escalation

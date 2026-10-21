@@ -3,6 +3,59 @@
 Implemented in `extensions/bg-tasks.ts` and `lib/bg-tasks/completion.ts`.
 This is an extension-level improvement, not a replacement for Pi's scheduler.
 
+## Static model-facing tool contract
+
+Recipe: `bg_start({"launchKey":"tests-1","command":"bun test"})`, then use
+its returned `jobId` in `bg_status`/`bg_output`, or
+`bg_wait({"jobIds":["<returned ID>"],"waitMode":"all","waitTimeoutSeconds":60})`.
+Continue useful independent work before waiting; do not poll. Completion is
+observed evidence, not permission for additional work.
+
+The old `bg_tasks` action wrapper is removed. Seven tools are registered once with
+fixed, strict object schemas (`additionalProperties:false`):
+
+| Tool | Required | Optional |
+| --- | --- | --- |
+| `bg_start` | `launchKey`, `command` | `cwd`, `label`, `runTimeoutSeconds`, `notify` |
+| `bg_list` | none | none |
+| `bg_status` | `jobId` | none |
+| `bg_output` | `jobId` | `cursor`, `limit`, `tail` |
+| `bg_wait` | `jobIds`, `waitMode` (`any`/`all`) | `waitTimeoutSeconds` |
+| `bg_cancel` | `jobIds` | none |
+| `bg_mute_notifications` | `jobIds` | none |
+
+Selections contain one to eight explicit, unique IDs, never implicit all. Validate
+all selected IDs before cancellation/muting. `runTimeoutSeconds` (1..14400,
+default 1800) controls execution; `waitTimeoutSeconds` (1..300, default 60) only
+bounds observation. Output defaults to 8192 bytes, maximum 32768; `cursor` and
+`tail:true` cannot be combined. Omit unused fields rather than sending placeholders.
+Direct execution rejects invalid values and unrelated fields; the host may normalize
+optional null placeholders before extension validation.
+
+`launchKey` is a caller-selected, runtime-local reservation made before async
+launch admission. Identical key + launch intent (command, cwd, label, execution
+limit and notification policy) returns the same job, including concurrent calls;
+changed intent is rejected. Failed reservations are retained without respawning.
+Capacity rejection happens before reservation: wait for an existing job to settle,
+then reconsider the same launch key and intent.
+This is not crash/reload recovery or durable exactly-once execution. A failed or
+lost acknowledgment must not trigger a new-key blind retry: inspect `bg_list`
+and reconcile evidence first. Nothing broadens authorization or retries work
+automatically.
+
+Successful tool results include model-visible `nextCalls` with actual job IDs
+and output cursors (also in details). Active jobs recommend waiting; settled jobs
+recommend reading output; EOF and empty lists do not recommend circular follow-ups.
+These are available continuations, not instructions to keep working. Completion packets and attended-job
+reminders include concrete next calls. Execution failures throw JSON error text
+with `code`, `message`, `retryUnchanged:false`, `effect`, `repair`, and valid
+`nextCalls`. Start failures conservatively report `unknown` once launch admission
+is attempted; mode/capacity failures report `not_started`, schema failures `none`. Selection validation
+failures have no effect. Cancellation/muting failures can have partial/unknown
+effect. Host schema validation may reject inputs **before execute** and therefore
+can produce Pi's own validation error rather than this JSON envelope. Repair
+arguments; do not blindly repeat either kind of rejection.
+
 ## Delivery contract
 
 - Eligible settled results enter an **unsent** completion queue. Existing messages,
@@ -23,7 +76,7 @@ This is an extension-level improvement, not a replacement for Pi's scheduler.
   wake. Completions arriving after submission are delivered later, not inserted
   into the submitted prefix.
 - A final response with attended work still pending receives a disposition reminder
-  in the same packet: wait, cancel, or ignore. This is intentionally not a new
+  in the same packet: wait, cancel, or mute notifications. This is intentionally not a new
   permission to start more work.
 
 ## Completion evidence
@@ -36,20 +89,21 @@ Each tail reads at most 2 KiB; JSON-escaped preview text is also bounded to 2 Ki
 `output.start > 0` indicates omitted earlier bytes; `outputPreviewTruncated` means
 further display shortening. `outputTruncated` means capture itself was truncated.
 Offsets still describe the underlying page. `readFromStart` is a cursor for
-`bg_tasks output`; earlier evidence remains explicitly retrievable. With bounded
+`bg_output`; earlier evidence remains explicitly retrievable. With bounded
 runtime IDs/fields, an eight-result message is under 32 KiB. Output is untrusted
 command data. Exit 0 alone is not a claim that acceptance tests or the task passed.
 
-`wait next/all` still selects unfinished jobs at call time, including exited
-processes draining output/finalizing receipts. It additionally returns queued
-eligible completions present when the wait began, up to the packet bound. It
-includes the same output packets and acknowledges returned observations so a
-later completion wake does not repeat them. Jobs started later are not added to
-its wait set. Interrupted waits leave observations available.
+`bg_wait` selects only the explicit IDs at call time, including exited processes
+draining output/finalizing receipts. `any` finishes when any selected job settles;
+already-settled selected jobs qualify. `all` observes every selected settlement.
+It also returns queued eligible completions **from the selection**, up to the
+packet bound. It includes output packets and acknowledges returned observations
+so a later wake does not repeat them. Other jobs are not added to its wait set.
+Interrupted waits leave observations available.
 
-`ignore id` also silences a settled but unsent completion; cancel suppresses the
-completion already observed by its result. Neither retracts messages already
-submitted. `notify=errors/off` retains the existing policy.
+`bg_mute_notifications` also silences selected settled but unsent completions;
+`bg_cancel` suppresses completions observed by its result. Neither retracts
+messages already submitted. `notify=errors/off` retains the existing policy.
 
 ## Lifecycle and failure behavior
 
@@ -61,7 +115,7 @@ submitted. `notify=errors/off` retains the existing policy.
   the old runtime and fence its pending/in-flight delivery. Tree navigation creates
   a fresh runtime, so old-branch results do not wake the new branch.
 - Output reads recheck delivery eligibility and queue membership before submitting.
-  Explicit wait/ignore/cancel and runtime replacement can invalidate an in-flight
+  Explicit wait/mute/cancel and runtime replacement can invalidate an in-flight
   packet without modifying earlier context.
 - A metadata write failure does not prevent signalling an owned process during
   shutdown. Persistence errors are reported separately from execution facts.
@@ -70,7 +124,9 @@ submitted. `notify=errors/off` retains the existing policy.
   for explicit inspection. This is not an exactly-once durable messaging system.
 - The queue is runtime-local, not crash recovery or automatic replay after reload.
   Compaction and explicit configuration changes remain lifecycle boundaries, not
-  promises of unchanged prefixes.
+  promises of unchanged prefixes. Deploying the action-specific tool contract is a
+  one-time tool-prefix change; same-version tests do not claim cache preservation
+  across that upgrade.
 
 ## Comparison: Unreal Agent
 

@@ -14,14 +14,14 @@ export type WaitFor = "next" | "all";
 
 export interface JobLimits { timeoutSeconds: number; maxOutputBytes: number }
 export interface JobRecord {
-  id: string; label?: string; command: string; cwd: string; createdAt: number; startedAt?: number; endedAt?: number;
+  id: string; launchKey?: string; label?: string; command: string; cwd: string; createdAt: number; startedAt?: number; endedAt?: number;
   execution: JobExecution; exitCode?: number | null; signal?: string | null; stopReason?: StopReason;
   cleanup: Cleanup; capturedBytes: number; retainedBytes: number; outputTruncated: boolean; logPath: string; limits: JobLimits; notify: JobNotify;
   launchError?: string; outputError?: string; persistenceError?: string;
   receipt?: { state: "pending" | "recorded" | "error"; path: string; sha256?: string; error?: string };
 }
 export interface OutputPage { text: string; nextCursor?: string; start: number; end: number; retainedBytes: number; gap?: string }
-export interface StartOptions { command: string; cwd: string; label?: string; timeoutSeconds?: number; notify?: JobNotify }
+export interface StartOptions { command: string; cwd: string; label?: string; timeoutSeconds?: number; notify?: JobNotify; launchKey?: string }
 export interface WaitResult { waitFor: WaitFor; reason: "completed" | "timeout"; completed: JobRecord[]; running: JobRecord[] }
 
 /** Whether settlement should enqueue a model-visible completion message. */
@@ -69,10 +69,28 @@ function rendered(text: string): string {
 export class BackgroundJobRuntime {
   private readonly jobs = new Map<string, LiveJob>();
   private closed = false;
+  private admitting = 0;
+  private readonly launches = new Map<string, { intent: string; result: Promise<JobRecord> }>();
+
+  /** Reserve before any asynchronous admission work. Failed/ambiguous attempts are never respawned. */
+  start(options: StartOptions, signal?: AbortSignal): Promise<JobRecord> {
+    const intent = JSON.stringify([options.command, options.cwd, options.label ?? null, options.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS, options.notify ?? "always"]);
+    const previous = options.launchKey ? this.launches.get(options.launchKey) : undefined;
+    if (previous) {
+      if (previous.intent !== intent) return Promise.reject(new Error("launchKey already reserved for different intent; do not retry with changed intent."));
+      return previous.result.then(job => this.status(job.id));
+    }
+    // Admission at capacity has no effects and does not consume the caller's key.
+    if (this.pending().length + this.admitting >= 4) return Promise.reject(new Error("At most four background jobs may run in this session runtime."));
+    this.admitting++;
+    const result = this.launch(options, signal).finally(() => { this.admitting--; });
+    if (options.launchKey) this.launches.set(options.launchKey, { intent, result });
+    return result;
+  }
 
   constructor(private readonly root: string, private readonly owner: string, private readonly onComplete?: (job: JobRecord) => void) {}
 
-  async start(options: StartOptions, signal?: AbortSignal): Promise<JobRecord> {
+  private async launch(options: StartOptions, signal?: AbortSignal): Promise<JobRecord> {
     if (process.platform !== "linux") throw new Error("bg_tasks start is currently supported only on Linux.");
     if (this.closed) throw new Error("Background-job runtime is shutting down.");
     if (!options.command.trim() || options.command.length > 16_384 || /\0/.test(options.command)) throw new Error("command must be non-empty text up to 16 KiB.");
@@ -88,7 +106,7 @@ export class BackgroundJobRuntime {
     const dir = join(this.root, this.owner, id);
     await mkdir(this.root, { recursive: true, mode: 0o700 }); await chmod(this.root, 0o700);
     await mkdir(dir, { recursive: true, mode: 0o700 }); await chmod(dir, 0o700);
-    const record: JobRecord = { id, label: options.label?.trim() || undefined, command: options.command, cwd, createdAt: Date.now(), execution: "starting", cleanup: "not_requested", capturedBytes: 0, retainedBytes: 0, outputTruncated: false, logPath: join(dir, "output.log"), limits: { timeoutSeconds, maxOutputBytes: MAX_OUTPUT_BYTES }, notify };
+    const record: JobRecord = { id, launchKey: options.launchKey, label: options.label?.trim() || undefined, command: options.command, cwd, createdAt: Date.now(), execution: "starting", cleanup: "not_requested", capturedBytes: 0, retainedBytes: 0, outputTruncated: false, logPath: join(dir, "output.log"), limits: { timeoutSeconds, maxOutputBytes: MAX_OUTPUT_BYTES }, notify };
     record.receipt = { state: "pending", path: join(dir, "receipt.json") };
     const source = await captureSource(cwd);
     await writeImmutableJson(join(dir, "launch.json"), { ...record, source, owner: this.owner, shell: "/bin/bash --noprofile --norc -c" });
@@ -169,11 +187,13 @@ export class BackgroundJobRuntime {
   }
 
   /** Wait for the next or every job that is active at call time. */
-  async wait(waitFor: WaitFor, seconds = 60, signal?: AbortSignal): Promise<WaitResult> {
+  async wait(waitFor: WaitFor, seconds = 60, signal?: AbortSignal, jobIds?: readonly string[]): Promise<WaitResult> {
     if (waitFor !== "next" && waitFor !== "all") throw new Error("waitFor must be next or all.");
     if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) throw new Error("seconds must be an integer from 1 to 300.");
     signal?.throwIfAborted();
-    const selected = [...this.jobs.values()].filter(job => !job.settled);
+    const selected = jobIds ? jobIds.map(id => {
+      const job = this.jobs.get(id); if (!job) throw new Error("Unknown or no-longer-live background job ID."); return job;
+    }) : [...this.jobs.values()].filter(job => !job.settled);
     if (!selected.length) return { waitFor, reason: "completed", completed: [], running: [] };
     const completion = waitFor === "all"
       ? Promise.all(selected.map(job => job.done)).then(() => "completed" as const)

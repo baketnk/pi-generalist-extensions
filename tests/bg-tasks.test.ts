@@ -23,7 +23,7 @@ async function settle(jobs: BackgroundJobRuntime, id: string): Promise<ReturnTyp
 }
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
-test("bg_tasks registers independently with a session-shutdown lifecycle hook", async () => {
+test("background tools register independently with a session-shutdown lifecycle hook", async () => {
   const events: Record<string, Function[]> = {};
   const tools: Record<string, unknown> = {};
   const commands: Record<string, unknown> = {};
@@ -32,7 +32,8 @@ test("bg_tasks registers independently with a session-shutdown lifecycle hook", 
     registerCommand: (name: string, command: unknown) => commands[name] = command, appendEntry() {}, sendMessage() {},
   };
   bgTasks(pi);
-  expect(tools.bg_tasks).toBeDefined();
+  expect(tools.bg_start).toBeDefined();
+  expect(tools.bg_tasks).toBeUndefined();
   expect(commands["bg-tasks"]).toBeDefined();
   expect(events.session_shutdown).toHaveLength(1);
 });
@@ -47,6 +48,20 @@ test("four active background jobs are admitted, the fifth is rejected, and settl
     await jobs.cancel(runs[0]!.id);
     const replacement = await jobs.start({ command: "true", cwd: process.cwd(), notify: "off" });
     expect((await settle(jobs, replacement.id)).exitCode).toBe(0);
+  } finally { await jobs.shutdown(); }
+});
+
+test("concurrent distinct launch keys reserve admission slots before asynchronous preflight", async () => {
+  const jobs = await runtime();
+  try {
+    const calls = Array.from({ length: 5 }, (_, i) => ({ launchKey: `concurrent-${i}`, command: "sleep 30", cwd: process.cwd(), notify: "off" as const }));
+    const results = await Promise.allSettled(calls.map(args => jobs.start(args)));
+    expect(results.filter(result => result.status === "fulfilled")).toHaveLength(4);
+    expect(results[4].status).toBe("rejected");
+    expect(jobs.list()).toHaveLength(4);
+    await jobs.cancel(jobs.list()[0]!.id);
+    const repaired = await jobs.start(calls[4]!);
+    expect(repaired.launchKey).toBe("concurrent-4");
   } finally { await jobs.shutdown(); }
 });
 
@@ -112,25 +127,25 @@ test("wait includes exited processes until output and receipts have settled", as
   expect((await jobs.output(started.id)).text).toBe("final-output");
 });
 
-test("turn end prompts for a disposition, and ignore all clears the gate", async () => {
+test("turn end prompts for a disposition, and explicit mute clears the gate", async () => {
   const root = await mkdtemp(join(tmpdir(), "bg-tasks-extension-test-")); roots.push(root);
   const previous = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = join(root, "agent");
   const events: Record<string, Function> = {}, sent: Array<{ message: any; options: any }> = [];
-  let tool: any;
+  const tools: Record<string, any> = {};
   const pi: any = {
-    on: (name: string, fn: Function) => events[name] = fn, registerTool: (value: any) => tool = value,
+    on: (name: string, fn: Function) => events[name] = fn, registerTool: (value: any) => tools[value.name] = value,
     registerCommand() {}, appendEntry() {}, sendMessage: (message: any, options: any) => sent.push({ message, options }),
   };
   const ctx: any = { cwd: root, mode: "tui", hasUI: false, sessionManager: { getSessionId: () => "fixture" } };
   try {
     bgTasks(pi); await events.session_start({}, ctx);
-    await tool.execute("start", { action: "start", command: "sleep 10" }, undefined, undefined, ctx);
+    const started = await tools.bg_start.execute("start", { launchKey: "disposition", command: "sleep 10" }, undefined, undefined, ctx);
     await events.turn_end({ message: { role: "assistant", stopReason: "stop" } }, ctx);
     expect(sent).toHaveLength(1);
     expect(sent[0]!.message.content).toContain("cancel them");
-    expect(sent[0]!.message.content).toContain("waitFor=next/all");
+    expect(sent[0]!.message.content).toContain("waitMode=any/all");
     expect(sent[0]!.options).toEqual({ deliverAs: "steer", triggerTurn: true });
-    await tool.execute("ignore", { action: "ignore", all: true }, undefined, undefined, ctx);
+    await tools.bg_mute_notifications.execute("mute", { jobIds: [started.details.jobId] }, undefined, undefined, ctx);
     await events.turn_end({ message: { role: "assistant", stopReason: "stop" } }, ctx);
     expect(sent).toHaveLength(1);
   } finally {

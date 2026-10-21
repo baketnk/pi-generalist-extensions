@@ -51,20 +51,21 @@ test("completion packets bound escaped output and report missing output honestly
   expect(Buffer.byteLength(formatCompletions(Array(8).fill(packet)))).toBeLessThan(32 * 1024);
   const missing = await completionPacket({ output: async () => { throw new Error("log is missing"); } }, job);
   expect(missing.output).toBeUndefined(); expect(missing.outputError).toContain("missing");
+  expect(missing.nextCalls).toEqual([]);
 });
 
 async function fixture(run: (h: any) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), "bg-delivery-"));
   const old = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = join(root, "agent");
   const events: Record<string, Function> = {}, sent: any[] = [], records: any[] = [];
-  let tool: any, idle = true;
+  const tools: Record<string, any> = {}; let idle = true;
   const listeners = new Set<() => void>();
   const ctx: any = { cwd: root, mode: "rpc", hasUI: false, isIdle: () => idle, sessionManager: { getSessionId: () => "synthetic" } };
-  bgTasks({ on: (name: string, fn: Function) => { events[name] = fn; }, registerTool: (value: any) => { tool = value; }, registerCommand() {},
+  bgTasks({ on: (name: string, fn: Function) => { events[name] = fn; }, registerTool: (value: any) => { tools[value.name] = value; }, registerCommand() {},
     appendEntry: (_name: string, record: any) => { records.push(record); for (const notify of listeners) notify(); },
     sendMessage: (message: any, options: any) => { sent.push({ message, options }); },
   } as any);
-  const call = (args: any, signal?: AbortSignal) => tool.execute("fixture", args, signal, undefined, ctx);
+  const call = (name: string, args: any, signal?: AbortSignal) => tools[name].execute("fixture", args, signal, undefined, ctx);
   const settled = async (count: number) => {
     if (records.length >= count) return;
     await new Promise<void>((resolve, reject) => {
@@ -75,7 +76,7 @@ async function fixture(run: (h: any) => Promise<void>) {
   };
   try {
     await events.session_start({}, ctx);
-    await run({ root, events, sent, records, tool, call, settled, ctx, idle: (value: boolean) => { idle = value; } });
+    await run({ root, events, sent, records, tools, call, settled, ctx, idle: (value: boolean) => { idle = value; } });
   } finally {
     await events.session_shutdown({}, ctx);
     if (old === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = old;
@@ -83,191 +84,130 @@ async function fixture(run: (h: any) => Promise<void>) {
   }
 }
 
-test("every bg_tasks action and parameter exposes its contract and repair guidance", async () => fixture(async h => {
-  const schema = h.tool.parameters;
-  expect(schema.additionalProperties).toBe(false);
-  expect(h.tool.description).toContain("At most four jobs may be active at once");
-  expect(h.tool.description).toContain("including exited jobs still settling output/receipts");
-  expect(h.tool.description).toContain("excess starts are rejected, not queued");
-  for (const property of Object.values(schema.properties) as any[]) expect(property.description.length).toBeGreaterThan(20);
-  const shapes: Record<string, any> = {
-    start: { command: "true" }, list: {}, status: { id: "JOB_ID" }, output: { id: "JOB_ID" },
-    cancel: { all: true }, ignore: { all: true }, wait: { waitFor: "all" },
+test("seven static strict action-specific schemas reject unrelated fields and placeholders at host validation", async () => fixture(async h => {
+  expect(Object.keys(h.tools).sort()).toEqual(["bg_start", "bg_list", "bg_status", "bg_output", "bg_wait", "bg_cancel", "bg_mute_notifications"].sort());
+  const valid: Record<string, any> = {
+    bg_start: { launchKey: "key", command: "true" }, bg_list: {}, bg_status: { jobId: "real-id" }, bg_output: { jobId: "real-id" },
+    bg_wait: { jobIds: ["real-id"], waitMode: "any" }, bg_cancel: { jobIds: ["real-id"] }, bg_mute_notifications: { jobIds: ["real-id"] },
   };
-  for (const action of schema.properties.action.enum) {
-    expect(h.tool.description).toContain(`${action}:`);
-    expect(h.tool.description).toContain(`"action":"${action}"`);
-    await expect(h.call({ action, ...shapes[action], unrelated: true })).rejects.toThrow(`For ${action},`);
-  }
-  for (const action of ["start", "status", "output", "cancel", "ignore", "wait"]) {
-    await expect(h.call({ action })).rejects.toThrow(`For ${action},`);
-  }
-  for (const action of ["cancel", "ignore"]) {
-    await expect(h.call({ action, id: "JOB_ID", all: true })).rejects.toThrow("Specify exactly one");
-  }
-}));
-
-test("start documents generated IDs and rejects caller IDs before launching", async () => fixture(async h => {
-  expect(h.tool.parameters.properties.id.description).toContain("Do NOT supply id on start");
-  expect(h.tool.description).toContain("Do NOT supply id on start");
-  expect(h.tool.description).toContain('{"action":"start","command":"bun test","label":"tests"}');
-  expect(h.tool.description).toContain("wait: waitFor required; optional seconds; no id");
-  await expect(h.call({ action: "start", id: "tests", command: "printf should-not-run" })).rejects.toThrow("Omit id; the runtime generates and returns it. Use label");
-  expect((await h.call({ action: "list" })).details.jobs).toEqual([]);
-  const started = await h.call({ action: "start", label: "tests", command: "printf ok", notify: "off" });
-  const id = started.details.job.id;
-  expect(id).toBeString();
-  expect(id).not.toBe("tests");
-  expect(started.details.job.label).toBe("tests");
-  expect((await h.call({ action: "status", id })).details.job.id).toBe(id);
-  await h.call({ action: "wait", waitFor: "all", seconds: 2 });
-  expect((await h.call({ action: "output", id })).content[0].text).toBe("ok");
-  await expect(h.call({ action: "wait", id, waitFor: "all" })).rejects.toThrow("id is not valid for bg_tasks wait");
-}));
-
-test("start treats an empty id as omitted without accepting meaningful wrong-action fields", async () => fixture(async h => {
-  expect(h.tool.parameters.properties.id.description).toContain('An empty id ("") on start is treated as omitted');
-  for (const id of ["tests", " "]) {
-    await expect(h.call({ action: "start", id, command: "true" })).rejects.toThrow("id is not valid");
-  }
-  await expect(h.call({ action: "start", id: "", command: "true", all: true })).rejects.toThrow("all is not valid");
-  expect((await h.call({ action: "list" })).details.jobs).toEqual([]);
-  const args = { action: "start", id: "", command: "printf empty-id", notify: "off" };
-  const started = await h.call(args);
-  expect(started.details.job.id.length).toBeGreaterThan(0);
-  expect(args.id).toBe("");
-  await h.call({ action: "wait", waitFor: "all", seconds: 2 });
-  expect((await h.call({ action: "output", id: started.details.job.id })).content[0].text).toBe("empty-id");
-  for (const action of ["status", "output", "cancel", "ignore"]) {
-    await expect(h.call({ action, id: "" })).rejects.toThrow(action === "cancel" || action === "ignore" ? "Specify exactly one" : "id is required");
-  }
-  expect((await h.call({ action: "wait", id: "", waitFor: "all" })).details.waitFor).toBe("all");
-}));
-
-test("start treats an empty cursor as omitted but rejects meaningful cursors", async () => fixture(async h => {
-  expect(h.tool.parameters.properties.cursor.description).toContain('An empty cursor ("") on start is treated as omitted');
-  for (const cursor of ["JOB_ID:0", " "]) {
-    await expect(h.call({ action: "start", command: "true", cursor })).rejects.toThrow("cursor is not valid for bg_tasks start");
-  }
-  expect((await h.call({ action: "list" })).details.jobs).toEqual([]);
-  for (const extra of [{ cursor: "" }, { cursor: "", id: "" }]) {
-    const args = { action: "start", command: "printf empty-cursor", notify: "off", ...extra };
-    const started = await h.call(args);
-    expect(args.cursor).toBe("");
-    await h.call({ action: "wait", waitFor: "all", seconds: 2 });
-    expect((await h.call({ action: "output", id: started.details.job.id })).content[0].text).toBe("empty-cursor");
-  }
-  expect((await h.call({ action: "wait", waitFor: "all", cursor: "" })).details.waitFor).toBe("all");
-  await expect(h.call({ action: "start", command: "true", cursor: "", all: true })).rejects.toThrow("all is not valid");
-}));
-
-test("every optional field accepts empty placeholders through schema validation on every action", async () => fixture(async h => {
-  const schema = h.tool.parameters;
-  const fields = Object.keys(schema.properties).filter(key => key !== "action");
-  expect(fields).toHaveLength(12);
-  for (const action of schema.properties.action.enum) {
-    for (const field of fields) {
-      for (const value of ["", null]) expect(Check(schema, { action, [field]: value })).toBe(true);
+  for (const [name, tool] of Object.entries(h.tools) as [string, any][]) {
+    expect(tool.description.startsWith("Recipe:")).toBe(true);
+    expect(tool.promptGuidelines[0].startsWith("Recipe:")).toBe(true);
+    expect(tool.parameters.additionalProperties).toBe(false);
+    expect(Check(tool.parameters, valid[name])).toBe(true);
+    for (const extra of [{ action: "start" }, { id: "" }, { all: true }, { timeoutSeconds: 2 }, { unrelated: null }]) {
+      expect(Check(tool.parameters, { ...valid[name], ...extra })).toBe(false);
+      expect(() => validateToolArguments(tool, { type: "toolCall", id: "validation", name, arguments: { ...valid[name], ...extra } })).toThrow();
     }
-    for (const field of ["all", "tail"]) expect(Check(schema, { action, [field]: false })).toBe(true);
-  }
-  for (const action of ["", null, "unknown"]) expect(Check(schema, { action })).toBe(false);
-  expect(Check(schema, {})).toBe(false);
-  for (const value of ["", null, false, 0]) expect(Check(schema, { action: "list", unknown: value })).toBe(false);
-  for (const field of ["timeoutSeconds", "limit", "seconds"]) {
-    for (const value of [0, -1, 1.5, false, "0", {}, []]) expect(Check(schema, { action: "list", [field]: value })).toBe(false);
-  }
-  for (const field of ["notify", "waitFor"]) expect(Check(schema, { action: "list", [field]: " " })).toBe(false);
-  for (const field of ["all", "tail"]) expect(Check(schema, { action: "list", [field]: 0 })).toBe(false);
-}));
-
-test("fully populated placeholder calls work on all actions without mutating arguments", async () => fixture(async h => {
-  const fields = Object.keys(h.tool.parameters.properties).filter(key => key !== "action");
-  for (const { value, booleanValue, useSdk } of [
-    { value: "", booleanValue: "" }, { value: null, booleanValue: null },
-    { value: undefined, booleanValue: undefined }, { value: "", booleanValue: false },
-  ].flatMap(config => [false, true].map(useSdk => ({ ...config, useSdk })))) {
-    const placeholders: Record<string, unknown> = Object.fromEntries(fields.map(key => [key, value]));
-    // Exercise empty, null, omitted, and false booleans on unrelated actions too.
-    placeholders.all = booleanValue; placeholders.tail = booleanValue;
-    const call = async (shape: any) => {
-      const args = { ...placeholders, ...shape };
-      const before = { ...args };
-      expect(Check(h.tool.parameters, args)).toBe(true);
-      const frozen = Object.freeze(args);
-      const validated = useSdk ? validateToolArguments(h.tool, { type: "toolCall", id: "placeholder-test", name: "bg_tasks", arguments: frozen }) : frozen;
-      const result = await h.call(validated);
-      expect(args).toEqual(before);
-      return result;
-    };
-    const started = await call({ action: "start", command: "printf placeholders" });
-    const id = started.details.job.id;
-    expect(started.details.job.cwd).toBe(h.root);
-    expect(started.details.job.label).toBeUndefined();
-    expect(started.details.job.notify).toBe("always");
-    expect(started.details.job.limits.timeoutSeconds).toBeGreaterThan(0);
-    expect((await call({ action: "list" })).details.jobs.some((job: any) => job.id === id)).toBe(true);
-    expect((await call({ action: "status", id })).details.job.id).toBe(id);
-    await call({ action: "wait", waitFor: "all" });
-    expect((await call({ action: "output", id })).content[0].text).toBe("placeholders");
-    for (const action of ["cancel", "ignore"]) {
-      expect((await call({ action, id })).details.jobs[0].id).toBe(id);
-      expect((await call({ action, all: true })).details.jobs).toEqual([]);
+    for (const field of tool.parameters.required ?? []) {
+      for (const value of [undefined, null, "", []]) expect(Check(tool.parameters, { ...valid[name], [field]: value })).toBe(false);
     }
   }
+  for (const name of ["bg_wait", "bg_cancel", "bg_mute_notifications"]) {
+    expect(Check(h.tools[name].parameters, { ...valid[name], jobIds: ["a", "a"] })).toBe(false);
+  }
+  expect(Check(h.tools.bg_wait.parameters, { ...valid.bg_wait, waitMode: "next" })).toBe(false);
+  expect(Check(h.tools.bg_start.parameters, { ...valid.bg_start, runTimeoutSeconds: 0 })).toBe(false);
+  expect(Check(h.tools.bg_start.parameters, { ...valid.bg_start, command: " " })).toBe(false);
+  const empty = await h.call("bg_list", {});
+  expect(empty.details.jobs).toEqual([]);
+  expect(empty.details.nextCalls).toEqual([]);
 }));
 
-test("empty required inputs never launch jobs or imply bulk selection", async () => fixture(async h => {
-  for (const value of ["", null, undefined]) {
-    await expect(h.call({ action: "start", command: value })).rejects.toThrow("command is required");
-    await expect(h.call({ action: "wait", waitFor: value })).rejects.toThrow("waitFor is required");
-    for (const action of ["status", "output"]) await expect(h.call({ action, id: value })).rejects.toThrow("id is required");
-    for (const action of ["cancel", "ignore"]) {
-      for (const all of ["", null, false, undefined]) await expect(h.call({ action, id: value, all })).rejects.toThrow("Specify exactly one");
+test("launch keys reserve identical intent without respawn, reject changed intent, and expose real next calls", async () => fixture(async h => {
+  const args = Object.freeze({ launchKey: "once", command: "printf evidence", notify: "off" });
+  const [a, b] = await Promise.all([h.call("bg_start", args), h.call("bg_start", args)]);
+  const jobId = a.details.jobId;
+  expect(b.details.jobId).toBe(jobId);
+  expect(a.content[0].text).toContain(JSON.stringify(jobId));
+  expect(a.details.nextCalls).toContainEqual({ tool: "bg_wait", arguments: { jobIds: [jobId], waitMode: "all", waitTimeoutSeconds: 60 } });
+  await expect(h.call("bg_start", { ...args, command: "printf different" })).rejects.toThrow('"code":"LAUNCH_KEY_CONFLICT"');
+  const listed = await h.call("bg_list", {});
+  expect(listed.details.jobs).toHaveLength(1);
+  expect(listed.content[0].text).toContain('launchKey="once"');
+  await h.call("bg_wait", { jobIds: [jobId], waitMode: "all", waitTimeoutSeconds: 2 });
+  const page = await h.call("bg_output", { jobId, limit: 2 });
+  expect(page.details.nextCursor).toBe(`${jobId}:2`);
+  const next = page.details.nextCalls[0];
+  expect(next).toEqual({ tool: "bg_output", arguments: { jobId, cursor: `${jobId}:2` } });
+  const finalPage = await h.call(next.tool, next.arguments);
+  expect(finalPage.content[0].text).toStartWith("idence");
+  expect(finalPage.details.nextCalls).toEqual([]); // No status/output loop at EOF.
+  const status = await h.call("bg_status", { jobId });
+  expect(status.details.nextCalls).toEqual([{ tool: "bg_output", arguments: { jobId, cursor: `${jobId}:0` } }]);
+  for (const call of a.details.nextCalls) expect(Check(h.tools[call.tool].parameters, call.arguments)).toBe(true);
+}));
+
+test("failed launch keys remain reserved; errors are thrown JSON with repair and no automatic retry", async () => fixture(async h => {
+  const args = { launchKey: "failed", command: "true", cwd: join(h.root, "missing") };
+  let first: any;
+  try { await h.call("bg_start", args); throw new Error("expected failure"); } catch (error: any) { first = JSON.parse(error.message); }
+  expect(first).toMatchObject({ code: "START_FAILED", retryUnchanged: false, effect: "unknown" });
+  expect(first.repair).toContain("Never change launchKey");
+  expect(first.nextCalls).toEqual([{ tool: "bg_list", arguments: {} }]);
+  await expect(h.call("bg_start", { ...args, cwd: h.root })).rejects.toThrow("LAUNCH_KEY_CONFLICT");
+  await expect(h.call("bg_start", args)).rejects.toThrow("START_FAILED");
+  expect((await h.call("bg_list", {})).details.jobs).toEqual([]);
+  try { await h.call("bg_cancel", { jobIds: [] }); } catch (error: any) {
+    expect(JSON.parse(error.message)).toMatchObject({ code: "INVALID_ARGUMENTS", retryUnchanged: false, effect: "none" });
+  }
+}));
+
+test("missing output terminates repair hints instead of recommending the failed read again", async () => fixture(async h => {
+  const start = await h.call("bg_start", { launchKey: "lost-output", command: "printf evidence", notify: "off" });
+  const jobId = start.details.jobId;
+  await h.call("bg_wait", { jobIds: [jobId], waitMode: "all", waitTimeoutSeconds: 2 });
+  await rm(start.details.job.logPath);
+  for (let i = 0; i < 2; i++) {
+    try { await h.call("bg_output", { jobId, cursor: `${jobId}:0` }); throw new Error("expected failure"); } catch (error: any) {
+      expect(JSON.parse(error.message)).toMatchObject({ code: "OUTPUT_UNAVAILABLE", retryUnchanged: false, nextCalls: [] });
     }
   }
-  expect((await h.call({ action: "list" })).details.jobs).toEqual([]);
+  expect((await h.call("bg_status", { jobId })).details.nextCalls).toEqual([]);
+  expect((await h.call("bg_list", {})).details.nextCalls).toEqual([]);
+  const waited = await h.call("bg_wait", { jobIds: [jobId], waitMode: "all", waitTimeoutSeconds: 2 });
+  expect(waited.details.completions[0].outputError).toContain("missing");
+  expect(waited.details.nextCalls).toEqual([]);
 }));
 
-test("meaningful wrong-action values and unknown empty fields remain rejected", async () => fixture(async h => {
-  const values: Record<string, any> = {
-    command: "true", cwd: h.root, label: "test", timeoutSeconds: 1, notify: "off",
-    id: "job", cursor: "job:0", limit: 1, tail: true, all: true, waitFor: "all", seconds: 1,
-  };
-  const allowed: Record<string, string[]> = {
-    start: ["command", "cwd", "label", "timeoutSeconds", "notify"], list: [], status: ["id"],
-    output: ["id", "cursor", "limit", "tail"], cancel: ["id", "all"], ignore: ["id", "all"], wait: ["waitFor", "seconds"],
-  };
-  for (const action of Object.keys(allowed)) {
-    for (const [key, value] of Object.entries(values)) {
-      if (!allowed[action].includes(key)) await expect(h.call({ action, [key]: value })).rejects.toThrow(`${key} is not valid for bg_tasks ${action}`);
+test("capacity rejection is repairable after settlement without changing launchKey", async () => fixture(async h => {
+  const ids: string[] = [];
+  for (let i = 0; i < 4; i++) ids.push((await h.call("bg_start", { launchKey: `held-${i}`, command: "sleep 30", notify: "off" })).details.jobId);
+  const args = { launchKey: "after-capacity", command: "printf repaired", notify: "off" };
+  for (let i = 0; i < 2; i++) {
+    try { await h.call("bg_start", args); throw new Error("expected rejection"); } catch (error: any) {
+      const failure = JSON.parse(error.message);
+      expect(failure).toMatchObject({ code: "CAPACITY_REACHED", effect: "not_started", retryUnchanged: false });
+      expect(failure.nextCalls[0].tool).toBe("bg_wait");
     }
-    for (const value of ["", null, false, 0]) await expect(h.call({ action, unknown: value })).rejects.toThrow("unknown is not valid");
   }
-  for (const key of ["id", "cursor", "label", "command", "cwd"]) {
-    await expect(h.call({ action: "list", [key]: " " })).rejects.toThrow(`${key} is not valid`);
-  }
-  expect((await h.call({ action: "list" })).details.jobs).toEqual([]);
+  expect((await h.call("bg_list", {})).details.jobs).toHaveLength(4);
+  await h.call("bg_cancel", { jobIds: [ids[0]] });
+  const accepted = await h.call("bg_start", args);
+  expect(accepted.details.jobId).toBeTruthy();
+  await h.call("bg_wait", { jobIds: [accepted.details.jobId], waitMode: "all", waitTimeoutSeconds: 2 });
 }));
 
-test("cancel has no reason input and retains the runtime stop reason", async () => fixture(async h => {
-  const schema = h.tool.parameters;
-  expect(schema.properties).not.toHaveProperty("reason");
-  expect(schema.additionalProperties).toBe(false);
-  for (const all of [false, true]) {
-    const started = await h.call({ action: "start", command: "sleep 30", notify: "off" });
-    const selector = all ? { all: true } : { id: started.details.job.id };
-    await expect(h.call({ action: "cancel", ...selector, reason: "user_cancel" })).rejects.toThrow("reason is not valid for bg_tasks cancel");
-    const cancelled = await h.call({ action: "cancel", ...selector });
-    expect(cancelled.details.jobs[0].stopReason).toBe("user_cancel");
-  }
-  await expect(h.call({ action: "list", reason: "user_cancel" })).rejects.toThrow("reason is not valid for bg_tasks list");
+test("wait/cancel/mute affect only explicit IDs and validate whole selection before effects", async () => fixture(async h => {
+  const first = (await h.call("bg_start", { launchKey: "one", command: "sleep 30", notify: "off" })).details.jobId;
+  const second = (await h.call("bg_start", { launchKey: "two", command: "sleep 30" })).details.jobId;
+  await expect(h.call("bg_cancel", { jobIds: [first, "missing"] })).rejects.toThrow('"code":"UNKNOWN_JOB"');
+  expect((await h.call("bg_status", { jobId: first })).details.job.stopReason).toBeUndefined();
+  await h.call("bg_cancel", { jobIds: [first] });
+  const waited = await h.call("bg_wait", { jobIds: [first], waitMode: "any", waitTimeoutSeconds: 1 });
+  expect(waited.details.running).toEqual([]);
+  expect(waited.details.completed.map((job: any) => job.id)).toEqual([first]);
+  const unchanged = (await h.call("bg_status", { jobId: second })).details.job;
+  expect(unchanged.stopReason).toBeUndefined();
+  expect(unchanged.notify).toBe("always");
+  await h.call("bg_mute_notifications", { jobIds: [second] });
+  expect((await h.call("bg_status", { jobId: second })).details.job.notify).toBe("off");
 }));
 
 test("busy completions share one append-only boundary, not a late follow-up wake", async () => fixture(async h => {
   await h.events.before_agent_start({}, h.ctx); h.idle(false);
-  await h.call({ action: "start", command: "printf first" });
-  await h.call({ action: "start", command: "printf second; exit 3" });
+  await h.call("bg_start", { launchKey: "printf first", command: "printf first" });
+  await h.call("bg_start", { launchKey: "printf second; exit 3", command: "printf second; exit 3" });
   await h.settled(2); await Bun.sleep(100);
   expect(h.sent).toHaveLength(0);
   const previous = { type: "custom", customType: "other-extension", data: 1 };
@@ -283,8 +223,8 @@ test("busy completions share one append-only boundary, not a late follow-up wake
 }));
 
 test("idle bursts produce one bounded wake with output, not one per job", async () => fixture(async h => {
-  await h.call({ action: "start", command: "printf one" });
-  await h.call({ action: "start", command: "printf two" });
+  await h.call("bg_start", { launchKey: "printf one", command: "printf one" });
+  await h.call("bg_start", { launchKey: "printf two", command: "printf two" });
   await h.settled(2); await Bun.sleep(150);
   expect(h.sent).toHaveLength(1);
   expect(h.sent[0].message.details.completions).toHaveLength(2);
@@ -293,9 +233,10 @@ test("idle bursts produce one bounded wake with output, not one per job", async 
 
 test("wait returns output and queued completions exactly once", async () => fixture(async h => {
   await h.events.before_agent_start({}, h.ctx); h.idle(false);
-  await h.call({ action: "start", command: "printf already" }); await h.settled(1);
-  await h.call({ action: "start", command: "sleep 0.02; printf waited" });
-  const result = await h.call({ action: "wait", waitFor: "all", seconds: 2 });
+  await h.call("bg_start", { launchKey: "printf already", command: "printf already" }); await h.settled(1);
+  await h.call("bg_start", { launchKey: "sleep 0.02; printf waited", command: "sleep 0.02; printf waited" });
+  const ids = (await h.call("bg_list", {})).details.jobs.map((job: any) => job.id);
+  const result = await h.call("bg_wait", { jobIds: ids, waitMode: "all", waitTimeoutSeconds: 2 });
   expect(result.details.completions).toHaveLength(2);
   expect(result.content[0].text).toContain("waited"); expect(result.content[0].text).toContain("already");
   expect(await h.events.turn_end({ entries: [], message: { role: "assistant", stopReason: "stop" } }, h.ctx)).toBeUndefined();
@@ -304,7 +245,7 @@ test("wait returns output and queued completions exactly once", async () => fixt
 
 test("abort suppresses late wakes, preserves observations for the next explicit prompt", async () => fixture(async h => {
   await h.events.before_agent_start({}, h.ctx);
-  await h.call({ action: "start", command: "sleep 0.02; printf after-abort" });
+  await h.call("bg_start", { launchKey: "sleep 0.02; printf after-abort", command: "sleep 0.02; printf after-abort" });
   await h.events.agent_end({ messages: [{ role: "assistant", stopReason: "aborted" }] });
   await h.settled(1); await Bun.sleep(150);
   expect(h.sent).toHaveLength(0);
@@ -312,21 +253,21 @@ test("abort suppresses late wakes, preserves observations for the next explicit 
   expect(next.message.content).toContain("after-abort");
 }));
 
-test("ignore by ID silences a settled completion still awaiting delivery", async () => fixture(async h => {
+test("mute by selected ID silences a settled completion still awaiting delivery", async () => fixture(async h => {
   await h.events.before_agent_start({}, h.ctx);
-  const started = await h.call({ action: "start", command: "printf ignored" });
+  const started = await h.call("bg_start", { launchKey: "printf ignored", command: "printf ignored" });
   await h.settled(1);
-  const ignored = await h.call({ action: "ignore", id: started.details.job.id });
+  const ignored = await h.call("bg_mute_notifications", { jobIds: [started.details.job.id] });
   expect(ignored.details.jobs[0].notify).toBe("off");
   expect(await h.events.turn_end({ entries: [], message: { role: "assistant", stopReason: "stop" } }, h.ctx)).toBeUndefined();
   expect(h.sent).toHaveLength(0);
 }));
 
 test("branch changes and shutdown fence queued idle delivery", async () => fixture(async h => {
-  await h.call({ action: "start", command: "printf old-branch" }); await h.settled(1);
+  await h.call("bg_start", { launchKey: "printf old-branch", command: "printf old-branch" }); await h.settled(1);
   await h.events.session_tree({}, h.ctx); await Bun.sleep(150);
   expect(h.sent).toHaveLength(0);
-  await h.call({ action: "start", command: "printf before-reload" }); await h.settled(2);
+  await h.call("bg_start", { launchKey: "printf before-reload", command: "printf before-reload" }); await h.settled(2);
   await h.events.session_shutdown({}, h.ctx); await h.events.session_start({}, h.ctx); await Bun.sleep(150);
   expect(h.sent).toHaveLength(0);
 }));

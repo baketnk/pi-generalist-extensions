@@ -35,7 +35,7 @@ const loader = new DefaultResourceLoader({ cwd: root, agentDir, settingsManager,
   })] });
 await loader.reload();
 const sessionManager = SessionManager.create(root, join(root, "sessions"));
-const { session } = await createAgentSession({ cwd: root, agentDir, settingsManager, resourceLoader: loader, sessionManager, modelRuntime, model, thinkingLevel: "off", tools: ["bg_tasks", "fixture_barrier"] });
+const { session } = await createAgentSession({ cwd: root, agentDir, settingsManager, resourceLoader: loader, sessionManager, modelRuntime, model, thinkingLevel: "off", tools: ["bg_start", "bg_list", "bg_status", "bg_output", "bg_wait", "bg_cancel", "bg_mute_notifications", "fixture_barrier"] });
 const errors: string[] = [];
 await session.bindExtensions({ mode: "rpc", onError: (error: any) => errors.push(error.error) });
 const contexts: any[] = [];
@@ -44,8 +44,8 @@ const call = (id: string, name: string, args: unknown) => ({ type: "toolCall", i
 const stream = (_model: unknown, context: any) => {
   contexts.push(normalizeContext({ messages: structuredClone(context.messages) })); request++;
   const content = request === 1 ? [
-    call("start-a", "bg_tasks", { action: "start", command: "while [ ! -e release ]; do sleep 0.01; done; printf FIRST", timeoutSeconds: 10 }),
-    call("start-b", "bg_tasks", { action: "start", command: "while [ ! -e release ]; do sleep 0.01; done; printf SECOND; exit 3", timeoutSeconds: 10 }),
+    call("start-a", "bg_start", { launchKey: "first", command: "while [ ! -e release ]; do sleep 0.01; done; printf FIRST", runTimeoutSeconds: 10 }),
+    call("start-b", "bg_start", { launchKey: "second", command: "while [ ! -e release ]; do sleep 0.01; done; printf SECOND; exit 3", runTimeoutSeconds: 10 }),
   ] : request === 2 ? [call("barrier", "fixture_barrier", {})] : [{ type: "text", text: "Observed evidence" }];
   const stopReason = request <= 2 ? "toolUse" : request === 4 ? "error" : "stop";
   const message = { role: "assistant", api: model.api, provider: model.provider, model: model.id, content, stopReason,

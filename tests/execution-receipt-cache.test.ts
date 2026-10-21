@@ -6,27 +6,26 @@ import { join } from "node:path";
 import { convertToLlm, SessionManager } from "@earendil-works/pi-coding-agent";
 import bgTasks from "../extensions/bg-tasks.ts";
 
-// Intentional static contract change: the description now exposes the existing
-// four-active-job limit, including settling jobs. Completion v2 is unchanged.
-// This baseline still guards the complete static contract against per-job
-// mutation; this is not preservation across a static contract upgrade.
-const COMPLETION_V2_TOOL_SHA256 = "9af483c15b33a504f79dc5d700cb63fbe415e2c6d00be8e4b61465c0137e3a54";
+// The action-specific contract upgrade intentionally changes the tool prefix.
+// Compare the complete fixed seven-tool contract before/after job mutations and
+// reload; do not claim preservation across deployment of a different contract.
 function harness(manager: SessionManager, cwd: string) {
   const events: Record<string, Function> = {}, messages: unknown[] = [];
-  let tool: any, complete!: () => void;
+  const tools: Record<string, any> = {}; let complete!: () => void;
   const done = new Promise<void>(resolve => { complete = resolve; });
   bgTasks({
     on: (name: string, handler: Function) => { events[name] = handler; },
-    registerCommand() {}, registerTool: (value: any) => { tool = value; },
+    registerCommand() {}, registerTool: (value: any) => { tools[value.name] = value; },
     appendEntry: (type: string, data: unknown) => { manager.appendCustomEntry(type, data); complete(); },
     sendMessage: (value: unknown) => { messages.push(value); },
   } as any);
   const contract = () => {
-    const { name, description, promptSnippet, promptGuidelines, parameters, executionMode } = tool;
-    return createHash("sha256").update(JSON.stringify({ name, description, promptSnippet, promptGuidelines, parameters, executionMode })).digest("hex");
+    const contracts = Object.values(tools).map(({ name, description, promptSnippet, promptGuidelines, parameters, executionMode }) => ({ name, description, promptSnippet, promptGuidelines, parameters, executionMode }));
+    expect(contracts.map(tool => tool.name)).toEqual(["bg_start", "bg_list", "bg_status", "bg_output", "bg_wait", "bg_cancel", "bg_mute_notifications"]);
+    return createHash("sha256").update(JSON.stringify(contracts)).digest("hex");
   };
   const ctx: any = { cwd, mode: "tui", hasUI: false, sessionManager: manager };
-  return { events, messages, done, contract, ctx, call: (args: unknown) => tool.execute("fixture", args, undefined, undefined, ctx) };
+  return { events, messages, done, contract, ctx, call: (name: string, args: unknown) => tools[name].execute("fixture", args, undefined, undefined, ctx) };
 }
 
 test("receipts preserve tool-schema bytes and LLM context across completion and session reopen", async () => {
@@ -39,16 +38,15 @@ test("receipts preserve tool-schema bytes and LLM context across completion and 
     manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "Fixture baseline" }], api: "openai-completions", provider: "fixture", model: "fixture", stopReason: "stop", timestamp: 2,
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
     const projection = () => JSON.stringify(convertToLlm(manager.buildSessionContext().messages));
-    const before = projection();
-    expect(h.contract()).toBe(COMPLETION_V2_TOOL_SHA256);
+    const before = projection(), contractBefore = h.contract();
     expect(Object.keys(h.events).sort()).toEqual(["agent_end", "agent_settled", "agent_start", "before_agent_start", "session_shutdown", "session_start", "session_tree", "turn_end"]);
     await h.events.session_start({}, h.ctx);
-    const started = await h.call({ action: "start", command: "printf cache-fixture", notify: "off" });
+    const started = await h.call("bg_start", { launchKey: "cache-fixture", command: "printf cache-fixture", notify: "off" });
     await h.done;
     expect(projection()).toBe(before);
     expect(h.messages).toEqual([]); // No new receipt wake/context injection.
-    expect(h.contract()).toBe(COMPLETION_V2_TOOL_SHA256);
-    const status = await h.call({ action: "status", id: started.details.job.id });
+    expect(h.contract()).toBe(contractBefore);
+    const status = await h.call("bg_status", { jobId: started.details.job.id });
     expect(status.content[0].text).toContain("Receipt: recorded");
     expect(status.content[0].text).toContain("sha256=");
     expect(projection()).toBe(before); // Reading never rewrites old context.
@@ -59,7 +57,7 @@ test("receipts preserve tool-schema bytes and LLM context across completion and 
     const reopened = SessionManager.open(manager.getSessionFile()!), restored = harness(reopened, root);
     await restored.events.session_start({}, restored.ctx);
     expect(JSON.stringify(convertToLlm(reopened.buildSessionContext().messages))).toBe(before);
-    expect(restored.contract()).toBe(COMPLETION_V2_TOOL_SHA256);
+    expect(restored.contract()).toBe(contractBefore);
     expect(restored.messages).toEqual([]);
     await restored.events.session_shutdown({}, restored.ctx);
   } finally {
