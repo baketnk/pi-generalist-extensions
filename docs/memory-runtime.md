@@ -85,22 +85,33 @@ explicit scope, with active scope IDs supplied in the memory guidance.
 
 ## Tool and human controls
 
-The model-visible `memory` tool is enabled only with an approved branch policy:
+The model-visible `memory_*` family is enabled/disabled together, only with an
+approved branch policy. It replaces the multiplexed `memory` tool (no legacy alias);
+reload and update explicit allowlists. Each tool has a closed, action-specific schema:
 
-- `recall(query)`: scoped indexed lexical search, at most 8 KiB JSON with omitted
+- `memory_recall({query?})`: scoped indexed lexical search, at most 8 KiB JSON with omitted
   count; no automatic full-store scan/rebuild. Empty/stopword queries return none.
-- `read(id)`: latest accepted original in the selected scopes, at most 48 KiB
+- `memory_read({recordId})`: latest accepted original in the selected scopes, at most 48 KiB
   complete JSON. Candidates, artifacts, other projects and unselected personal
   profiles are excluded.
-- `sources`: metadata for the last ten nonempty user/assistant text messages in
+- `memory_sources({})`: metadata for the last ten nonempty user/assistant text messages in
   the current branch (entry IDs, authors, timestamps, byte counts), not bulk text.
-- `note(scope, kind, title, body)`: bounded assistant-authored fact, reflection or
+- `memory_note({scope, kind, title, body, ...})`: bounded assistant-authored fact, reflection or
   thread. Explicit inferences and facts without sources enter candidate review;
   other authored notes may be accepted. Saving nothing is valid.
-- `revise(id, expectedRevision, title, body, reason)`: revision-checked native
+- `memory_revise({recordId, expectedRevision, title, body, reason, ...})`: revision-checked native
   assistant record correction, not imported/human-authored/pinned record editing.
   A fact correction without a new retained source returns to candidate review.
-- `threads`: bounded open-thread cues, never authority to resume or schedule work.
+- `memory_threads({query?})`: bounded open-thread cues, never authority to resume or schedule work.
+
+Required write fields are enforced before any store access. Unknown/wrong-action
+fields and null/empty placeholders fail rather than being ignored (empty recall
+queries remain valid). `threadStatus` applies only to threads. Scope/kind cannot be
+changed through revise. Execution errors include `code`, `effect`,
+`retryUnchanged:false`, `repair` and `nextCalls`. Host schema errors may occur before
+extension execution; repair them rather than repeating unchanged. Optional `nextCalls`
+use exact JSON argument names, never repeat writes, and never authorize resuming work.
+Candidates do not suggest reads that require acceptance. Empty lists need no follow-up.
 
 `sourceEntryId` and `excerpt` must appear together and match actual current-branch
 user/assistant text (text blocks joined with newlines). Excerpts are at most 4 KiB;

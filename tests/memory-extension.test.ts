@@ -45,10 +45,12 @@ function harness(existing?: ReturnType<typeof fixture>, sm?: SessionManager,
   const user = (content = "Fixture cache choice") => manager.appendMessage({ role: "user", content, timestamp: Date.now() });
   const call = async (args: MemoryToolInput, options: { id?: string; signal?: AbortSignal; bind?: boolean } = {}) => {
     const callId = options.id ?? randomUUID();
-    if (options.bind !== false) manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: callId, name: "memory", arguments: args }],
+    const { action, id, ...rest } = args, name = `memory_${action}`;
+    const parameters = { ...rest, ...(id !== undefined ? { recordId: id } : {}) };
+    if (options.bind !== false) manager.appendMessage({ role: "assistant", content: [{ type: "toolCall", id: callId, name, arguments: parameters }],
       provider: "fixture-provider", model: "fixture-model", api: "openai-completions", stopReason: "toolUse", timestamp: Date.now(),
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } });
-    return (await tools.memory.execute(callId, args, options.signal, undefined, ctx)).details.result;
+    return (await tools[name].execute(callId, parameters, options.signal, undefined, ctx)).details.result;
   };
   const command = (args: string) => commands.memory.handler(args, ctx);
   return { ...f, manager, ctx, pi, tools, controller, emit, user, call, command, inputs, notifications, confirms: () => confirms };
@@ -113,7 +115,7 @@ for (const api of ["openai-responses", "openai-codex-responses"] as const) {
 
     const callId = "call_fixture", result = await h.call({ action: "note", kind: "reflection", scope: h.project,
       title: "A different fixture", body: "An unrelated synthetic reflection" }, { id: callId });
-    h.manager.appendMessage({ role: "toolResult", toolCallId: callId, toolName: "memory", isError: false,
+    h.manager.appendMessage({ role: "toolResult", toolCallId: callId, toolName: "memory_note", isError: false,
       content: [{ type: "text", text: JSON.stringify(result) }], timestamp: Date.now() });
     const followup = (await h.emit("context", projection(transcript(h)))).messages;
     const followupBody = await providerBody(h, followup, api, start.systemPrompt);
@@ -279,7 +281,7 @@ test("saved Generalist memory preference restores on new sessions, while branch 
   const enabled = harness(undefined, undefined, () => true);
   await enabled.emit("session_start", { reason: "new" });
   expect(enabled.controller()).toBe(true);
-  expect(enabled.pi.getActiveTools()).toContain("memory");
+  expect(enabled.pi.getActiveTools()).toEqual(expect.arrayContaining(["memory_recall", "memory_read", "memory_sources", "memory_note", "memory_revise", "memory_threads"]));
   expect(readMemoryPolicy(enabled.ctx)).toMatchObject({ enabled: true, profile: "default" });
   expect(enabled.confirms()).toBe(0); // Ctrl+S was the explicit global preference boundary.
 
@@ -290,13 +292,13 @@ test("saved Generalist memory preference restores on new sessions, while branch 
   const fork = harness(enabled, forkManager, () => true);
   await fork.emit("session_start", { reason: "fork" });
   expect(fork.controller()).toBe(false);
-  expect(fork.pi.getActiveTools()).not.toContain("memory");
+  expect(fork.pi.getActiveTools().some((name: string) => name.startsWith("memory_"))).toBe(false);
 
   const headless = harness(undefined, undefined, () => true);
   headless.ctx.hasUI = false; headless.ctx.mode = "print";
   await headless.emit("session_start", { reason: "new" });
   expect(headless.controller()).toBe(false);
-  expect(headless.pi.getActiveTools()).not.toContain("memory");
+  expect(headless.pi.getActiveTools().some((name: string) => name.startsWith("memory_"))).toBe(false);
 
   await enabled.command("off");
   const restored = harness(enabled, enabled.manager, () => true);
@@ -324,7 +326,7 @@ test("scoped packet is frozen and audited once, omitted from session messages, r
   await h.emit("session_compact", { willRetry: true }); expect(await h.emit("context", projection())).toEqual(first);
   await h.command("context"); expect(h.notifications.at(-1)).toContain(packet.content.includes("Fixture") ? "Fixture" : "never");
   await h.command("off"); expect((await h.emit("context", { messages: first.messages })).messages).toHaveLength(1);
-  expect(h.pi.getActiveTools()).not.toContain("memory"); await expect(h.call({ action: "read", id: randomUUID() })).rejects.toThrow("off");
+  expect(h.pi.getActiveTools().some((name: string) => name.startsWith("memory_"))).toBe(false); await expect(h.call({ action: "read", id: randomUUID() })).rejects.toThrow("off");
 });
 
 test("host capture and exact source origin survive export; thinking/tools/foreign scope cannot become sources", async () => {
@@ -374,7 +376,7 @@ test("external writes preserve sent packets; config changes revoke them; prompts
   const c = readMemoryConfig(h.path); saveMemoryConfig(h.path, { ...c.value!, personalIds: [] }, c.digest);
   await expect(h.call({ action: "read", id: randomUUID() })).rejects.toThrow("configuration changed");
   await h.emit("before_agent_start", { prompt: "cache", systemPrompt: "base" }); expect((await h.emit("context", projection())).messages).toHaveLength(1);
-  expect(h.controller()).toBe(false); expect(h.pi.getActiveTools()).not.toContain("memory");
+  expect(h.controller()).toBe(false); expect(h.pi.getActiveTools().some((name: string) => name.startsWith("memory_"))).toBe(false);
 });
 
 test("personal profile is explicit; reload restores authorized snapshots; tree/fork/new stay bound", async () => {

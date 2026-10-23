@@ -14,10 +14,10 @@ Run `/reload` in an existing pi session, or start a new one. The bundled **Meita
 
 | Feature | Default | Enable |
 | --- | --- | --- |
-| Tools always in the prompt: `update_plan`, `ask_user`/`queue_questions`, `tool_feedback`, `history_search`/`history_read`, `bg_*`, `subagent_*`, `switchboard` | on | `PI_SWITCHBOARD=off` disables switchboard |
+| Tools always in the prompt: `update_plan`, `ask_user`/`queue_questions`, `tool_feedback`, `history_search`/`history_read`, `bg_*`, `subagent_*`, `switchboard_*`, `continuity_*` (original access gated) | on | `PI_SWITCHBOARD=off` disables switchboard |
 | `apply_patch` | off | `/patch on` |
 | `web_search` | off | `/generalist websearch on` |
-| `evidence` tool | off | `/evidence-tool on` |
+| `evidence_*` tools | off | `/evidence-tool on` |
 | Workpad (`.pi/workpad.md` notes) | off | `/workpad on` |
 | Meitan personality, native memory, reflective continuity | off | `/meitan on`, `/memory on`, `/continuity on` |
 
@@ -120,8 +120,10 @@ Set `PI_MEITAN_HOME` to another **absolute** directory if needed. This repo cont
 
 ## Native memory
 
-The `memory` tool provides scoped indexed recall, accepted-original reads, authored
-notes/revisions, exact host-bound source excerpts and open-thread cues. Automatic
+The `memory_*` tools provide scoped indexed recall, accepted-original reads, authored
+notes/revisions, exact host-bound source excerpts and open-thread cues. They activate
+as one family; `memory_read`/`memory_revise` use `recordId`. The old multiplexed
+`memory` tool is replaced—reload and update explicit tool allowlists. Automatic
 recall is bounded, request-frozen and inspectable with `/memory context`. Local
 scope-aware lexical ranking supplies zero to three qualifying notes by default
 (plus eligible human pins), with a small preceding-user topic hint for apparent
@@ -146,7 +148,8 @@ imported keep their imported records.
 
 ## Reflective continuity
 
-`/continuity` provides a separate, explicit shelf for reflective Markdown originals
+`continuity_list/search/read/check/context` replace the multiplexed `continuity`
+tool; reads/checks use `originalId`. `/continuity` provides a separate, explicit shelf for reflective Markdown originals
 and a bounded return-context attachment. It does not change `/meitan` or `/memory`
 activation and never installs or scans personal journals automatically.
 
@@ -187,12 +190,21 @@ stored pages under `~/.pi` are no longer read. Independent of personality and na
 
 `/evidence` opens an ephemeral source-evidence picker; `/evidence capture` records
 an immutable excerpt, `/evidence check ID` checks whole-file freshness, and
-`/evidence compare ID` shows captured/current line positions. The `evidence` tool
-provides the same operations. Source observations and inspected test contracts
+`/evidence compare ID` shows captured/current line positions. The `evidence_*` tools
+provide the same operations with action-specific arguments (no legacy alias). Source observations and inspected test contracts
 are distinct; neither is a test pass or truth verdict. Records stay project-scoped
 outside Git, with no background work or automatic context injection.
-The model-facing `evidence` tool is off by default (it adds a tool definition to every request); `/evidence-tool on` (or `pi --evidence-tool`) enables it. The human `/evidence` commands are always available.
+The model-facing `evidence_*` family is off by default; `/evidence-tool on` (or `pi --evidence-tool`) enables its five static tools together. The human `/evidence` commands are always available.
 See [bounds, privacy, semantics and validation](docs/evidence.md).
+
+## Tool prompt footprint
+
+The action-specific tool migration keeps schemas static and shared guidance concise.
+Across all six split families, the tool-contract portion grows by about 5.4 KB
+(~1,350 estimated tokens) at factory defaults, or 8.1 KB (~2,030 tokens) with memory
+enabled, compared with the pre-bg/subagent-split revision. It is smaller than the
+previous Switchboard milestone after deduplicating repeated guidance. See
+[measurement method and profiles](docs/tool-contract-size.md).
 
 ## Development
 

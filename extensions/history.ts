@@ -33,7 +33,7 @@ export default function history(pi: ExtensionAPI) {
       role: Type.Optional(StringEnum(["user", "assistant", "summary"] as const)),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
       refresh: Type.Optional(Type.Boolean()),
-    }),
+    }, { additionalProperties: false }),
     async execute(_id, params, signal, onUpdate, ctx) {
       return run(async index => {
         onUpdate?.({ content: [{ type: "text", text: params.refresh === false ? "Searching local history…" : "Refreshing changed history sources…" }], details: {} });
@@ -49,10 +49,10 @@ export default function history(pi: ExtensionAPI) {
     description: "Read original conversation around a history_search result. Pass its opaque session key and optional entry ID. Pi/OMP reads follow ancestry ending at that entry (or latest recorded leaf); other harnesses read up to that entry. Returns the newest window in chronological order; offset/nextOffset walk backward. Optional tool evidence is excluded from search. Text per message capped at 6000 characters, total output under 48 KB. No arbitrary paths or session switching.",
     promptSnippet: "Read cited historical messages and optional tool evidence without switching sessions.",
     parameters: Type.Object({
-      session: Type.String({ maxLength: 64 }), entry: Type.Optional(Type.String({ maxLength: 256 })),
+      session: Type.String({ minLength: 1, maxLength: 64, pattern: "\\S" }), entry: Type.Optional(Type.String({ minLength: 1, maxLength: 256, pattern: "\\S" })),
       offset: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
       includeTools: Type.Optional(Type.Boolean()),
-    }),
+    }, { additionalProperties: false }),
     async execute(_id, params, signal, _update, ctx) {
       return run(async index => {
         const text = bounded(await index.read(params.session, params, signal));

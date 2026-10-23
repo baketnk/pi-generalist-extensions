@@ -27,7 +27,7 @@ const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialS
 const model = runtime.getModels().find(m => m.provider === "anthropic"); assert.ok(model);
 await runtime.setRuntimeApiKey(model.provider, "fixture-not-a-real-key");
 const { session } = await createAgentSession({ cwd: root, agentDir: root, model, modelRuntime: runtime, thinkingLevel: "off", resourceLoader: loader,
-  sessionManager: manager, settingsManager, tools: ["continuity"] });
+  sessionManager: manager, settingsManager, tools: ["continuity_list", "continuity_search", "continuity_read", "continuity_check", "continuity_context"] });
 const errors: string[] = []; await session.bindExtensions({ mode: "print", onError: e => errors.push(e.error) });
 let turns = 0; const outgoing: any[] = [];
 session.agent.streamFunction = (_model, context) => {
@@ -35,7 +35,7 @@ session.agent.streamFunction = (_model, context) => {
   const tool = turns === 1 || turns === 5;
   const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
     stopReason: tool ? "toolUse" : "stop",
-    content: tool ? [{ type: "toolCall", id: `read-${turns}`, name: "continuity", arguments: { action: "read", id: "anchor", start: 3, end: 4 } }] : [{ type: "text", text: "Done." }],
+    content: tool ? [{ type: "toolCall", id: `read-${turns}`, name: "continuity_read", arguments: { originalId: "anchor", start: 3, end: 4 } }] : [{ type: "text", text: "Done." }],
     usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
   const stream = createAssistantMessageEventStream(); stream.push({ type: "done", reason: message.stopReason as "toolUse" | "stop", message }); stream.end(); return stream;
 };

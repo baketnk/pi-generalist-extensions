@@ -153,7 +153,7 @@ export default function bgTasks(pi: ExtensionAPI) {
   for (const name of Object.keys(schemas) as ToolName[]) pi.registerTool({
     name, label: name, description: descriptions[name],
     promptSnippet: descriptions[name].split(" → ")[0],
-    promptGuidelines: [descriptions[name].split(". ")[0] + ". Use bg_start only for authorized finite work, continue useful independent work, then bg_wait when blocked instead of polling. Before ending, explicitly wait, cancel, or mute attended jobs. Inspect evidence before dependent operations; completion is not permission for more work. Schema rejection can occur before execute: repair inputs, do not blindly repeat. nextCalls are optional state-specific continuations, not instructions to keep working; an empty list means no follow-up is needed."],
+    promptGuidelines: name === "bg_start" ? ["Use bg_start only for authorized finite work, continue useful independent work, then bg_wait when blocked instead of polling. Before ending, explicitly wait, cancel, or mute attended jobs. Inspect evidence before dependent operations; completion is not permission for more work. Schema rejection can occur before execute: repair inputs, do not blindly repeat. nextCalls are optional state-specific continuations, not instructions to keep working; an empty list means no follow-up is needed."] : [],
     parameters: schemas[name], executionMode: "sequential",
     async execute(_call, raw, signal, _update, ctx) {
       // Host validation normally happens before execute. Also fail closed for direct callers.

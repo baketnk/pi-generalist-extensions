@@ -23,15 +23,24 @@ excerpt overlays require TUI. Non-TUI agents use the tool.
 
 ## Agent interface
 
-One `evidence` tool:
+Five action-specific tools replace the legacy multiplexed `evidence` tool. Calls use `evidence_capture`, `evidence_list`, `evidence_read`, `evidence_check`, and `evidence_compare`; each accepts only its own required arguments. The former `evidence` alias is not registered. Update any allowlists/active-tool selections to the family names. The `/evidence` human command is unchanged.
+
+Execution errors include `code`, `effect`, `retryUnchanged:false`, `repair` and
+`nextCalls`. Unknown/wrong-action fields and null/empty required inputs are rejected
+before source/store access, not silently ignored. Host schema errors can occur
+before execution; fix the call rather than repeating it. Optional exact-JSON
+`nextCalls` suggest reads or the next list page, never automatic capture/replacement;
+an empty list needs no follow-up. The bundle toggle switches the whole family.
+
+Examples:
 
 ```json
-{"action":"capture","id":"mirror-eye","title":"Reflection depends on the eye position","kind":"source-observation","path":"apps/vr_workspace/mirror_surface.cpp","start":49,"end":75}
-{"action":"capture","id":"mirror-contract","title":"The test requires different left/right projections","kind":"test-contract-inspected","path":"tests/vr_workspace_integration_tests.cpp","start":811,"end":836}
-{"action":"list"}
-{"action":"read","id":"mirror-eye"}
-{"action":"check","id":"mirror-eye"}
-{"action":"compare","id":"mirror-eye"}
+{"tool":"evidence_capture","arguments":{"id":"mirror-eye","title":"Reflection depends on the eye position","kind":"source-observation","path":"apps/vr_workspace/mirror_surface.cpp","start":49,"end":75}}
+{"tool":"evidence_capture","arguments":{"id":"mirror-contract","title":"The test requires different left/right projections","kind":"test-contract-inspected","path":"tests/vr_workspace_integration_tests.cpp","start":811,"end":836}}
+{"tool":"evidence_list","arguments":{}}
+{"tool":"evidence_read","arguments":{"id":"mirror-eye"}}
+{"tool":"evidence_check","arguments":{"id":"mirror-eye"}}
+{"tool":"evidence_compare","arguments":{"id":"mirror-eye"}}
 ```
 
 These are illustrative ranges, not records installed automatically. Inspect the

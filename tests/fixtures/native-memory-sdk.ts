@@ -32,7 +32,7 @@ const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialS
 const model = runtime.getModels().find(m => m.provider === "anthropic"); assert.ok(model);
 await runtime.setRuntimeApiKey(model.provider, "fixture-not-a-real-key");
 const { session } = await createAgentSession({ cwd: root, agentDir: root, model, modelRuntime: runtime,
-  thinkingLevel: "off", resourceLoader: loader, sessionManager: manager, settingsManager, tools: ["memory"] });
+  thinkingLevel: "off", resourceLoader: loader, sessionManager: manager, settingsManager, tools: ["memory_recall", "memory_read", "memory_sources", "memory_threads", "memory_note", "memory_revise"] });
 const errors: string[] = [];
 await session.bindExtensions({ mode: "print", onError: e => errors.push(e.error) });
 let turns = 0; const outgoing: string[] = [];
@@ -41,7 +41,7 @@ session.agent.streamFunction = (_model, context) => {
   const stream = createAssistantMessageEventStream();
   const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
     stopReason: turns === 1 ? "toolUse" : "stop",
-    content: turns === 1 ? [{ type: "toolCall", id: "fixture-native-call", name: "memory", arguments: { action: "note", scope: `project:${projectId}`, kind: "reflection", title: "SDK reflection", body: "Fixture authored reflection" } }] : [{ type: "text", text: "Fixture complete" }],
+    content: turns === 1 ? [{ type: "toolCall", id: "fixture-native-call", name: "memory_note", arguments: { scope: `project:${projectId}`, kind: "reflection", title: "SDK reflection", body: "Fixture authored reflection" } }] : [{ type: "text", text: "Fixture complete" }],
     usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
   stream.push({ type: "done", reason: message.stopReason as "stop" | "toolUse", message }); stream.end(); return stream;
 };
@@ -61,6 +61,6 @@ try {
   await session.prompt("/memory off");
   await session.prompt("Another cedar cache question, now memory is off.");
   assert.equal(turns, 3); assert.ok(!outgoing[2].includes("The SDK fixture retains a cedar cache."));
-  assert.ok(!session.agent.state.tools.some(t => t.name === "memory"));
+  assert.ok(!session.agent.state.tools.some(t => t.name.startsWith("memory_")));
   writeSync(1, JSON.stringify({ turns, captureBound: true, packetPrefixPreserved: true, errors }));
 } finally { session.dispose(); }

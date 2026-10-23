@@ -18,7 +18,7 @@ function harness(f: ReturnType<typeof fixture>) {
   evidence({ registerTool(t: any) { tools[t.name] = t; }, registerCommand(n: string, c: any) { commands[n] = c; } } as any, () => f.root);
   const ctx: any = { cwd: f.dir, mode: "tui", hasUI: true, waitForIdle: async () => {},
     ui: { notify: (text: string) => notices.push(text), select: async () => undefined, input: async () => undefined } };
-  const call = async (params: any, signal?: AbortSignal) => JSON.parse((await tools.evidence.execute("call", params, signal, undefined, ctx)).content[0].text);
+  const call = async (params: any, signal?: AbortSignal) => (await tools[`evidence_${params.action}`].execute("call", Object.fromEntries(Object.entries(params).filter(([k]) => k !== "action")), signal, undefined, ctx)).details.result;
   return { tools, commands, notices, ctx, call, command: (args: string) => commands.evidence.handler(args, ctx) };
 }
 
@@ -150,7 +150,7 @@ test("tools execute on demand with bounded pagination and cancellation, without 
   const f = fixture();
   try {
     const h = harness(f);
-    await expect(h.call({ action: "capture", id: "e1" })).rejects.toThrow("requires");
+    await expect(h.call({ action: "capture", id: "e1" })).rejects.toThrow('"code":"invalid_arguments"');
     const controller = new AbortController(); controller.abort();
     await expect(h.call({ action: "capture", ...f.input }, controller.signal)).rejects.toThrow();
     expect(existsSync(f.root)).toBe(false);
@@ -161,7 +161,7 @@ test("tools execute on demand with bounded pagination and cancellation, without 
     expect((await h.call({ action: "read", id: "e00" })).excerpt).toContain("answer");
     expect((await h.call({ action: "check", id: "e00" })).status).toBe("unchanged");
     expect((await h.call({ action: "compare", id: "e00" })).current.currentExcerpt).toContain("answer");
-    expect(h.tools.evidence.description).toContain("not truth");
+    expect(h.tools.evidence_check.description).toContain("no truth");
   } finally { f.clean(); }
 });
 
@@ -219,5 +219,5 @@ test("bundle toggle keeps the evidence tool inactive until enabled", async () =>
   events.session_start!({}, ctx);
   expect(active).toEqual(["read"]);
   await commands["evidence-tool"].handler("on", { ...ctx, waitForIdle: async () => {} });
-  expect(active).toContain("evidence");
+  expect(active).toEqual(expect.arrayContaining(["evidence_capture", "evidence_list", "evidence_read", "evidence_check", "evidence_compare"]));
 });

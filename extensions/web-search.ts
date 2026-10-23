@@ -18,7 +18,7 @@ export default function webSearch(pi: ExtensionAPI, icons?: StatusIconsControlle
     parameters: Type.Object({
       query: Type.String({ minLength: 1, maxLength: 2000, description: "Search query; backend-supported operators are passed through." }),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 5, description: "Maximum results (default 5)." })),
-    }),
+    }, { additionalProperties: false }),
     async execute(_id, params, signal, _update, ctx) {
       if (!enabled()) throw new Error("web_search is disabled. Enable with /generalist websearch on.");
       const result = await searchWeb(params.query, params.limit, signal);

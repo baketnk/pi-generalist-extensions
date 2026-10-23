@@ -6,11 +6,12 @@ export function operationId(value: string): string {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
 }
 /** The host has drained the current assistant message before tool execution. */
-export function captureOrigin(ctx: ExtensionContext, toolCallId: string): CaptureOrigin {
+export function captureOrigin(ctx: ExtensionContext, toolCallId: string, toolName: string): CaptureOrigin {
+  if (toolName !== "memory_note" && toolName !== "memory_revise") throw new Error("Only an authored memory write can capture host provenance");
   for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
     if (entry.type !== "message" || entry.message.role !== "assistant") continue;
     const message = entry.message;
-    if (message.content.some(b => b.type === "toolCall" && b.id === toolCallId && b.name === "memory")) {
+    if (message.content.some(b => b.type === "toolCall" && b.id === toolCallId && b.name === toolName)) {
       return { harness: "pi", sessionId: ctx.sessionManager.getSessionId(), entryId: entry.id,
         toolCallId, provider: message.provider, model: message.model };
     }

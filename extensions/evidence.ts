@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { StringEnum } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
+import { Check } from "typebox/value";
+import { evidenceTools, evidenceFailure, evidenceNext } from "../lib/evidence/contract.ts";
 import { EvidenceStore, MAX_LINES, type Evidence, type EvidenceKind } from "../lib/evidence/store.ts";
 import { EvidenceView, safeText } from "../lib/evidence/view.ts";
 import { formatOutput } from "../lib/output.ts";
@@ -14,43 +14,38 @@ const format = (e: Evidence) => `${e.id}: ${e.title}\nKind: ${e.kind} (not a tes
 /** No hooks, startup reads, subprocesses, model calls, or prompt injection. */
 export default function evidence(pi: ExtensionAPI, root = () => join(getAgentDir(), "evidence"), toggle?: { icons?: StatusIconsController }) {
   // Bundle use: off by default so the tool definition is not carried on every request. Standalone/tests skip the toggle.
-  if (toggle) registerToggle(pi, "evidence-tool", "Enable the evidence shelf tool", on => {
-    const active = pi.getActiveTools().filter(name => name !== "evidence");
-    pi.setActiveTools(on ? [...active, "evidence"] : active);
+  if (toggle) registerToggle(pi, "evidence-tool", "Enable the evidence shelf tools", on => {
+    const names = evidenceTools.map(tool => tool.name);
+    const active = pi.getActiveTools().filter(name => name !== "evidence" && !names.includes(name as any));
+    pi.setActiveTools(on ? [...active, ...names] : active);
   }, toggle.icons);
   const store = (ctx: ExtensionContext) => new EvidenceStore(root(), ctx.cwd);
-  pi.registerTool({
-    name: "evidence", label: "Evidence shelf",
-    description: "Capture and revisit immutable project-scoped source evidence. Actions: capture(id,title,kind,path,start,end); list(offset); read(id); check(id); compare(id). Kinds: source-observation or test-contract-inspected; neither proves a claim or records a test execution. Capture reads current UTF-8 source inside canonical cwd (1 MiB max), inclusive 1-based range (160 lines/12 KiB max); IDs cannot be overwritten. Read returns the historical excerpt; check hashes the current whole file on demand. Compare shows current SAME LINE POSITIONS, not symbol relocation. Unchanged means byte identity, not truth or unchanged dependencies. List returns at most 20 records without freshness checks. Output capped at 48 KiB with explicit error, never silent truncation. No automatic context injection, collection, or execution.",
-    promptSnippet: "Capture source excerpts and explicitly check their freshness, separate from claims and test execution.",
-    promptGuidelines: ["Use evidence to retain source observations or inspected test contracts with immutable excerpts; never describe an inspected test as a passed test. Evidence titles are caller interpretations, not verification. Check freshness explicitly before relying on an old excerpt."],
-    parameters: Type.Object({
-      action: StringEnum(["capture", "list", "read", "check", "compare"] as const),
-      id: Type.Optional(Type.String({ maxLength: 64 })), title: Type.Optional(Type.String({ maxLength: 240 })),
-      kind: Type.Optional(StringEnum(kinds)), path: Type.Optional(Type.String({ maxLength: 4096 })),
-      start: Type.Optional(Type.Integer({ minimum: 1 })), end: Type.Optional(Type.Integer({ minimum: 1 })),
-      offset: Type.Optional(Type.Integer({ minimum: 0 })),
-    }),
-    async execute(_call, params, signal, _update, ctx) {
-      signal?.throwIfAborted();
-      const s = store(ctx);
-      let result: unknown;
-      if (params.action === "list") {
-        const all = s.list(), offset = params.offset ?? 0;
-        result = { project: s.project, records: all.slice(offset, offset + 20), nextOffset: offset + 20 < all.length ? offset + 20 : null };
-      } else {
-        if (!params.id) throw new Error("id is required.");
-        if (params.action === "capture") {
-          if (params.title === undefined || params.kind === undefined || params.path === undefined || params.start === undefined || params.end === undefined)
-            throw new Error("Capture requires title, kind, path, start and end.");
-          result = s.capture({ id: params.id, title: params.title, kind: params.kind, path: params.path, start: params.start, end: params.end });
-        } else if (params.action === "read") result = s.read(params.id);
-        else if (params.action === "check") result = s.check(params.id);
+  for (const definition of evidenceTools) pi.registerTool({
+    ...definition, label: definition.name.replaceAll("_", " "), executionMode: "sequential",
+    async execute(_call, rawParams, signal, _update, ctx) {
+      if (!Check(definition.parameters, rawParams)) throw new Error(JSON.stringify({ code: "invalid_arguments", message: `Invalid ${definition.name} arguments`, effect: "none", retryUnchanged: false,
+        repair: "Use only declared fields and supply required inputs; omit placeholders. Do not repeat unchanged.", required: definition.parameters.required ?? [], allowed: Object.keys(definition.parameters.properties), nextCalls: [] }));
+      const params = rawParams as Record<string, any>, action = definition.action;
+      let effect = "none";
+      try {
+        signal?.throwIfAborted();
+        const s = store(ctx);
+        let result: unknown;
+        if (action === "list") {
+          const all = s.list(), offset = params.offset ?? 0;
+          result = { project: s.project, records: all.slice(offset, offset + 20), nextOffset: offset + 20 < all.length ? offset + 20 : null };
+        } else if (action === "capture") {
+          effect = "unknown";
+          result = s.capture(params as any);
+        }
+        else if (action === "read") result = s.read(params.id);
+        else if (action === "check") result = s.check(params.id);
         else result = { captured: s.read(params.id), current: s.check(params.id, true) };
-      }
-      const serialized = JSON.stringify(result);
-      if (Buffer.byteLength(serialized) > 48 * 1024) throw new Error("Result exceeds 48 KiB; use individual read/check operations or capture a smaller excerpt. No output was truncated.");
-      return { content: [{ type: "text", text: formatOutput(result, ctx) }], details: {} };
+        const nextCalls = evidenceNext(action, result);
+        const text = formatOutput(result, ctx) + "\nNext calls (optional): " + JSON.stringify(nextCalls);
+        if (Buffer.byteLength(JSON.stringify(result)) > 48 * 1024 || Buffer.byteLength(text) > 48 * 1024) throw new Error("Result exceeds 48 KiB; use separate read/check operations or capture a smaller excerpt.");
+        return { content: [{ type: "text", text }], details: { result, nextCalls } };
+      } catch (error) { throw evidenceFailure(error, definition.name, effect); }
     },
   });
   pi.registerCommand("evidence", {

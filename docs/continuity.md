@@ -27,10 +27,26 @@ activates this feature. No personal sources are installed with this package.
 - `/continuity context`: inspect the exact most recent context projection audit, not
   a fresh reconstruction. The audit may predate off, a model change or a source edit.
 
-The `continuity` tool supports `list`, `search(query)`, `read(id,start?,end?)`,
-`check(id)` and `context`. Except for context inspection, it requires human session
-activation. It cannot register, refresh, remove, activate or attach sources. No
-subagent use. Normal read/shell access is not a filesystem sandbox.
+Five static tools replace the multiplexed `continuity` tool (no legacy alias).
+Reload and update explicit allowlists:
+
+- `continuity_list({})`
+- `continuity_search({query, limit?})`
+- `continuity_read({originalId, start?, end?})`
+- `continuity_check({originalId})`
+- `continuity_context({})`
+
+Schemas require action-specific inputs and reject unrelated fields and null/empty
+placeholders. `originalId` is a registered source ID, not a path. Except for context
+inspection, tools require human session activation. They cannot register, refresh,
+remove, activate or attach sources. No subagent use. Normal read/shell access is not
+a filesystem sandbox.
+
+Execution errors provide `code`, `effect`, `retryUnchanged:false`, `repair` and
+`nextCalls`; host schema errors can occur before execution. Repair inputs, don't
+blindly retry. Optional exact-JSON next calls precede retained prose so indentation,
+line endings and original text are preserved. Suggestions remain within the current
+task; an empty list needs no follow-up. Activation and context projection are unchanged.
 
 ## Originals and index
 

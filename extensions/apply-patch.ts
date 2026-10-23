@@ -30,7 +30,7 @@ Example: *** Begin Patch\n*** Update File: src/a.ts\n@@\n-export const enabled =
       "Use apply_patch for patch-shaped changes, including multiple files; read affected code first and provide enough context to identify each chunk.",
       "After apply_patch reports partial application, inspect committed and pending paths before making another change; patch success does not prove code correctness.",
     ],
-    parameters: Type.Object({ patch: Type.String({ maxLength: MAX_PATCH_BYTES, description: "Complete *** Begin Patch … *** End Patch text." }) }),
+    parameters: Type.Object({ patch: Type.String({ minLength: 1, maxLength: MAX_PATCH_BYTES, description: "Complete *** Begin Patch … *** End Patch text." }) }, { additionalProperties: false }),
     async execute(_id, params, signal, _update, ctx) {
       if (!enabled()) throw new Error("apply_patch is disabled. Enable with /generalist patch on or /patch on.");
       const result = await executePatch(ctx.cwd, params.patch, { signal });

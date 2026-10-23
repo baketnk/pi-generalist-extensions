@@ -92,7 +92,10 @@ test("seven static strict action-specific schemas reject unrelated fields and pl
   };
   for (const [name, tool] of Object.entries(h.tools) as [string, any][]) {
     expect(tool.description.startsWith("Recipe:")).toBe(true);
-    expect(tool.promptGuidelines[0].startsWith("Recipe:")).toBe(true);
+    // Recipes live in descriptions; the family lifecycle rule appears once,
+    // not once per tool in the system prompt.
+    expect(tool.promptGuidelines).toHaveLength(name === "bg_start" ? 1 : 0);
+    if (name === "bg_start") expect(tool.promptGuidelines[0]).toContain("Before ending, explicitly wait, cancel, or mute");
     expect(tool.parameters.additionalProperties).toBe(false);
     expect(Check(tool.parameters, valid[name])).toBe(true);
     for (const extra of [{ action: "start" }, { id: "" }, { all: true }, { timeoutSeconds: 2 }, { unrelated: null }]) {

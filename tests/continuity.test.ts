@@ -21,7 +21,7 @@ function harness(f: ReturnType<typeof fixture>, manager = SessionManager.inMemor
   const ctx: any = { cwd: f.dir, hasUI: true, mode: "rpc", model: { provider: "fixture", id: "scripted", contextWindow: 128000 }, waitForIdle: async () => {}, sessionManager: manager,
     ui: { setStatus() {}, notify: (text: string) => { notices.push(text); views.push(text); }, confirm: async () => true } };
   continuity(pi, () => f.root);
-  const call = async (params: any, signal?: AbortSignal) => (await tools.continuity.execute("id", params, signal, undefined, ctx)).details.result;
+  const call = async ({ action, id, ...params }: any, signal?: AbortSignal) => (await tools[`continuity_${action}`].execute("id", { ...params, ...(id !== undefined ? { originalId: id } : {}) }, signal, undefined, ctx)).details.result;
   const command = (args: string) => commands.continuity.handler(args, ctx);
   const request = (messages = manager.buildSessionContext().messages) => events.context!({ messages }, ctx).messages as any[];
   const begin = () => events.before_agent_start!({}, ctx);
@@ -146,8 +146,8 @@ test("human confirmation controls registration, activation and attachment; cance
     expect((await h.call({ action: "read", id: "anchor", start: 5, end: 6 })).text).toBe(f.body.split("\n").slice(4, 6).join("\n"));
     expect((await h.call({ action: "check", id: "anchor" })).externalState).toBe("unchanged");
     const controller = new AbortController(); controller.abort(); await expect(h.call({ action: "list" }, controller.signal)).rejects.toThrow();
-    expect(Object.keys(h.tools)).toEqual(["continuity"]);
-    const actions = JSON.stringify(h.tools.continuity.parameters);
+    expect(Object.keys(h.tools)).toEqual(["continuity_list", "continuity_search", "continuity_read", "continuity_check", "continuity_context"]);
+    const actions = JSON.stringify(Object.values(h.tools).map((tool: any) => tool.parameters));
     expect(actions).not.toContain('"register"'); expect(actions).not.toContain('"attach"');
   } finally { f.clean(); }
 });
@@ -292,7 +292,7 @@ test("read tool content preserves prose indentation rather than using the generi
   try {
     const text = "    An indented thought.\n\tA second one.  \n";
     writeFileSync(f.path, text); f.register(); const h = harness(f); await h.command("on");
-    const result = await h.tools.continuity.execute("id", { action: "read", id: "anchor", start: 1, end: 3 }, undefined, undefined, h.ctx);
+    const result = await h.tools.continuity_read.execute("id", { originalId: "anchor", start: 1, end: 3 }, undefined, undefined, h.ctx);
     expect(result.content[0].text.endsWith(text)).toBe(true);
     expect(result.content[0].text).not.toContain("supersedes earlier"); // a manual read must not replace the attachment
     expect(result.details.result.text).toBe(text);

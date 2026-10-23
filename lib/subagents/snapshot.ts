@@ -41,7 +41,7 @@ export function freezeSnapshot(event: ContextSnapshotEvent, session: string, bra
   const protectedKinds = new Set<string>();
   for (const message of event.messages) {
     if (message.role === "custom" && !["workpad-snapshot-v2", "workpad:compaction-v1", "switchboard:observation:v1", "subagents:observation:v1"].includes(message.customType)) protectedKinds.add(message.customType);
-    if (message.role === "toolResult" && ["memory", "continuity", "history_read", "history_search"].includes(message.toolName)) protectedKinds.add(message.toolName);
+    if (message.role === "toolResult" && (["memory", "continuity", "history_read", "history_search"].includes(message.toolName) || /^(memory_(recall|read|sources|threads|note|revise)|continuity_(list|search|read|check|context))$/.test(message.toolName))) protectedKinds.add(message.toolName);
     if (message.role === "compactionSummary" || message.role === "branchSummary") protectedKinds.add("summary-may-contain-private-history");
   }
   const messages = structuredClone(event.messages);
