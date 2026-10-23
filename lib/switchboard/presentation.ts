@@ -1,7 +1,7 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { plain, type Card, type Mail } from "./shared.ts";
 
-export interface SwitchboardDetails { action: string; result: unknown }
+export interface SwitchboardDetails { action: string; result: unknown; nextCalls?: import("./contract.ts").NextCall[]; operationId?: string }
 
 const text = (value: unknown) => plain(value === null || value === undefined || value === "" ? "—" : String(value)).replace(/\s+/g, " ");
 const stamp = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? new Date(value).toLocaleString() : text(value);

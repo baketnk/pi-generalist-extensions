@@ -2,13 +2,13 @@ import { expect, test } from "bun:test";
 import switchboard from "../extensions/switchboard.ts";
 
 function renderer() {
-  let tool: any;
-  switchboard({ on() {}, registerTool(value: unknown) { tool = value; }, registerCommand() {} } as any);
+  const tools = new Map<string, any>();
+  switchboard({ on() {}, registerTool(value: any) { tools.set(value.name, value); }, registerCommand() {} } as any);
   const theme = { fg: (_color: string, text: string) => text };
   return (action: string, receipt: unknown, args: unknown, options = {}, isError = false) => {
     const result = { content: [{ type: "text", text: "unchanged model receipt" }], details: { action, result: receipt } };
     const before = JSON.stringify(result);
-    const rendered = tool.renderResult(result, options, theme, { args, isError }).render(100).join("\n");
+    const rendered = tools.get(`switchboard_${action}`).renderResult(result, options, theme, { args, isError }).render(100).join("\n");
     expect(JSON.stringify(result)).toBe(before);
     return rendered;
   };

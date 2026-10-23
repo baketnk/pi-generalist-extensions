@@ -70,8 +70,10 @@ same-project roster observations and pending-mail hints at existing model reques
 When alone it adds no roster context; incoming presence/mail never wakes an idle model. The footer
 separates other registered participants (`peers`) from direct registered children
 (`sub`), rather than counting the current session. `/switchboard` opens the
-unified Agents/Mail/Offers desk, and the `switchboard` tool supports addressed correspondence
-and interruptible `wait` for mail/user input. `/reload-all` queues a reload for every
+unified Agents/Mail/Offers desk. Action-specific `switchboard_*` tools support addressed
+correspondence and interruptible `switchboard_wait` for mail/user input, with strict
+per-tool arguments, repairable errors and optional `nextCalls`. The old multiplexed
+`switchboard` tool is replaced; reload and update explicit tool allowlists. `/reload-all` queues a reload for every
 currently connected switchboard agent and this session; reloads are delivered
 programmatically as follow-ups, so they wait for active work to settle and require
 no agent tool call. Newer-daemon detection now queues an automatic reload once

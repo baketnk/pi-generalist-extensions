@@ -33,7 +33,7 @@ shows the error and configured paths. Unadapted sessions remain invisible.
 New/forked/cloned sessions get a new binding, subject to the same project policy.
 Unprovisioned print/JSON/RPC sessions do not register. A worker runner must explicitly
 supply `PI_SWITCHBOARD_WORKER_FILE=/absolute/private/capability.json` containing its
-own `{ "token": "..." }`, and include `switchboard` in its active tool allowlist.
+own `{ "token": "..." }`, and include the needed `switchboard_*` tools in its active tool allowlist.
 Do not blindly inherit that file variable into nested workers or unrelated Pi runs.
 
 ## Everyday use
@@ -92,24 +92,38 @@ These Pi commands correspond **as the current participant**, not as a new user-r
 instruction. Human-only viewing does not expose mail bodies to the model or imply
 acknowledgement. `ack` means noted/dismissed, not accepted or completed.
 
-The stable `switchboard` tool is registered without adding dynamic system-prompt
-text. Actions:
+Static action-specific tools replace the former `switchboard({action,...})` tool;
+there is no legacy multiplexed alias. Commands and service/CLI protocol are unchanged.
+Reload to pick up the new registrations; update explicit tool allowlists.
+No dynamic system-prompt text or state-dependent tool definitions are added.
 
-```json
-{"action":"peers"}
-{"action":"peers","all":true}
-{"action":"inspect","id":"acorn-crown-jay-glow"}
-{"action":"status","summary":"Reviewing capture tests; leaving settings alone."}
-{"action":"send","recipient":"acorn-crown-jay-glow","kind":"question","body":"Are you changing the settings interface?"}
-{"action":"inbox"}
-{"action":"read"}
-{"action":"read","id":"m_ID"}
-{"action":"reply","id":"m_ID","body":"Yes; please leave that file to me."}
-{"action":"ack","id":"m_ID"}
-{"action":"delivery","id":"m_ID"}
-{"action":"retry","operation":"op_ID_FROM_UNCERTAIN_SEND"}
-{"action":"wait","seconds":60}
-```
+| Tool | Arguments |
+|---|---|
+| `switchboard_peers` | `{}` or `{"all":true}` |
+| `switchboard_inspect` | `{"participantId":"acorn-crown-jay-glow"}` |
+| `switchboard_status` | `{"summary":"Reviewing capture tests; leaving settings alone."}` |
+| `switchboard_send` | `{"recipient":"acorn-crown-jay-glow","kind":"question","body":"Are you changing the settings interface?"}` |
+| `switchboard_inbox` | `{}` |
+| `switchboard_read` | `{}` or `{"messageId":"m_ID"}` |
+| `switchboard_reply` | `{"messageId":"m_ID","body":"Yes; please leave that file to me."}` |
+| `switchboard_ack` | `{"messageId":"m_ID"}` |
+| `switchboard_delivery` | `{"messageId":"m_ID"}` |
+| `switchboard_retry` | `{"operationId":"op_ID_FROM_UNCERTAIN_SEND"}` |
+| `switchboard_wait` | `{"waitTimeoutSeconds":60}` |
+
+Each schema requires its own inputs and rejects unrelated fields and null/empty
+placeholders (except `summary:""`, which clears the summary). Bodies are additionally
+checked against the 16 KiB UTF-8 limit before service access. Host schema rejection
+can happen before extension execution; correct the call instead of repeating it.
+Execution errors include `code`, `effect`, `retryUnchanged:false`, `repair` and
+`nextCalls`; uncertain sends retain their `operationId` for explicit saved-intent retry.
+
+Successful model results contain `result`, optional `operationId`, and `nextCalls`.
+These are optional state-specific continuations, not instructions to keep working.
+Read suggestions include reply only with `requiredInput.body` for the caller to
+supply, and ack only after handling the mail. Never execute an incomplete suggestion
+or fabricate a reply. Timeout/user-input waits return no polling continuation;
+an empty `nextCalls` list requires no follow-up. Read, reply, and ack remain separate.
 
 `peers` defaults to the canonical repository group, preserving worktree boundaries;
 `all:true` explicitly broadens discovery. Tool listings show at most 16 peers; the
@@ -177,7 +191,7 @@ limit, not an extension of retention or a promise of indefinite unread storage.
 
 ### Reading without a message ID
 
-`{"action":"read"}`, `/switchboard read`, and CLI `read` return one oldest pending
+`switchboard_read({})`, `/switchboard read`, and CLI `read` return one oldest pending
 (unacknowledged, unexpired) incoming message, ordered by creation time then ID.
 They mark it fetched but **do not acknowledge it**. Repeated ID-free reads return
 that same message until explicit `ack` or expiry; this is not an advancing cursor.

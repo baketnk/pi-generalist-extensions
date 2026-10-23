@@ -27,7 +27,7 @@ const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCreden
 const model = modelRuntime.getModels().find(m => m.provider === "anthropic"); assert.ok(model);
 await modelRuntime.setRuntimeApiKey(model.provider, "fixture-only");
 const { session } = await createAgentSession({ cwd: root, agentDir: root, modelRuntime, model, thinkingLevel: "off",
-  sessionManager: SessionManager.inMemory(root), settingsManager: settings, resourceLoader: loader, tools: ["switchboard"] });
+  sessionManager: SessionManager.inMemory(root), settingsManager: settings, resourceLoader: loader, tools: ["switchboard_inbox"] });
 let turns = 0;
 const outgoing: any[] = [];
 session.agent.streamFunction = (_model, context) => {

@@ -7,6 +7,7 @@ import { createAssistantMessageEventStream, InMemoryCredentialStore, type Assist
 import { BoardClient } from "../../lib/switchboard/client.ts";
 import { serve } from "../../lib/switchboard/server.ts";
 import { secret } from "../../lib/switchboard/shared.ts";
+import { switchboardTools } from "../../lib/switchboard/contract.ts";
 
 process.umask(0o077);
 const root = process.argv[2]!;
@@ -31,23 +32,24 @@ const modelRuntime = await ModelRuntime.create({ credentials: new InMemoryCreden
 const model = modelRuntime.getModels().find(m => m.provider === "anthropic"); assert.ok(model);
 await modelRuntime.setRuntimeApiKey(model.provider, "fixture-not-a-real-key");
 const { session } = await createAgentSession({ cwd: root, agentDir: root, model, modelRuntime, thinkingLevel: "off", resourceLoader: loader,
-  sessionManager: SessionManager.inMemory(root), settingsManager, tools: ["switchboard"] });
+  sessionManager: SessionManager.inMemory(root), settingsManager, tools: switchboardTools.map(tool => tool.name) });
 const errors: string[] = [];
 await session.bindExtensions({ mode: "print", onError: e => errors.push(e.error) });
 let turns = 0; const outgoing: string[] = []; let inputPromise: Promise<void> | undefined;
 session.agent.streamFunction = (_model, context) => {
   outgoing.push(JSON.stringify(context)); turns++;
   const waiting = turns === 1 || turns === 3;
-  const args = waiting ? { action: "wait", seconds: 10 } : turns === 5 ? { action: "read" } : turns === 7 ? { action: "send", recipient: parentCard.handle, body: "handle-routed fixture reply" } : undefined;
+  const name = waiting ? "switchboard_wait" : turns === 5 ? "switchboard_read" : "switchboard_send";
+  const args = waiting ? { waitTimeoutSeconds: 10 } : turns === 5 ? {} : turns === 7 ? { recipient: parentCard.handle, body: "handle-routed fixture reply" } : undefined;
   const stream = createAssistantMessageEventStream();
   const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(),
     stopReason: args ? "toolUse" : "stop",
-    content: args ? [{ type: "toolCall", id: `call-${turns}`, name: "switchboard", arguments: args }] : [{ type: "text", text: "Fixture done" }],
+    content: args ? [{ type: "toolCall", id: `call-${turns}`, name, arguments: args }] : [{ type: "text", text: "Fixture done" }],
     usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0, totalTokens: 110, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
   stream.push({ type: "done", reason: message.stopReason as "stop" | "toolUse", message }); stream.end(); return stream;
 };
 session.subscribe(event => {
-  if (event.type === "tool_execution_start" && event.toolName === "switchboard") {
+  if (event.type === "tool_execution_start" && event.toolName === "switchboard_wait") {
     setTimeout(() => {
       if (turns === 1) void parent.send("fixture-mail", { recipient: worker.id, body: "private body, not an automatic preview" });
       else if (turns === 3) inputPromise = session.prompt("User interrupt: report status only.", { streamingBehavior: "steer", source: "rpc" });
@@ -84,6 +86,11 @@ try {
   await session.prompt("Send the fixture reply by handle.");
   assert.equal(board.store.snapshot(parent.token).pending, 1);
   assert.equal(turns, 8);
+  // The SDK receives the same tool schema prefix across wait follow-ups, mail,
+  // user interruption and ordinary turns. Never insert roster/state into tools.
+  const tools = JSON.parse(outgoing[0]!).tools;
+  assert.deepEqual(tools.map((tool: { name: string }) => tool.name).sort(), switchboardTools.map(tool => tool.name).sort());
+  for (const request of outgoing) assert.deepEqual(JSON.parse(request).tools, tools);
   assert.deepEqual(errors, []);
   await session.prompt("/switchboard off");
   assert.equal(board.store.inspect(parent.token, worker.id).online, false);
